@@ -158,12 +158,20 @@ async fn handle_connection(
 async fn main() -> () {
     let mqtt_map = MqttMap::new(Mutex::new(HashMap::new()));
 
-    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
+    let ws_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 8080);
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
-    let try_socket = TcpListener::bind(&server_addr).await;
+    let try_socket = TcpListener::bind(&ws_addr).await;
     let listener = try_socket.expect("Failed to bind");
-    println!("Listening on: {}", server_addr);
 
+    println!("Listening for browser connections on {}", server_addr);
+    tokio::spawn(async move {
+        warp::serve(warp::fs::dir("../frontend/wwwroot"))
+            .run(server_addr)
+            .await;
+    });
+
+    println!("Listening for websocket connections on {}", ws_addr);
     while let Ok((stream, client_addr)) = listener.accept().await {
         tokio::spawn(handle_connection(
             peer_map.clone(),
