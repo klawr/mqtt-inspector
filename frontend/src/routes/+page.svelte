@@ -3,13 +3,11 @@
 	import TopicTree from '../components/topic_tree.svelte';
 	import { addToTopicTree, findbranchwithid, type treebranch } from '../components/topic_tree';
 	import {
-		Column,
 		Content,
 		Grid,
 		Header,
 		RadioButton,
 		RadioButtonGroup,
-		Row,
 		SideNav,
 		SideNavDivider,
 		SideNavItems,
@@ -24,6 +22,7 @@
 	import { Add } from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
+	import { page } from '$app/stores';
 
 	let socket: WebSocket;
 	let selectedBroker: string;
@@ -37,7 +36,7 @@
 	function initializeWebSocket() {
 		const decoder = new TextDecoder('utf-8');
 
-		socket = new WebSocket('ws://127.0.0.1:8080');
+		socket = new WebSocket(`ws://${$page.url.hostname}:8080`);
 
 		socket.onopen = (event) => {
 			// requestMqttBrokerConnection('192.168.178.170', '1883', socket);
