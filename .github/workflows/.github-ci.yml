@@ -1,0 +1,76 @@
+name: mqtt-inspector
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build-svelte:
+    runs-on: ubuntu-22.04
+    container:
+      image: node:18-alpine3.17
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Install dependencies and build svelte
+        run: |
+          cd frontend
+          yarn install
+          yarn build
+
+      - name: Upload svelte artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: svelte-app
+          path: frontend/wwwroot
+
+  build-rust:
+    runs-on: ubuntu-22.04
+    container:
+      image: mcr.microsoft.com/devcontainers/rust:1-1-bookworm
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Build rust app
+        run: |
+          cd backend
+          cargo build --release
+
+      - name: rust-app
+        uses: actions/upload-artifact@v3
+        with:
+          name: rust-app
+          path: backend/target/release/backend
+
+  build-docker:
+    runs-on: ubuntu-22.04
+    container:
+      image: docker:23.0
+    needs:
+      - build-svelte
+      - build-rust
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: svelte-app
+          path: frontend/wwwroot
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: rust-app
+          path: backend/target/release/mqtt-inspector
+
+      - name: Build docker image and deploy
+        run: |
+          docker build -t ghcr.io/klawr/mqtt-inspector:latest .
+          docker push ghcr.io/klawr/mqtt-inspector:latest

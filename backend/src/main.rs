@@ -156,6 +156,13 @@ async fn handle_connection(
 
 #[tokio::main]
 async fn main() -> () {
+    let args: Vec<String> = std::env::args().collect();
+    let serve_path = if args.len() < 2 {
+        "frontend/wwwroot".to_string()
+    } else {
+        args[1].clone()
+    };
+
     let mqtt_map = MqttMap::new(Mutex::new(HashMap::new()));
 
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
@@ -164,9 +171,12 @@ async fn main() -> () {
     let try_socket = TcpListener::bind(&ws_addr).await;
     let listener = try_socket.expect("Failed to bind");
 
-    println!("Listening for browser connections on {}", server_addr);
+    println!(
+        "Listening for browser connections on {} using static path {}",
+        server_addr, serve_path
+    );
     tokio::spawn(async move {
-        warp::serve(warp::fs::dir("../frontend/wwwroot"))
+        warp::serve(warp::fs::dir(serve_path))
             .run(server_addr)
             .await;
     });
