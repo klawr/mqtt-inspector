@@ -117,17 +117,12 @@ fn deserialize_json_rpc_and_process(json_rpc: &str, peer_map: PeerMap, mqtt_map:
     // Implement deserialization and processing of JSON-RPC message
 }
 
-async fn handle_connection(
+async fn handle_websocket(
     peer_map: PeerMap,
-    raw_stream: TcpStream,
+    ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     client_addr: SocketAddr,
     mqtt_map: MqttMap,
 ) -> () {
-    println!("Incoming TCP connection from: {}", client_addr);
-
-    let ws_stream = tokio_tungstenite::accept_async(raw_stream)
-        .await
-        .expect("Error during the websocket handshake occurred");
     println!("WebSocket connection established: {}", client_addr);
 
     let (tx, rx) = unbounded();
@@ -175,19 +170,39 @@ async fn main() -> () {
         "Listening for browser connections on {} using static path {}",
         server_addr, serve_path
     );
-    tokio::spawn(async move {
+    let page_handle = tokio::spawn(async move {
         warp::serve(warp::fs::dir(serve_path))
             .run(server_addr)
             .await;
     });
 
     println!("Listening for websocket connections on {}", ws_addr);
-    while let Ok((stream, client_addr)) = listener.accept().await {
-        tokio::spawn(handle_connection(
-            peer_map.clone(),
-            stream,
-            client_addr,
-            mqtt_map.clone(),
-        ));
-    }
+    let ws_handle = tokio::spawn(async move {
+        while let Ok((stream, client_addr)) = listener.accept().await {
+            if stream.local_addr().is_err() {
+                println!(
+                    "Failed to get local address {}",
+                    stream.local_addr().unwrap()
+                );
+                continue;
+            }
+            println!("Incoming TCP connection from: {}", client_addr);
+
+            if let Ok(ws_stream) = tokio_tungstenite::accept_async(stream).await {
+                tokio::spawn(handle_websocket(
+                    peer_map.clone(),
+                    ws_stream,
+                    client_addr,
+                    mqtt_map.clone(),
+                ));
+            }
+        }
+    });
+
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for event");
+    println!("\nReceived ctrl-c. Shutting down");
+    page_handle.abort();
+    ws_handle.abort();
 }
