@@ -4,22 +4,28 @@ use futures_channel::mpsc::{unbounded, UnboundedSender};
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use warp::Filter;
 
-use crate::{mqtt, jsonrpc};
+use crate::{config::{self, send_configs}, jsonrpc::{self, JsonRpcNotification}, mqtt};
 
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, UnboundedSender<warp::filters::ws::Message>>>>;
 
 fn send_message_to_peers(peer_map: &PeerMap, source: &str, topic: &str, payload: &bytes::Bytes) {
     peer_map.lock().unwrap().iter().for_each(|(addr, tx)| {
-        let message = serde_json::json!({
-            "source": source,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "topic": topic,
-            "payload": payload.to_vec(), // Convert Bytes to Vec<u8>
-        });
+        let message = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "mqtt_message".to_string(),
+            params: serde_json::json!({
+                "source": source,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "topic": topic,
+                "payload": payload.to_vec(), // Convert Bytes to Vec<u8>
+            })
+        };
 
-        match tx.unbounded_send(warp::filters::ws::Message::text(message.to_string())) {
-            Ok(_) => { /* Implement Logging */ }
-            Err(err) => println!("Error sending message to {}: {:?}", addr, err),
+        if let Ok(serialized) = serde_json::to_string(&message) {
+            match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
+                Ok(_) => { /* Implement Logging */ }
+                Err(err) => println!("Error sending message to {}: {:?}", addr, err),
+            }
         }
     });
 }
@@ -86,8 +92,14 @@ fn connect_to_broker(mqtt_ip: &str, mqtt_port: &str, peer_map: PeerMap, mqtt_map
     });
 }
 
+pub fn broadcast_commands(peer_map: PeerMap, config_path: &String) {
+    peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
+        send_configs(tx, config_path)
+    });
+}
 
-fn deserialize_json_rpc_and_process(json_rpc: &str, peer_map: PeerMap, mqtt_map: mqtt::Map) -> () {
+
+fn deserialize_json_rpc_and_process(json_rpc: &str, peer_map: PeerMap, mqtt_map: mqtt::Map, config_path: String) -> () {
     let result = jsonrpc::deserialize_json_rpc(json_rpc);
     if result.is_err() {
         println!("Error deserializing JSON-RPC: {:?}", result.err());
@@ -97,7 +109,7 @@ fn deserialize_json_rpc_and_process(json_rpc: &str, peer_map: PeerMap, mqtt_map:
     println!(
         "Got method \"{}\" with params {}",
         message.method,
-        message.params.clone().unwrap()
+        message.params.clone()
     );
     match message.method.as_str() {
         "connect" => {
@@ -108,6 +120,11 @@ fn deserialize_json_rpc_and_process(json_rpc: &str, peer_map: PeerMap, mqtt_map:
             let (ip, port, topic, payload) = jsonrpc::get_ip_port_topic_and_payload(message.params);
             mqtt::publish_message(&ip, &port, &topic, &payload, mqtt_map);
             // Implement publishing to a topic
+        },
+        "save_publish" => {
+            let command_path = std::format!("{}/commands.json", config_path);
+            config::add_to_commands(&command_path, message.params);
+            broadcast_commands(peer_map, &config_path);
         }
         _ => {
             // Implement other methods
@@ -116,8 +133,7 @@ fn deserialize_json_rpc_and_process(json_rpc: &str, peer_map: PeerMap, mqtt_map:
     // Implement deserialization and processing of JSON-RPC message
 }
 
-
-pub fn run(static_files: String) -> tokio::task::JoinHandle<()> {
+pub fn run(static_files: String, config_path: String) -> tokio::task::JoinHandle<()> {
     let mqtt_map = mqtt::Map::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
@@ -128,12 +144,15 @@ pub fn run(static_files: String) -> tokio::task::JoinHandle<()> {
         .map(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
             let peer_map = peer_map.clone();
             let mqtt_map = mqtt_map.clone();
+            let config_path = config_path.clone();
             ws.on_upgrade(move |socket| async move {
                 let (ws_tx, ws_rx) = socket.split();
                 let (tx, rx) = unbounded();
 
                 if let Some(addr) = addr {
                     println!("Received new WebSocket connection from {}", addr);
+                    config::send_configs(&tx, &config_path);
+
                     peer_map.lock().unwrap().insert(addr, tx);
                 }
                 let incoming = rx.map(Ok)
@@ -145,6 +164,7 @@ pub fn run(static_files: String) -> tokio::task::JoinHandle<()> {
                             text,
                             peer_map.clone(),
                             mqtt_map.clone(),
+                            config_path.clone(),
                         );
                     }
 

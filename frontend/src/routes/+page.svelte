@@ -26,6 +26,7 @@
 
 	let socket: WebSocket;
 	let selectedBroker: string;
+	let savedCommands: {id: string, text: string, topic: string, payload: string}[] = [];
 	const brokerRepository: {
 		[key: string]: {
 			topics: treebranch[];
@@ -33,19 +34,9 @@
 		};
 	} = {};
 
-	function initializeWebSocket() {
-		const decoder = new TextDecoder('utf-8');
-
-		socket = new WebSocket(`ws://${$page.url.host}`);
-
-		socket.onopen = (event) => {
-			console.log('WebSocket connection opened:', event);
-		};
-
-		socket.onmessage = (event) => {
-			const message = event.data;
-			const json = JSON.parse(message);
-			const source = json.source;
+	const decoder = new TextDecoder('utf-8');
+	function processMQTTMessage(json: any, decoder: TextDecoder) {
+		const source = json.source;
 			if (!brokerRepository[source]) {
 				brokerRepository[source] = { topics: [], selectedTopic: null };
 			}
@@ -68,6 +59,38 @@
 				selectedTopic =
 					findbranchwithid(selectedTopic?.id.toString(), brokerRepository[source].topics) ||
 					selectedTopic;
+			}
+
+	}
+
+	function processConfigs(params: any) {
+		savedCommands = JSON.parse(params).map((e: any, id: number) => ({
+			id: `${id}`,
+			text: e.name,
+			topic: e.topic,
+			payload: e.payload
+		}));
+	}
+
+	function initializeWebSocket() {
+		socket = new WebSocket(`ws://${$page.url.host}/ws`);
+
+		socket.onopen = (event) => {
+			console.log('WebSocket connection opened:', event);
+		};
+
+		socket.onmessage = (event) => {
+			const message = event.data;
+			const json = JSON.parse(message);
+			switch (json.method) {
+				case "mqtt_message":
+					processMQTTMessage(json.params, decoder);
+					break;
+				case "commands":
+					processConfigs(json.params);
+					break;
+				default:
+					break;
 			}
 		};
 
@@ -145,6 +168,7 @@
 				</div>
 				<div style="flex: 1;" />
 				<PublishMessage
+					bind:savedCommands
 					bind:selectedBroker
 					bind:socket
 					bind:broker={brokerRepository[selectedBroker]}

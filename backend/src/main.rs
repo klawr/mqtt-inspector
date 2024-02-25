@@ -1,18 +1,30 @@
 
+mod config;
 mod jsonrpc;
 mod mqtt;
 mod server;
 
-#[tokio::main]
-async fn main() -> () {
+fn get_arguments_or_default() -> (String, String) {
     let args: Vec<String> = std::env::args().collect();
     let static_files = if args.len() < 2 {
         "../frontend/wwwroot".to_string()
     } else {
         args[1].clone()
     };
+    let config_dir = if args.len() < 3 {
+        "../test/config".to_string()
+    } else {
+        args[2].clone()
+    };
 
-    let warp_handle = server::run(static_files);
+    (static_files, config_dir)
+}
+
+#[tokio::main]
+async fn main() -> () {
+    let (static_files, config_dir) = get_arguments_or_default();
+
+    let warp_handle = server::run(static_files, config_dir);
 
     tokio::signal::ctrl_c()
         .await
