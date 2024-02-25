@@ -6,7 +6,7 @@ use std::{
 
 use rumqttc::{MqttOptions, QoS};
 
-pub type MqttMap = Arc<Mutex<HashMap<SocketAddr, rumqttc::Client>>>;
+pub type Map = Arc<Mutex<HashMap<SocketAddr, rumqttc::Client>>>;
 
 pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
@@ -21,7 +21,7 @@ pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc:
     return (client, connection);
 }
 
-pub fn publish_message(ip: &str, port: &str, topic: &str, payload: &str, mqtt_map: MqttMap) {
+pub fn publish_message(ip: &str, port: &str, topic: &str, payload: &str, mqtt_map: Map) {
     mqtt_map.lock().unwrap().iter().for_each(|(addr, client)| {
         if addr.ip().to_string() == ip && addr.port().to_string() == port {
             client
