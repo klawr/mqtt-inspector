@@ -36,10 +36,9 @@
 	function initializeWebSocket() {
 		const decoder = new TextDecoder('utf-8');
 
-		socket = new WebSocket(`ws://${$page.url.hostname}:8080`);
+		socket = new WebSocket(`ws://${$page.url.host}`);
 
 		socket.onopen = (event) => {
-			// requestMqttBrokerConnection('192.168.178.170', '1883', socket);
 			console.log('WebSocket connection opened:', event);
 		};
 

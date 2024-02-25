@@ -1,12 +1,14 @@
 use futures_channel::mpsc::{unbounded, UnboundedSender};
-use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
+use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
 };
-use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::tungstenite::protocol::Message;
+use warp::{
+    filters::ws::Message,
+    Filter,
+};
 
 mod jsonrpc;
 mod mqtt;
@@ -23,7 +25,7 @@ fn send_message_to_peers(peer_map: &PeerMap, source: &str, topic: &str, payload:
             "payload": payload.to_vec(), // Convert Bytes to Vec<u8>
         });
 
-        match tx.unbounded_send(Message::Text(message.to_string())) {
+        match tx.unbounded_send(Message::text(message.to_string())) {
             Ok(_) => { /* Implement Logging */ }
             Err(err) => println!("Error sending message to {}: {:?}", addr, err),
         }
@@ -37,7 +39,6 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
                 send_message_to_peers(peer_map, &source, &p.topic, &p.payload);
-                // Handle other types of events if necessary
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
                 println!("Connection event: {:?}", a);
@@ -46,8 +47,11 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
                 // Handle other types of events if necessary
             }
             Err(err) => {
-                // Handle connection error
                 println!("Connection error: {:?}", err);
+                // TODO implement error message
+                let payload = bytes::Bytes::from("Connection failed");
+                send_message_to_peers(peer_map, &source, "error", &payload);
+                break;
             }
         }
     }
@@ -117,43 +121,11 @@ fn deserialize_json_rpc_and_process(json_rpc: &str, peer_map: PeerMap, mqtt_map:
     // Implement deserialization and processing of JSON-RPC message
 }
 
-async fn handle_websocket(
-    peer_map: PeerMap,
-    ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    client_addr: SocketAddr,
-    mqtt_map: MqttMap,
-) -> () {
-    println!("WebSocket connection established: {}", client_addr);
-
-    let (tx, rx) = unbounded();
-    peer_map.lock().unwrap().insert(client_addr, tx);
-
-    let (outgoing, incoming) = ws_stream.split();
-
-    let broadcast_incoming = incoming.try_for_each(|msg| {
-        deserialize_json_rpc_and_process(
-            &msg.to_text().unwrap(),
-            peer_map.clone(),
-            mqtt_map.clone(),
-        );
-
-        future::ok(())
-    });
-
-    let receive_from_others = rx.map(Ok).forward(outgoing);
-
-    pin_mut!(broadcast_incoming, receive_from_others);
-    future::select(broadcast_incoming, receive_from_others).await;
-
-    println!("{} disconnected", &client_addr);
-    peer_map.lock().unwrap().remove(&client_addr);
-}
-
 #[tokio::main]
 async fn main() -> () {
     let args: Vec<String> = std::env::args().collect();
-    let serve_path = if args.len() < 2 {
-        "frontend/wwwroot".to_string()
+    let static_files = if args.len() < 2 {
+        "../frontend/wwwroot".to_string()
     } else {
         args[1].clone()
     };
@@ -161,48 +133,57 @@ async fn main() -> () {
     let mqtt_map = MqttMap::new(Mutex::new(HashMap::new()));
 
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
-    let ws_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 8080);
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
-    let try_socket = TcpListener::bind(&ws_addr).await;
-    let listener = try_socket.expect("Failed to bind");
 
-    println!(
-        "Listening for browser connections on {} using static path {}",
-        server_addr, serve_path
-    );
-    let page_handle = tokio::spawn(async move {
-        warp::serve(warp::fs::dir(serve_path))
-            .run(server_addr)
-            .await;
-    });
+    let ws = warp::path("ws")
+        .and(warp::ws())
+        .and(warp::addr::remote())
+        .map(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
+            let peer_map = peer_map.clone();
+            let mqtt_map = mqtt_map.clone();
+            ws.on_upgrade(move |socket| async move {
+                let (ws_tx, ws_rx) = socket.split();
+                let (tx, rx) = unbounded();
 
-    println!("Listening for websocket connections on {}", ws_addr);
-    let ws_handle = tokio::spawn(async move {
-        while let Ok((stream, client_addr)) = listener.accept().await {
-            if stream.local_addr().is_err() {
-                println!(
-                    "Failed to get local address {}",
-                    stream.local_addr().unwrap()
-                );
-                continue;
-            }
-            println!("Incoming TCP connection from: {}", client_addr);
+                if let Some(addr) = addr {
+                    println!("Received new WebSocket connection from {}", addr);
+                    peer_map.lock().unwrap().insert(addr, tx);
+                }
+                let incoming = rx.map(Ok)
+                    .forward(ws_tx);
 
-            if let Ok(ws_stream) = tokio_tungstenite::accept_async(stream).await {
-                tokio::spawn(handle_websocket(
-                    peer_map.clone(),
-                    ws_stream,
-                    client_addr,
-                    mqtt_map.clone(),
-                ));
-            }
-        }
+                let handler = ws_rx.try_for_each(|msg| {
+                    if let Ok(text) = msg.to_str() {
+                        deserialize_json_rpc_and_process(
+                            text,
+                            peer_map.clone(),
+                            mqtt_map.clone(),
+                        );
+                    }
+
+                    futures_util::future::ok(())
+                });
+
+                pin_mut!(incoming, handler);
+                futures_util::future::select(incoming, handler).await;
+
+                if let Some(addr) = addr {
+                    println!("{} disconnected", addr);
+                    peer_map.lock().unwrap().remove(&addr);
+
+                }
+            })
+        });
+
+    println!("Listening for connections on {} using static files from {}", server_addr, static_files);
+    let routes = warp::get().and(ws.or(warp::fs::dir(static_files)));
+    let warp_handle = tokio::spawn(async move {
+        warp::serve(routes).run(server_addr).await;
     });
 
     tokio::signal::ctrl_c()
         .await
         .expect("failed to listen for event");
     println!("\nReceived ctrl-c. Shutting down");
-    page_handle.abort();
-    ws_handle.abort();
+    warp_handle.abort();
 }

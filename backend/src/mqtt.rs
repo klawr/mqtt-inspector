@@ -9,8 +9,9 @@ use rumqttc::{MqttOptions, QoS};
 pub type MqttMap = Arc<Mutex<HashMap<SocketAddr, rumqttc::Client>>>;
 
 pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc::Connection) {
-    println!("Connecting to Mqtt broker at {}:{}", host, port);
-    let mut mqttoptions = MqttOptions::new("rumqtt-async", host, port);
+    let id = uuid::Uuid::new_v4();
+    println!("Connecting to Mqtt broker at {}:{} with id {}", host, port, id);
+    let mut mqttoptions = MqttOptions::new(id, host, port);
     mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
     mqttoptions.set_max_packet_size(20 * 1024, 20 * 1024);
 
