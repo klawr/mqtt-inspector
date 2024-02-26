@@ -12,7 +12,7 @@
 		TextInput
 	} from 'carbon-components-svelte';
 	import { findbranchwithid, type treebranch } from './topic_tree';
-	import { Add, CheckmarkFilled, Save } from 'carbon-icons-svelte';
+	import { Add, ArrowDown, ArrowUp, CheckmarkFilled, Save, TrashCan } from 'carbon-icons-svelte';
 
 	export let pipelines: { id: number; text: string; pipeline: { topic: string }[] }[];
 	export let broker: {
@@ -75,6 +75,31 @@
 		});
 		nextStepText = '';
 	}
+
+	let selectedRow = '';
+	function removeSelectedRow() {
+		if (!selectedRow) {
+			return;
+		}
+		const index = +selectedRow.split('-')[1];
+		broker.pipeline = broker.pipeline.filter((e, i) => i !== index);
+	}
+
+	function moveSelectedRow(direction: number) {
+		if (!selectedRow) {
+			return;
+		}
+		const index = +selectedRow.split('-')[1];
+		const newIndex = index + direction;
+		if (newIndex < 0 || newIndex >= broker.pipeline.length) {
+			return;
+		}
+		const temp = broker.pipeline[index];
+		broker.pipeline[index] = broker.pipeline[newIndex];
+		broker.pipeline[newIndex] = temp;
+
+		selectedRow = `row-${newIndex}-value`;
+	}
 </script>
 
 <div style="display: flex">
@@ -91,7 +116,7 @@
 	</div>
 </div>
 
-<StructuredList condensed selection selected="row-1-value">
+<StructuredList condensed selection bind:selected={selectedRow}>
 	<StructuredListHead>
 		<StructuredListRow head>
 			<StructuredListCell head>Topic</StructuredListCell>
@@ -106,15 +131,37 @@
 				<StructuredListCell>{item.timestamp || ''}</StructuredListCell>
 				<StructuredListInput id="row-{index}" value="row-{index}-value" />
 				<StructuredListCell>
-					<CheckmarkFilled
-						class="bx--structured-list-svg"
-						aria-label="select an option"
-						title="select an option"
-					/>
+					{#if (selectedRow === `row-${index}-value` && !broker.selectedTopic?.id) || broker.selectedTopic?.id === item.topic}
+						<CheckmarkFilled />
+					{/if}
 				</StructuredListCell>
 			</StructuredListRow>
 		{/each}
 	</StructuredListBody>
+	<Button
+		on:click={() => moveSelectedRow(-1)}
+		icon={ArrowUp}
+		iconDescription="Move selected row up"
+		disabled={!selectedRow ||
+			(!!broker.selectedTopic?.id &&
+				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+	/>
+	<Button
+		on:click={() => moveSelectedRow(1)}
+		icon={ArrowDown}
+		iconDescription="Move selected row down"
+		disabled={!selectedRow ||
+			(!!broker.selectedTopic?.id &&
+				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+	/>
+	<Button
+		on:click={removeSelectedRow}
+		icon={TrashCan}
+		iconDescription="Remove selected row"
+		disabled={!selectedRow ||
+			(!!broker.selectedTopic?.id &&
+				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+	/>
 </StructuredList>
 
 <div style="display: flex">
@@ -144,7 +191,6 @@
 			iconDescription="Save current pipeline"
 			size="field"
 			on:click={save_pipeline}
-			kind="secondary"
 		/>
 	</div>
 </div>
