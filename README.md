@@ -3,12 +3,12 @@
 Simple service to connect to mqtt brokers and monitor the messages coming through.
 Distributes all topics to all connected clients using websockets.
 
-Features:
-    - Connect to multiple brokers at once
-    - Explore all topics coming through on a broker
-    - Save pipelines to visualize them effectively
-    - Publish commands
-    - Save favorite commands for publishing
+# Features:
+  - Connect to multiple brokers at once
+  - Explore all topics coming through on a broker
+  - Save pipelines to visualize them effectively
+  - Publish commands
+  - Save favorite commands for publishing
 
 # Deployment:
 

@@ -69,6 +69,17 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
     }
 }
 
+pub fn connect_to_known_brokers(broker_path: String, peer_map: PeerMap, mqtt_map: mqtt::Map) {
+    let mqtt_map_clone = mqtt_map.clone();
+    let peer_map_clone = peer_map.clone();
+    let known_brokers = config::get_known_brokers(&broker_path);
+
+    known_brokers.iter().for_each(|broker| {
+        let (ip, port) = broker.split_once(':').unwrap();
+        connect_to_broker(ip, port, peer_map_clone.clone(), mqtt_map_clone.clone());
+    });
+}
+
 fn connect_to_mqtt_client(mqtt_host: &SocketAddr, mqtt_map: mqtt::Map, peer_map: PeerMap) -> () {
     let ip = mqtt_host.ip().to_string();
     let port = mqtt_host.port();
@@ -146,6 +157,8 @@ fn deserialize_json_rpc_and_process(
         "connect" => {
             let (ip, port) = jsonrpc::get_ip_and_port(message.params);
             connect_to_broker(&ip, &port, peer_map.clone(), mqtt_map.clone());
+            let broker_path = std::format!("{}/brokers.json", config_path);
+            config::add_to_brokers(&broker_path, std::format!("{}:{}", ip, port));
             broadcast_brokers(peer_map, mqtt_map)
         }
         "publish" => {
@@ -192,10 +205,18 @@ fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqt
     }
 }
 
-pub fn run(static_files: String, config_path: String) -> tokio::task::JoinHandle<()> {
+pub fn run_server(static_files: String, config_path: String) -> tokio::task::JoinHandle<()> {
     let mqtt_map = mqtt::Map::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
+
+    connect_to_known_brokers(
+        std::format!("{}/brokers.json", config_path),
+        peer_map.clone(),
+        mqtt_map.clone(),
+    );
+
+    let config_path_clone = config_path.clone();
 
     let ws = warp::path("ws")
         .and(warp::ws())
@@ -203,7 +224,7 @@ pub fn run(static_files: String, config_path: String) -> tokio::task::JoinHandle
         .map(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
             let peer_map = peer_map.clone();
             let mqtt_map = mqtt_map.clone();
-            let config_path = config_path.clone();
+            let config_path = config_path_clone.clone();
             ws.on_upgrade(move |socket| async move {
                 let (ws_tx, ws_rx) = socket.split();
                 let (tx, rx) = unbounded();
@@ -241,8 +262,8 @@ pub fn run(static_files: String, config_path: String) -> tokio::task::JoinHandle
         });
 
     println!(
-        "Listening for connections on {} using static files from {}",
-        server_addr, static_files
+        "Listening for connections on {} using static files from {} and config {}",
+        server_addr, static_files, config_path
     );
     let routes = warp::get().and(ws.or(warp::fs::dir(static_files)));
     let warp_handle = tokio::spawn(async move {

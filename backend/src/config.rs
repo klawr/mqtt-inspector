@@ -22,6 +22,33 @@ pub struct PipelineMessage {
     pipeline: Vec<PipelineEntry>,
 }
 
+pub fn get_known_brokers(brokers_path: &String) -> Vec<String> {
+    if let Ok(file_content) = fs::read_to_string(brokers_path) {
+        serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
+    } else {
+        eprintln!("Failed to read file {}", brokers_path);
+        Vec::new()
+    }
+}
+
+pub fn add_to_brokers(brokers_path: &String, broker: String) {
+    let mut brokers: Vec<String> = if let Ok(file_content) = fs::read_to_string(brokers_path) {
+        serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
+    } else {
+        eprintln!("Failed to read file {}", brokers_path);
+        Vec::new()
+    };
+
+    brokers.push(broker);
+    if let Ok(content) = serde_json::to_string(&brokers) {
+        if let Err(_) = fs::write(brokers_path, content) {
+            eprintln!("Failed to save new brokers file to {}", brokers_path);
+        }
+    } else {
+        eprintln!("Failed to serialize updated saved brokers.");
+    }
+}
+
 pub fn add_to_commands(commands_path: &String, params: serde_json::Value) {
     let mut commands: Vec<CommandMessage> =
         if let Ok(file_content) = fs::read_to_string(commands_path) {

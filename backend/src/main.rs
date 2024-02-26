@@ -1,4 +1,3 @@
-
 mod config;
 mod jsonrpc;
 mod mqtt;
@@ -24,7 +23,7 @@ fn get_arguments_or_default() -> (String, String) {
 async fn main() -> () {
     let (static_files, config_dir) = get_arguments_or_default();
 
-    let warp_handle = server::run(static_files, config_dir);
+    let warp_handle = server::run_server(static_files, config_dir);
 
     tokio::signal::ctrl_c()
         .await
