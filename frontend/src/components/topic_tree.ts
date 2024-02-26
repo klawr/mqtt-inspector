@@ -1,6 +1,7 @@
 
 type message = {
     timestamp: string,
+    delta_t?: number,
     text: string,
 }
 
@@ -54,7 +55,11 @@ function addToTopicBranch(
     });
 
     if (index === topicsplit.length - 1) {
-        found?.messages.unshift({ timestamp: timestamp, text: payload });
+        const new_entry = { timestamp: timestamp, text: payload, delta_t: 0 }
+        if (found?.messages.length) {
+            new_entry.delta_t = new Date(timestamp).getTime() - new Date(found.messages[0].timestamp).getTime();
+        }
+        found?.messages.unshift(new_entry);
     }
 
     return topicbranch;
