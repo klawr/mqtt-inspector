@@ -23,8 +23,8 @@
 </script>
 
 <ButtonSet>
-	<Button size="sm" on:click={treeview?.expandAll} kind="secondary">Expand all</Button>
-	<Button size="sm" on:click={treeview?.collapseAll}>Collapse all</Button>
+	<Button size="small" on:click={treeview?.expandAll} kind="secondary">Expand all</Button>
+	<Button size="small" on:click={treeview?.collapseAll}>Collapse all</Button>
 </ButtonSet>
 
 <TreeView
@@ -33,6 +33,4 @@
 	bind:activeId
 	bind:selectedIds
 	on:select={({ detail }) => select(detail)}
-	on:toggle={({ detail }) => console.log('toggle', detail)}
-	on:focus={({ detail }) => console.log('focus', detail)}
 />

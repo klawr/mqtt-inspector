@@ -14,6 +14,9 @@
 		SideNavLink,
 		SideNavMenu,
 		SkipToContent,
+		Tab,
+		TabContent,
+		Tabs,
 		Theme
 	} from 'carbon-components-svelte';
 	import 'carbon-components-svelte/css/all.css';
@@ -23,44 +26,53 @@
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
+	import Pipeline from '../components/pipeline.svelte';
 
 	let socket: WebSocket;
 	let selectedBroker: string;
-	let savedCommands: {id: string, text: string, topic: string, payload: string}[] = [];
+	let savedCommands: { id: string; text: string; topic: string; payload: string }[] = [];
+	let pipelines: { id: number; text: string; pipeline: { topic: string }[] }[] = [];
 	const brokerRepository: {
 		[key: string]: {
 			topics: treebranch[];
 			selectedTopic: treebranch | null;
+			pipeline: { topic: string; timestamp?: string }[];
 		};
 	} = {};
 
+	function addToPipeline(source: string, topic: string, timestamp: string) {
+		const nextMessage = brokerRepository[source]?.pipeline.find((e) => !e.timestamp);
+		if (topic === nextMessage?.topic) {
+			nextMessage.timestamp = timestamp;
+		}
+	}
+
 	const decoder = new TextDecoder('utf-8');
 	function processMQTTMessage(json: any, decoder: TextDecoder) {
-		const source = json.source;
-			if (!brokerRepository[source]) {
-				brokerRepository[source] = { topics: [], selectedTopic: null };
-			}
+		if (!brokerRepository[json.source]) {
+			brokerRepository[json.source] = { topics: [], selectedTopic: null, pipeline: [] };
+		}
 
-			const payload = decoder.decode(new Uint8Array(json.payload));
-			const timestamp = json.timestamp;
-			if (selectedBroker === undefined) {
-				selectedBroker = source;
-			}
+		const payload = decoder.decode(new Uint8Array(json.payload));
+		if (selectedBroker === undefined) {
+			selectedBroker = json.source;
+		}
 
-			if (selectedBroker == source) {
-				brokerRepository[source].topics = addToTopicTree(
-					json.topic,
-					brokerRepository[source].topics,
-					payload,
-					timestamp
-				);
-			}
-			if (selectedTopic) {
-				selectedTopic =
-					findbranchwithid(selectedTopic?.id.toString(), brokerRepository[source].topics) ||
-					selectedTopic;
-			}
+		if (selectedBroker == json.source) {
+			brokerRepository[json.source].topics = addToTopicTree(
+				json.topic,
+				brokerRepository[json.source].topics,
+				payload,
+				json.timestamp
+			);
+		}
+		if (selectedTopic) {
+			selectedTopic =
+				findbranchwithid(selectedTopic?.id.toString(), brokerRepository[json.source].topics) ||
+				selectedTopic;
+		}
 
+		addToPipeline(json.source, json.topic, json.timestamp);
 	}
 
 	function processConfigs(params: any) {
@@ -69,6 +81,14 @@
 			text: e.name,
 			topic: e.topic,
 			payload: e.payload
+		}));
+	}
+
+	function processPipelines(params: any) {
+		pipelines = params.map((e: any, id: number) => ({
+			id,
+			text: e.name,
+			pipeline: e.pipeline
 		}));
 	}
 
@@ -83,11 +103,14 @@
 			const message = event.data;
 			const json = JSON.parse(message);
 			switch (json.method) {
-				case "mqtt_message":
+				case 'mqtt_message':
 					processMQTTMessage(json.params, decoder);
 					break;
-				case "commands":
+				case 'commands':
 					processConfigs(json.params);
+					break;
+				case 'pipelines':
+					processPipelines(json.params);
 					break;
 				default:
 					break;
@@ -160,7 +183,22 @@
 			<div style="height: calc(100vh - 8em) !important; display: flex; flex-direction: column">
 				<div style="display: flex">
 					<div style="flex: 1; margin: 1em; min-width: 30em; max-width: 50em">
-						<TopicTree bind:broker={brokerRepository[selectedBroker]} />
+						<Tabs autoWidth type="container">
+							<Tab label="Treeview" />
+							<Tab label="Pipeline" />
+							<svelte:fragment slot="content">
+								<TabContent>
+									<TopicTree bind:broker={brokerRepository[selectedBroker]} />
+								</TabContent>
+								<TabContent>
+									<Pipeline
+										bind:pipelines
+										bind:broker={brokerRepository[selectedBroker]}
+										bind:socket
+									/>
+								</TabContent>
+							</svelte:fragment>
+						</Tabs>
 					</div>
 					<div style="flex: 1; margin: 1em; min-width: 30em">
 						<Messages bind:broker={brokerRepository[selectedBroker]} />

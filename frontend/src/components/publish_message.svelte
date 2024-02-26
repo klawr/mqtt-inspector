@@ -12,7 +12,7 @@
 	import { requestPublishMqttMessage } from '$lib/socket';
 	import { Add } from 'carbon-icons-svelte';
 
-	export let savedCommands: {id: string, text: string, topic: string, payload: string}[];
+	export let savedCommands: { id: string; text: string; topic: string; payload: string }[];
 	export let socket: WebSocket;
 	export let selectedBroker: string;
 	export let broker: {
@@ -46,15 +46,15 @@
 
 	function save_message() {
 		const message = JSON.stringify({
-			jsonrpc: "2.0",
-			method: "save_publish",
+			jsonrpc: '2.0',
+			method: 'save_publish',
 			params: { name: save_command_name, topic, payload }
 		});
 		socket.send(message);
-		save_command_name = "";
+		save_command_name = '';
 	}
 
-	let save_command_name = "";
+	let save_command_name = '';
 </script>
 
 <Row>
@@ -72,7 +72,7 @@
 						<Button
 							disabled={!broker.selectedTopic?.id}
 							on:click={setTopicToSelectedTopic}
-							size="sm">Use selected topic</Button
+							size="field">Use selected topic</Button
 						>
 					</div>
 					<div style="display: flex; flex: 1">
@@ -80,21 +80,24 @@
 							<TextInput
 								labelText="Save command name"
 								bind:value={save_command_name}
-								placeholder="Add name" />
+								placeholder="Add name"
+							/>
 						</div>
 						<div style="margin-top: auto; margin-bottom: 0; flex: 1">
 							<Button
 								icon={Add}
 								disabled={!topic || !save_command_name}
 								on:click={save_message}
-								size="sm"/>
+								size="field"
+							/>
 						</div>
 						<div style="flex: 1">
 							<ComboBox
 								on:select={saved_message_selected}
 								titleText="Saved commands"
 								placeholder="Search..."
-								items={savedCommands}/>
+								items={savedCommands}
+							/>
 						</div>
 					</div>
 				</div>
