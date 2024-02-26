@@ -37,14 +37,27 @@
 		[key: string]: {
 			topics: treebranch[];
 			selectedTopic: treebranch | null;
-			pipeline: { topic: string; timestamp?: string }[];
+			pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
 		};
 	} = {};
 
 	function addToPipeline(source: string, topic: string, timestamp: string) {
-		const nextMessage = brokerRepository[source]?.pipeline.find((e) => !e.timestamp);
-		if (topic === nextMessage?.topic) {
-			nextMessage.timestamp = timestamp;
+		const pipeline = brokerRepository[source]?.pipeline;
+		const index = pipeline.findIndex((e) => !e.timestamp);
+		if (pipeline[index].topic !== topic) {
+			return;
+		}
+		pipeline[index].timestamp = timestamp;
+		pipeline[index].topic = topic;
+
+		if (index === 0) {
+			pipeline[index].delta_t = 0;
+		} else {
+			const prevMessage = pipeline[index - 1];
+			const nextMessage = pipeline[index];
+			const prevTimestamp = new Date(prevMessage.timestamp!).getTime();
+			const nextTimestamp = new Date(nextMessage.timestamp!).getTime();
+			pipeline[index].delta_t = nextTimestamp - prevTimestamp;
 		}
 	}
 

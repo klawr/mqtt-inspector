@@ -18,7 +18,7 @@
 	export let broker: {
 		topics: treebranch[];
 		selectedTopic: treebranch | null;
-		pipeline: { topic: string; timestamp?: string }[];
+		pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
 	};
 
 	export let socket: WebSocket;
@@ -86,6 +86,7 @@
 	}
 
 	function moveSelectedRow(direction: number) {
+		reset();
 		if (!selectedRow) {
 			return;
 		}
@@ -116,57 +117,55 @@
 	</div>
 </div>
 
-<StructuredList condensed selection bind:selected={selectedRow}>
-	<StructuredListHead>
-		<StructuredListRow head>
-			<StructuredListCell head>Topic</StructuredListCell>
-			<StructuredListCell head>Timestamp</StructuredListCell>
-			<StructuredListCell head>{''}</StructuredListCell>
-		</StructuredListRow>
-	</StructuredListHead>
-	<StructuredListBody>
-		{#each broker.pipeline as item, index}
-			<StructuredListRow on:click={clicked_row} label for="row-{index}">
-				<StructuredListCell>{item.topic}</StructuredListCell>
-				<StructuredListCell>{item.timestamp || ''}</StructuredListCell>
-				<StructuredListInput id="row-{index}" value="row-{index}-value" />
-				<StructuredListCell>
-					{#if (selectedRow === `row-${index}-value` && !broker.selectedTopic?.id) || broker.selectedTopic?.id === item.topic}
-						<CheckmarkFilled />
-					{/if}
+<div style="margin-bottom: -5em">
+	<StructuredList condensed selection bind:selected={selectedRow}>
+		<StructuredListHead>
+			<StructuredListRow head>
+				<StructuredListCell head>Topic</StructuredListCell>
+				<StructuredListCell head>
+					<div style="text-align: end;">Time</div>
 				</StructuredListCell>
+				<StructuredListCell head />
 			</StructuredListRow>
-		{/each}
-	</StructuredListBody>
-	<Button
-		on:click={() => moveSelectedRow(-1)}
-		icon={ArrowUp}
-		iconDescription="Move selected row up"
-		disabled={!selectedRow ||
-			(!!broker.selectedTopic?.id &&
-				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-	/>
-	<Button
-		on:click={() => moveSelectedRow(1)}
-		icon={ArrowDown}
-		iconDescription="Move selected row down"
-		disabled={!selectedRow ||
-			(!!broker.selectedTopic?.id &&
-				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-	/>
-	<Button
-		on:click={removeSelectedRow}
-		icon={TrashCan}
-		iconDescription="Remove selected row"
-		disabled={!selectedRow ||
-			(!!broker.selectedTopic?.id &&
-				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-	/>
-</StructuredList>
-
+		</StructuredListHead>
+		<StructuredListBody>
+			{#each broker.pipeline as item, index}
+				<StructuredListRow on:click={clicked_row} label for="row-{index}">
+					<StructuredListCell>{item.topic}</StructuredListCell>
+					<StructuredListCell>
+						<div style="text-align: end;">
+							{item.delta_t !== undefined ? `${item.delta_t} ms` : ' - '}
+						</div>
+					</StructuredListCell>
+					<StructuredListCell>
+						<div style="width: 0">
+							<StructuredListInput id="row-{index}" value="row-{index}-value" />
+							{#if (selectedRow === `row-${index}-value` && !broker.selectedTopic?.id) || broker.selectedTopic?.id === item.topic}
+								<CheckmarkFilled />
+							{/if}
+						</div>
+					</StructuredListCell>
+				</StructuredListRow>
+			{/each}
+		</StructuredListBody>
+	</StructuredList>
+</div>
+<div style="margin-bottom: -5em">
+	<StructuredList>
+		<StructuredListRow>
+			<StructuredListCell head>Total:</StructuredListCell>
+			<StructuredListCell head>
+				<div style="text-align: end;">
+					{broker.pipeline.reduce((pre, cur) => pre + (cur.delta_t || 0), 0)} ms
+				</div>
+			</StructuredListCell>
+			<StructuredListCell head />
+		</StructuredListRow>
+	</StructuredList>
+</div>
 <div style="display: flex">
-	<div style="flex: 10">
-		<TextInput bind:value={nextStepText} placeholder="Add topic to pipeline" />
+	<div style="flex: 11;">
+		<TextInput bind:value={nextStepText} placeholder="Add topic to pipeline..." />
 	</div>
 	<div style="flex: 1">
 		<Button
@@ -178,10 +177,34 @@
 		/>
 	</div>
 </div>
+<Button
+	on:click={() => moveSelectedRow(-1)}
+	icon={ArrowUp}
+	iconDescription="Move selected row up"
+	disabled={!selectedRow ||
+		(!!broker.selectedTopic?.id &&
+			broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+/>
+<Button
+	on:click={() => moveSelectedRow(1)}
+	icon={ArrowDown}
+	iconDescription="Move selected row down"
+	disabled={!selectedRow ||
+		(!!broker.selectedTopic?.id &&
+			broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+/>
+<Button
+	on:click={removeSelectedRow}
+	icon={TrashCan}
+	iconDescription="Remove selected row"
+	disabled={!selectedRow ||
+		(!!broker.selectedTopic?.id &&
+			broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+/>
 
 <div style="display: flex">
 	<div style="flex: 10">
-		<TextInput bind:value={pipelineName} placeholder="Save pipeline as" />
+		<TextInput bind:value={pipelineName} placeholder="Save pipeline as..." />
 	</div>
 
 	<div style="flex: 1">
