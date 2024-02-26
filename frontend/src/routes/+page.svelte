@@ -93,7 +93,6 @@
 	}
 
 	function processBrokers(params: any) {
-		console.log(params);
 		params.forEach((broker: string) => {
 			if (!brokerRepository[broker]) {
 				brokerRepository[broker] = { topics: [], selectedTopic: null, pipeline: [] };

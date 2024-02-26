@@ -32,7 +32,13 @@ fn send_message_to_peers(peer_map: &PeerMap, source: &str, topic: &str, payload:
         if let Ok(serialized) = serde_json::to_string(&message) {
             match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
                 Ok(_) => { /* Implement Logging */ }
-                Err(err) => println!("Error sending message to {}: {:?}", addr, err),
+                Err(err) => {
+                    if tx.is_closed() {
+                        println!("Peer {} is closed. Removing from peer map.", addr);
+                        peer_map.lock().unwrap().remove(addr);
+                    }
+                    println!("Error sending message to {}: {:?}", addr, err);
+                }
             }
         }
     });
@@ -145,7 +151,6 @@ fn deserialize_json_rpc_and_process(
         "publish" => {
             let (ip, port, topic, payload) = jsonrpc::get_ip_port_topic_and_payload(message.params);
             mqtt::publish_message(&ip, &port, &topic, &payload, mqtt_map);
-            // Implement publishing to a topic
         }
         "save_publish" => {
             let command_path = std::format!("{}/commands.json", config_path);
