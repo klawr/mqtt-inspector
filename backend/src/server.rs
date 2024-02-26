@@ -50,7 +50,15 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
     for (_i, notification) in connection.iter().enumerate() {
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
-                send_message_to_peers(peer_map, &source, &p.topic, &p.payload);
+                let payload = if p.payload.len() > 1000000 {
+                    bytes::Bytes::from(std::format!(
+                        "Payload size limit exceeded: {}.\nThe message is probably fine, but is is too large to be displayed.",
+                        p.payload.len()
+                    ))
+                } else {
+                    bytes::Bytes::from(p.payload)
+                };
+                send_message_to_peers(peer_map, &source, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
                 println!("Connection event: {:?}", a);
@@ -58,11 +66,17 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
             Ok(_) => {
                 // Handle other types of events if necessary
             }
-            Err(err) => {
-                println!("Connection error: {:?}", err);
-                // TODO implement error message
-                let payload = bytes::Bytes::from("Connection failed");
+            Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
+                rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
+            ))) => {
+                let payload =
+                    bytes::Bytes::from(std::format!("Payload size limit exceeded: {}", p));
+                println!("Payload size limit exceeded: {}", p);
                 send_message_to_peers(peer_map, &source, "error", &payload);
+            }
+            Err(err) => {
+                println!("Unhandled connection error: {:?}", err);
+                // TODO: Handle errors properly
                 break;
             }
         }

@@ -10,10 +10,13 @@ pub type Map = Arc<Mutex<HashMap<SocketAddr, rumqttc::Client>>>;
 
 pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
-    println!("Connecting to Mqtt broker at {}:{} with id {}", host, port, id);
+    println!(
+        "Connecting to Mqtt broker at {}:{} with id {}",
+        host, port, id
+    );
     let mut mqttoptions = MqttOptions::new(id, host, port);
     mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
-    mqttoptions.set_max_packet_size(20 * 1024, 20 * 1024);
+    mqttoptions.set_max_packet_size(1000000 * 1024, 1000000 * 1024);
 
     let (mut client, connection) = rumqttc::Client::new(mqttoptions, 10);
     client.subscribe("#", QoS::AtMostOnce).unwrap();
