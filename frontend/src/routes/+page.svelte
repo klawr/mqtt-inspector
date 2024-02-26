@@ -3,6 +3,7 @@
 	import TopicTree from '../components/topic_tree.svelte';
 	import { addToTopicTree, findbranchwithid, type treebranch } from '../components/topic_tree';
 	import {
+		Button,
 		Content,
 		Grid,
 		Header,
@@ -22,7 +23,7 @@
 	import 'carbon-components-svelte/css/all.css';
 	import Messages from '../components/messages.svelte';
 	import AddBroker from '../components/add_broker.svelte';
-	import { Add } from 'carbon-icons-svelte';
+	import { Add, LogoGithub } from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
@@ -153,6 +154,13 @@
 	<svelte:fragment slot="skip-to-content">
 		<SkipToContent />
 	</svelte:fragment>
+	<div style="flex: 1" />
+	<Button
+		icon={LogoGithub}
+		tooltipPosition="left"
+		iconDescription="Fork me on GitHub!"
+		href="https://github.com/klawr/mqtt-inspector"
+	></Button>
 </Header>
 
 <SideNav bind:isOpen={isSideNavOpen}>
@@ -188,7 +196,7 @@
 	</SideNavItems>
 </SideNav>
 
-<Content>
+<Content style="padding: 0">
 	{#if brokerRepository[selectedBroker]}
 		<Grid fullWidth>
 			<div style="height: calc(100vh - 8em) !important; display: flex; flex-direction: column">
