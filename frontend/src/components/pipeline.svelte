@@ -58,7 +58,7 @@
 		pipelineName = '';
 	}
 
-	let selectedId = 0;
+	let selectedId;
 	function pipelineSelected(e: Event) {
 		broker.pipeline = pipelines[selectedId].pipeline.map((e: any) => ({
 			topic: e.topic

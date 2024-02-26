@@ -92,6 +92,15 @@
 		}));
 	}
 
+	function processBrokers(params: any) {
+		console.log(params);
+		params.forEach((broker: string) => {
+			if (!brokerRepository[broker]) {
+				brokerRepository[broker] = { topics: [], selectedTopic: null, pipeline: [] };
+			}
+		});
+	}
+
 	function initializeWebSocket() {
 		socket = new WebSocket(`ws://${$page.url.host}/ws`);
 
@@ -103,6 +112,9 @@
 			const message = event.data;
 			const json = JSON.parse(message);
 			switch (json.method) {
+				case 'mqtt_brokers':
+					processBrokers(json.params);
+					break;
 				case 'mqtt_message':
 					processMQTTMessage(json.params, decoder);
 					break;

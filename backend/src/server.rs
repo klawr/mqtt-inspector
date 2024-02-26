@@ -112,6 +112,13 @@ pub fn broadcast_commands(peer_map: PeerMap, config_path: &String) {
     });
 }
 
+fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::Map) {
+    send_brokers(
+        &peer_map.lock().unwrap().values().next().unwrap(),
+        &mqtt_map,
+    );
+}
+
 fn deserialize_json_rpc_and_process(
     json_rpc: &str,
     peer_map: PeerMap,
@@ -132,7 +139,8 @@ fn deserialize_json_rpc_and_process(
     match message.method.as_str() {
         "connect" => {
             let (ip, port) = jsonrpc::get_ip_and_port(message.params);
-            connect_to_broker(&ip, &port, peer_map, mqtt_map);
+            connect_to_broker(&ip, &port, peer_map.clone(), mqtt_map.clone());
+            broadcast_brokers(peer_map, mqtt_map)
         }
         "publish" => {
             let (ip, port, topic, payload) = jsonrpc::get_ip_port_topic_and_payload(message.params);
@@ -156,6 +164,29 @@ fn deserialize_json_rpc_and_process(
     // Implement deserialization and processing of JSON-RPC message
 }
 
+fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::Map) {
+    let brokers: Vec<String> = mqtt_map
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(addr, _client)| std::format!("{}:{}", addr.ip().to_string(), addr.port()))
+        .collect();
+    let message = JsonRpcNotification {
+        jsonrpc: "2.0".to_string(),
+        method: "mqtt_brokers".to_string(),
+        params: serde_json::json!(brokers),
+    };
+
+    if let Ok(serialized) = serde_json::to_string(&message) {
+        match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
+            Ok(_) => { /* Implement Logging */ }
+            Err(err) => println!("Error sending message: {:?}", err),
+        }
+    } else {
+        println!("Failed to serialize brokers.");
+    }
+}
+
 pub fn run(static_files: String, config_path: String) -> tokio::task::JoinHandle<()> {
     let mqtt_map = mqtt::Map::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
@@ -174,6 +205,7 @@ pub fn run(static_files: String, config_path: String) -> tokio::task::JoinHandle
 
                 if let Some(addr) = addr {
                     println!("Received new WebSocket connection from {}", addr);
+                    send_brokers(&tx, &mqtt_map);
                     config::send_configs(&tx, &config_path);
 
                     peer_map.lock().unwrap().insert(addr, tx);
