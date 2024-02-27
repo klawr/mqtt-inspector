@@ -44,7 +44,7 @@
 	function addToPipeline(source: string, topic: string, timestamp: string) {
 		const pipeline = brokerRepository[source]?.pipeline;
 		const index = pipeline.findIndex((e) => !e.timestamp);
-		if (pipeline[index].topic !== topic) {
+		if (index === -1 || pipeline[index].topic !== topic) {
 			return;
 		}
 		pipeline[index].timestamp = timestamp;
