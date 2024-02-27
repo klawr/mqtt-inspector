@@ -23,7 +23,7 @@
 	import 'carbon-components-svelte/css/all.css';
 	import Messages from '../components/messages.svelte';
 	import AddBroker from '../components/add_broker.svelte';
-	import { Add, LogoGithub } from 'carbon-icons-svelte';
+	import { Add, Connect, LogoGithub } from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
@@ -114,10 +114,12 @@
 		});
 	}
 
+	let socketConnected = false;
 	function initializeWebSocket() {
 		socket = new WebSocket(`ws://${$page.url.host}/ws`);
 
 		socket.onopen = (event) => {
+			socketConnected = true;
 			console.log('WebSocket connection opened:', event);
 		};
 
@@ -143,6 +145,7 @@
 		};
 
 		socket.onclose = (event) => {
+			socketConnected = false;
 			console.log('WebSocket connection closed:', event);
 		};
 
@@ -161,13 +164,24 @@
 
 <Theme bind:theme />
 
-<AddBroker {socket} bind:open={addMqttBrokerModalOpen} />
+<AddBroker bind:socket bind:open={addMqttBrokerModalOpen} />
 
 <Header platformName="MQTT-Inspector" bind:isSideNavOpen>
 	<svelte:fragment slot="skip-to-content">
 		<SkipToContent />
 	</svelte:fragment>
 	<div style="flex: 1" />
+	{#if socketConnected}
+		<Button kind="ghost" icon={Connect} tooltipPosition="left" iconDescription="Connected" />
+	{:else}
+		<Button
+			on:click={initializeWebSocket}
+			kind="danger-ghost"
+			icon={Connect}
+			tooltipPosition="left"
+			iconDescription="Disconnected"
+		/>
+	{/if}
 	<Button
 		icon={LogoGithub}
 		tooltipPosition="left"
