@@ -67,19 +67,17 @@
 			brokerRepository[json.source] = { topics: [], selectedTopic: null, pipeline: [] };
 		}
 
-		const payload = decoder.decode(new Uint8Array(json.payload));
 		if (selectedBroker === undefined) {
 			selectedBroker = json.source;
 		}
 
-		if (selectedBroker == json.source) {
-			brokerRepository[json.source].topics = addToTopicTree(
-				json.topic,
-				brokerRepository[json.source].topics,
-				payload,
-				json.timestamp
-			);
-		}
+		const payload = decoder.decode(new Uint8Array(json.payload));
+		brokerRepository[json.source].topics = addToTopicTree(
+			json.topic,
+			brokerRepository[json.source].topics,
+			payload,
+			json.timestamp
+		);
 		if (selectedTopic) {
 			selectedTopic =
 				findbranchwithid(selectedTopic?.id.toString(), brokerRepository[json.source].topics) ||

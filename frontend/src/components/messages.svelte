@@ -33,7 +33,8 @@
 				<Accordion>
 					{#each broker.selectedTopic?.messages as message}
 						<AccordionItem
-							title={`${new Date(message.timestamp).toLocaleString()} ( -${message.delta_t} ms)`}
+							title={new Date(message.timestamp).toLocaleString() +
+								(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
 						>
 							<CodeSnippet wrapText type="multi" code={message.text} />
 						</AccordionItem>
