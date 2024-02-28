@@ -1,3 +1,4 @@
+import Messages from "../components/messages.svelte";
 import { findbranchwithid } from "./helper";
 import type { AppState, BrokerRepository, Treebranch } from "./state";
 
@@ -55,6 +56,33 @@ function addToPipeline(source: string, topic: string, timestamp: string, brokerR
     }
 }
 
+function createTreeBranchEntryText(branch: Treebranch) {
+    let text = branch.original_text;
+
+    if (!branch.children?.length && !branch.messages.length) {
+        return text;
+    }
+
+    text += " (";
+
+    if (branch.messages.length) {
+        text += `${branch.messages.length} message${branch.messages.length > 1 ? "s" : ""}`;
+        if (branch.children?.length) {
+            text += ", ";
+        }
+    }
+
+    if (branch.children?.length) {
+        const number_of_messages = branch.number_of_messages - branch.messages.length;
+        text += `${branch.children.length} subtopic${branch.children.length > 1 ? "s" : ""} with ${number_of_messages} message${number_of_messages > 1 ? "s" : ""}`;
+
+    }
+
+    text += ")";
+
+    return text;
+}
+
 function addToTopicBranch(
     topicsplit: string[],
     index: number,
@@ -62,7 +90,7 @@ function addToTopicBranch(
     payload: string,
     timestamp: string) {
     const key = topicsplit[index];
-    const found = topicbranch?.find((element) => element.original_text === key);
+    let found = topicbranch?.find((element) => element.original_text === key);
 
     if (index === topicsplit.length) {
         return;
@@ -71,37 +99,33 @@ function addToTopicBranch(
     if (found) {
         found.children = found.children || [];
         found.number_of_messages += 1;
-        found.text = `${found.original_text} (${found.number_of_messages} messages)`;
-        addToTopicBranch(topicsplit, index + 1, found.children, payload, timestamp);
     }
     else {
-        const newtreebranch = {
+        found = {
             id: topicsplit.slice(0, index + 1).join("/"),
             text: key + ' (1 message)',
             children: [],
             original_text: key,
             number_of_messages: 1,
-            messages: [{
-                timestamp, text: payload
-            }]
+            messages: []
         }
-        topicbranch?.push(newtreebranch);
-        addToTopicBranch(topicsplit, index + 1, newtreebranch.children, payload, timestamp);
+        topicbranch?.push(found);
     }
+    addToTopicBranch(topicsplit, index + 1, found.children, payload, timestamp);
 
-    topicbranch?.forEach((element) => {
-        if (element.children?.length === 0) {
-            element.children = undefined;
-        }
-    });
+    if (found.children?.length === 0) {
+        found.children = undefined;
+    }
 
     if (index === topicsplit.length - 1) {
+        const ff = found || topicbranch?.find((element) => element.original_text === key);
         const new_entry = { timestamp: timestamp, text: payload, delta_t: 0 }
-        if (found?.messages.length) {
-            new_entry.delta_t = new Date(timestamp).getTime() - new Date(found.messages[0].timestamp).getTime();
+        if (ff?.messages.length) {
+            new_entry.delta_t = new Date(timestamp).getTime() - new Date(ff.messages[0].timestamp).getTime();
         }
-        found?.messages.unshift(new_entry);
+        ff?.messages.unshift(new_entry);
     }
+    found.text = createTreeBranchEntryText(found);
 
     return topicbranch;
 }
