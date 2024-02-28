@@ -8,17 +8,14 @@
 		TextInput,
 		Tile
 	} from 'carbon-components-svelte';
-	import type { treebranch } from './topic_tree';
 	import { requestPublishMqttMessage } from '$lib/socket';
 	import { Add } from 'carbon-icons-svelte';
+	import type { BrokerRepositoryEntry, Command } from '$lib/state';
 
-	export let savedCommands: { id: string; text: string; topic: string; payload: string }[];
+	export let savedCommands: Command[];
 	export let socket: WebSocket;
 	export let selectedBroker: string;
-	export let broker: {
-		topics: treebranch[];
-		selectedTopic: treebranch | null;
-	};
+	export let broker: BrokerRepositoryEntry;
 
 	let topic: string;
 	let payload: string;

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import {
 		Button,
-		ButtonSet,
 		ComboBox,
 		StructuredList,
 		StructuredListBody,
@@ -11,15 +10,12 @@
 		StructuredListRow,
 		TextInput
 	} from 'carbon-components-svelte';
-	import { findbranchwithid, type treebranch } from './topic_tree';
 	import { Add, ArrowDown, ArrowUp, CheckmarkFilled, Save, TrashCan } from 'carbon-icons-svelte';
+	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
+	import { findbranchwithid } from '$lib/helper';
 
-	export let pipelines: { id: number; text: string; pipeline: { topic: string }[] }[];
-	export let broker: {
-		topics: treebranch[];
-		selectedTopic: treebranch | null;
-		pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
-	};
+	export let pipelines: SavedPipeline[];
+	export let broker: BrokerRepositoryEntry;
 
 	export let socket: WebSocket;
 

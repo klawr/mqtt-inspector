@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import TopicTree from '../components/topic_tree.svelte';
-	import { addToTopicTree, findbranchwithid, type treebranch } from '../components/topic_tree';
 	import {
 		Button,
 		Content,
@@ -28,89 +27,18 @@
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
 	import Pipeline from '../components/pipeline.svelte';
+	import { AppState, type Treebranch } from '$lib/state';
+	import {
+		processBrokers,
+		processConfigs,
+		processMQTTMessage,
+		processPipelines
+	} from '$lib/ws_msg_handling';
 
 	let socket: WebSocket;
-	let selectedBroker: string;
-	let savedCommands: { id: string; text: string; topic: string; payload: string }[] = [];
-	let pipelines: { id: number; text: string; pipeline: { topic: string }[] }[] = [];
-	const brokerRepository: {
-		[key: string]: {
-			topics: treebranch[];
-			selectedTopic: treebranch | null;
-			pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
-		};
-	} = {};
-
-	function addToPipeline(source: string, topic: string, timestamp: string) {
-		const pipeline = brokerRepository[source]?.pipeline;
-		const index = pipeline.findIndex((e) => !e.timestamp);
-		if (index === -1 || pipeline[index].topic !== topic) {
-			return;
-		}
-		pipeline[index].timestamp = timestamp;
-		pipeline[index].topic = topic;
-
-		if (index === 0) {
-			pipeline[index].delta_t = 0;
-		} else {
-			const prevMessage = pipeline[index - 1];
-			const nextMessage = pipeline[index];
-			const prevTimestamp = new Date(prevMessage.timestamp!).getTime();
-			const nextTimestamp = new Date(nextMessage.timestamp!).getTime();
-			pipeline[index].delta_t = nextTimestamp - prevTimestamp;
-		}
-	}
+	let app = new AppState();
 
 	const decoder = new TextDecoder('utf-8');
-	function processMQTTMessage(json: any, decoder: TextDecoder) {
-		if (!brokerRepository[json.source]) {
-			brokerRepository[json.source] = { topics: [], selectedTopic: null, pipeline: [] };
-		}
-
-		if (selectedBroker === undefined) {
-			selectedBroker = json.source;
-		}
-
-		const payload = decoder.decode(new Uint8Array(json.payload));
-		brokerRepository[json.source].topics = addToTopicTree(
-			json.topic,
-			brokerRepository[json.source].topics,
-			payload,
-			json.timestamp
-		);
-		if (selectedTopic) {
-			selectedTopic =
-				findbranchwithid(selectedTopic?.id.toString(), brokerRepository[json.source].topics) ||
-				selectedTopic;
-		}
-
-		addToPipeline(json.source, json.topic, json.timestamp);
-	}
-
-	function processConfigs(params: any) {
-		savedCommands = JSON.parse(params).map((e: any, id: number) => ({
-			id: `${id}`,
-			text: e.name,
-			topic: e.topic,
-			payload: e.payload
-		}));
-	}
-
-	function processPipelines(params: any) {
-		pipelines = params.map((e: any, id: number) => ({
-			id,
-			text: e.name,
-			pipeline: e.pipeline
-		}));
-	}
-
-	function processBrokers(params: any) {
-		params.forEach((broker: string) => {
-			if (!brokerRepository[broker]) {
-				brokerRepository[broker] = { topics: [], selectedTopic: null, pipeline: [] };
-			}
-		});
-	}
 
 	let socketConnected = false;
 	function initializeWebSocket() {
@@ -126,16 +54,16 @@
 			const json = JSON.parse(message);
 			switch (json.method) {
 				case 'mqtt_brokers':
-					processBrokers(json.params);
+					app.brokerRepository = processBrokers(json.params, app.brokerRepository);
 					break;
 				case 'mqtt_message':
-					processMQTTMessage(json.params, decoder);
+					app = processMQTTMessage(json.params, decoder, app);
 					break;
 				case 'commands':
-					processConfigs(json.params);
+					app.commands = processConfigs(json.params);
 					break;
 				case 'pipelines':
-					processPipelines(json.params);
+					app.pipelines = processPipelines(json.params);
 					break;
 				default:
 					break;
@@ -155,7 +83,7 @@
 	onMount(initializeWebSocket);
 
 	let isSideNavOpen = false;
-	let selectedTopic: treebranch | null = null;
+	let selectedTopic: Treebranch | null = null;
 	let addMqttBrokerModalOpen = false;
 	let theme: CarbonTheme = 'g90';
 </script>
@@ -190,13 +118,13 @@
 
 <SideNav bind:isOpen={isSideNavOpen}>
 	<SideNavItems>
-		{#each Object.keys(brokerRepository) as broker}
+		{#each Object.keys(app.brokerRepository) as broker}
 			<SideNavLink
 				text={broker}
-				isSelected={selectedBroker === broker}
+				isSelected={app.selectedBroker === broker}
 				on:click={() => {
-					selectedTopic = brokerRepository[broker].selectedTopic;
-					selectedBroker = broker;
+					selectedTopic = app.brokerRepository[broker].selectedTopic;
+					app.selectedBroker = broker;
 				}}
 			/>
 		{/each}
@@ -222,7 +150,7 @@
 </SideNav>
 
 <Content style="padding: 0">
-	{#if brokerRepository[selectedBroker]}
+	{#if app.brokerRepository[app.selectedBroker]}
 		<Grid fullWidth>
 			<div style="height: calc(100vh - 8em) !important; display: flex; flex-direction: column">
 				<div style="display: flex">
@@ -232,12 +160,12 @@
 							<Tab label="Pipeline" />
 							<svelte:fragment slot="content">
 								<TabContent>
-									<TopicTree bind:broker={brokerRepository[selectedBroker]} />
+									<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
 								</TabContent>
 								<TabContent>
 									<Pipeline
-										bind:pipelines
-										bind:broker={brokerRepository[selectedBroker]}
+										bind:pipelines={app.pipelines}
+										bind:broker={app.brokerRepository[app.selectedBroker]}
 										bind:socket
 									/>
 								</TabContent>
@@ -245,15 +173,15 @@
 						</Tabs>
 					</div>
 					<div style="flex: 1; margin: 1em; min-width: 30em">
-						<Messages bind:broker={brokerRepository[selectedBroker]} />
+						<Messages bind:broker={app.brokerRepository[app.selectedBroker]} />
 					</div>
 				</div>
 				<div style="flex: 1;" />
 				<PublishMessage
-					bind:savedCommands
-					bind:selectedBroker
+					bind:savedCommands={app.commands}
+					bind:selectedBroker={app.selectedBroker}
 					bind:socket
-					bind:broker={brokerRepository[selectedBroker]}
+					bind:broker={app.brokerRepository[app.selectedBroker]}
 				/>
 			</div>
 		</Grid>

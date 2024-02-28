@@ -1,12 +1,10 @@
 <script lang="ts">
 	import { Button, ButtonSet, TreeView } from 'carbon-components-svelte';
-	import { findbranchwithid, type treebranch } from './topic_tree';
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
+	import type { BrokerRepositoryEntry } from '$lib/state';
+	import { findbranchwithid } from '$lib/helper';
 
-	export let broker: {
-		topics: treebranch[];
-		selectedTopic: treebranch | null;
-	};
+	export let broker: BrokerRepositoryEntry;
 	let activeId = broker.selectedTopic?.id || '';
 	let selectedIds: string[] = [];
 

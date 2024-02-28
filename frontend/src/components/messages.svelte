@@ -1,17 +1,8 @@
 <script lang="ts">
-	import {
-		Accordion,
-		AccordionItem,
-		CodeSnippet,
-		ExpandableTile,
-		Tile
-	} from 'carbon-components-svelte';
-	import type { treebranch } from './topic_tree';
+	import type { BrokerRepositoryEntry } from '$lib/state';
+	import { Accordion, AccordionItem, CodeSnippet, Tile } from 'carbon-components-svelte';
 
-	export let broker: {
-		topics: treebranch[];
-		selectedTopic: treebranch | null;
-	};
+	export let broker: BrokerRepositoryEntry;
 </script>
 
 {#if broker.selectedTopic}
