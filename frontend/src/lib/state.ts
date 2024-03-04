@@ -63,7 +63,7 @@ export type BrokerRepositoryEntry = {
     topics: Treebranch[];
     selectedTopic: Treebranch | null;
     pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
-
+    connected: boolean;
 }
 
 export type BrokerRepository = {

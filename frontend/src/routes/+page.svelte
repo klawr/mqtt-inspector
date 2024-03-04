@@ -43,7 +43,7 @@ THE SOFTWARE.
 	import 'carbon-components-svelte/css/all.css';
 	import Messages from '../components/messages.svelte';
 	import AddBroker from '../components/add_broker.svelte';
-	import { Add, Connect, LogoGithub } from 'carbon-icons-svelte';
+	import { Add, CircleDash, CircleSolid, Connect, LogoGithub } from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
@@ -52,6 +52,7 @@ THE SOFTWARE.
 	import {
 		processBrokers,
 		processConfigs,
+		processConnectionStatus,
 		processMQTTMessage,
 		processPipelines
 	} from '$lib/ws_msg_handling';
@@ -74,6 +75,8 @@ THE SOFTWARE.
 			const message = event.data;
 			const json = JSON.parse(message);
 			switch (json.method) {
+				case 'mqtt_connection_status':
+					app = processConnectionStatus(json.params, app);
 				case 'mqtt_brokers':
 					app.brokerRepository = processBrokers(json.params, app.brokerRepository);
 					break;
@@ -118,20 +121,29 @@ THE SOFTWARE.
 		<SkipToContent />
 	</svelte:fragment>
 	<div style="flex: 1" />
+
 	{#if socketConnected}
-		<Button kind="ghost" icon={Connect} tooltipPosition="left" iconDescription="Connected" />
+		<Button
+			kind="ghost"
+			icon={Connect}
+			tooltipPosition="bottom"
+			tooltipAlignment="end"
+			iconDescription="WebSocket Connected"
+		/>
 	{:else}
 		<Button
 			on:click={initializeWebSocket}
 			kind="danger-ghost"
 			icon={Connect}
-			tooltipPosition="left"
-			iconDescription="Disconnected"
+			tooltipPosition="bottom"
+			tooltipAlignment="end"
+			iconDescription="WebSocket Disconnected"
 		/>
 	{/if}
 	<Button
 		icon={LogoGithub}
-		tooltipPosition="left"
+		tooltipPosition="bottom"
+		tooltipAlignment="end"
 		iconDescription="Fork me on GitHub!"
 		href="https://github.com/klawr/mqtt-inspector"
 	></Button>
@@ -141,6 +153,7 @@ THE SOFTWARE.
 	<SideNavItems>
 		{#each Object.keys(app.brokerRepository) as broker}
 			<SideNavLink
+				icon={app.brokerRepository[broker].connected ? CircleSolid : CircleDash}
 				text={broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {

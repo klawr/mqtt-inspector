@@ -27,6 +27,7 @@ export type Command = { id: string; text: string; topic: string; payload: string
 
 export type CommandParam = { id: string; name: string; topic: string; payload: string; };
 export type BrokerParam = string[];
+export type MqttConnectionStatus = { source: string; connected: boolean; };
 type PipelineParamEntry = { topic: string; };
 export type PipelineParam = { id: string; name: string; pipeline: PipelineParamEntry[]; };
 export type MQTTMessageParam = {
@@ -46,11 +47,16 @@ export function processConfigs(params: string) {
     }));
 }
 
+export function processConnectionStatus(params: MqttConnectionStatus, app: AppState) {
+    app.brokerRepository[params.source].connected = params.connected;
+
+    return app;
+}
 
 export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepository) {
     params.forEach((broker) => {
         if (!brokerRepository[broker]) {
-            brokerRepository[broker] = { topics: [], selectedTopic: null, pipeline: [] };
+            brokerRepository[broker] = { topics: [], selectedTopic: null, pipeline: [], connected: false };
         }
     });
 
@@ -168,8 +174,9 @@ export function processMQTTMessage(
     app: AppState) {
 
     if (!app.brokerRepository[message.source]) {
-        app.brokerRepository[message.source] = { topics: [], selectedTopic: null, pipeline: [] };
+        app.brokerRepository[message.source] = { topics: [], selectedTopic: null, pipeline: [], connected: true };
     }
+    app.brokerRepository[message.source].connected = true;
 
     if (app.selectedBroker === undefined) {
         app.selectedBroker = message.source;

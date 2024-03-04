@@ -66,9 +66,36 @@ fn send_message_to_peers(peer_map: &PeerMap, source: &str, topic: &str, payload:
     });
 }
 
+fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
+    peer_map.lock().unwrap().iter().for_each(|(addr, tx)| {
+        let message = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "mqtt_connection_status".to_string(),
+            params: serde_json::json!({
+                "source": source,
+                "connected": status,
+            }),
+        };
+
+        if let Ok(serialized) = serde_json::to_string(&message) {
+            match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
+                Ok(_) => { /* Implement Logging */ }
+                Err(err) => {
+                    if tx.is_closed() {
+                        println!("Peer {} is closed. Removing from peer map.", addr);
+                        peer_map.lock().unwrap().remove(addr);
+                    }
+                    println!("Error sending message to {}: {:?}", addr, err);
+                }
+            }
+        }
+    });
+}
+
 fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
     let source = format!("{}:{}", ip, port);
+
     for (_i, notification) in connection.iter().enumerate() {
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
@@ -83,7 +110,8 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
                 send_message_to_peers(peer_map, &source, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
-                println!("Connection event: {:?}", a);
+                send_broker_status_to_peers(peer_map, &source, true);
+                println!("Connection event: {:?} for {:?}", a.code, source);
             }
             Ok(_) => {
                 // Handle other types of events if necessary
@@ -97,9 +125,13 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
                 send_message_to_peers(peer_map, &source, "error", &payload);
             }
             Err(err) => {
-                println!("Unhandled connection error: {:?}", err);
-                // TODO: Handle errors properly
-                break;
+                println!(
+                    "Connection error: {:?} for {:?}. Try again in 5 seconds.",
+                    err.to_string(),
+                    source
+                );
+                send_broker_status_to_peers(peer_map, &source, false);
+                std::thread::sleep(std::time::Duration::from_secs(5));
             }
         }
     }
