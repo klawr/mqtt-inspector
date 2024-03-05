@@ -32,7 +32,7 @@ THE SOFTWARE.
 	const port_default = '1883';
 
 	function submit() {
-		const hostname = `${ip || ip_default}:${port || port_default}`;
+		const hostname = `${ip?.trim() || ip_default}:${port?.trim() || port_default}`;
 		requestMqttBrokerConnection(hostname, socket);
 		open = false;
 	}
