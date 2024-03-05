@@ -32,7 +32,7 @@ THE SOFTWARE.
 	import { requestCommandAddition, requestPublishMqttMessage } from '$lib/socket';
 	import { Add, TrashCan } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
-	import OverwriteCommand from './overwrite_command.svelte';
+	import OverwriteCommand from './dialogs/overwrite_command.svelte';
 
 	export let savedCommands: Command[];
 	export let socket: WebSocket;

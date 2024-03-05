@@ -43,7 +43,7 @@ THE SOFTWARE.
 	} from 'carbon-components-svelte';
 	import 'carbon-components-svelte/css/all.css';
 	import Messages from '../components/messages.svelte';
-	import AddBroker from '../components/add_broker.svelte';
+	import AddBroker from '../components/dialogs/add_broker.svelte';
 	import { Add, CircleDash, CircleSolid, Connect, LogoGithub, TrashCan } from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
@@ -58,7 +58,7 @@ THE SOFTWARE.
 		processMQTTMessage,
 		processPipelines
 	} from '$lib/ws_msg_handling';
-	import RemoveBroker from '../components/remove_broker.svelte';
+	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
 	import { requestMqttBrokerConnection } from '$lib/socket';
 
 	let socket: WebSocket;

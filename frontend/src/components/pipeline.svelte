@@ -42,8 +42,8 @@ THE SOFTWARE.
 	} from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
 	import { findbranchwithid } from '$lib/helper';
-	import RemovePipeline from './remove_pipeline.svelte';
-	import OverwritePipeline from './overwrite_pipeline.svelte';
+	import RemovePipeline from './dialogs/remove_pipeline.svelte';
+	import OverwritePipeline from './dialogs/overwrite_pipeline.svelte';
 	import CleanPipelineRows from './cleanPipelineRows.svelte';
 	import { requestPipelineAddition } from '$lib/socket';
 
