@@ -322,14 +322,24 @@ fn deserialize_json_rpc_and_process(
             let (host, topic, payload) = jsonrpc::get_host_topic_and_payload(message.params);
             mqtt::publish_message(&host, &topic, &payload, mqtt_map);
         }
-        "save_publish" => {
+        "save_command" => {
             let command_path: String = std::format!("{}/commands", config_path);
             config::add_to_commands(&command_path, message.params);
+            broadcast_commands(peer_map, &config_path);
+        }
+        "remove_command" => {
+            let command_path: String = std::format!("{}/commands", config_path);
+            config::remove_from_commands(&command_path, message.params);
             broadcast_commands(peer_map, &config_path);
         }
         "save_pipeline" => {
             let pipelines_path = std::format!("{}/pipelines", config_path);
             config::add_to_pipelines(&pipelines_path, message.params);
+            broadcast_pipelines(peer_map, &config_path);
+        }
+        "remove_pipeline" => {
+            let pipelines_path = std::format!("{}/pipelines", config_path);
+            config::remove_from_pipelines(&pipelines_path, message.params);
             broadcast_pipelines(peer_map, &config_path);
         }
         _ => {

@@ -111,6 +111,14 @@ pub fn add_to_commands(commands_path: &String, params: serde_json::Value) {
     }
 }
 
+pub fn remove_from_commands(commands_path: &String, params: serde_json::Value) {
+    let command = params["name"].as_str().unwrap();
+    let command_path = std::format!("{}/{}.json", commands_path, command);
+    if let Err(_) = fs::remove_file(&command_path) {
+        eprintln!("Failed to remove command file from {}", command_path);
+    }
+}
+
 pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
     if let Ok(new_pipeline) = serde_json::from_value::<PipelineMessage>(params) {
         let new_pipeline_path = std::format!("{}/{}.json", pipelines_path, new_pipeline.name);
@@ -126,6 +134,14 @@ pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
         }
     } else {
         println!("Could not deserialize new pipeline.");
+    }
+}
+
+pub fn remove_from_pipelines(pipelines_path: &String, params: serde_json::Value) {
+    let pipeline = params["name"].as_str().unwrap();
+    let pipeline_path = std::format!("{}/{}.json", pipelines_path, pipeline);
+    if let Err(_) = fs::remove_file(&pipeline_path) {
+        eprintln!("Failed to remove pipeline file from {}", pipeline_path);
     }
 }
 

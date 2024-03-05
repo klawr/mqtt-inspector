@@ -34,6 +34,7 @@ THE SOFTWARE.
 	import { Add, ArrowDown, ArrowUp, CheckmarkFilled, Save, TrashCan } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
 	import { findbranchwithid } from '$lib/helper';
+	import RemovePipeline from './remove_pipeline.svelte';
 
 	export let pipelines: SavedPipeline[];
 	export let broker: BrokerRepositoryEntry;
@@ -87,10 +88,18 @@ THE SOFTWARE.
 
 	let nextStepText = '';
 	function add_to_pipeline() {
-		broker.pipeline.push({
-			topic: nextStepText
-		});
+		broker.pipeline = [
+			...broker.pipeline,
+			{
+				topic: nextStepText
+			}
+		];
 		nextStepText = '';
+	}
+
+	let removePipelineOpen = false;
+	function remove_pipeline() {
+		removePipelineOpen = true;
 	}
 
 	let selectedRow = '';
@@ -120,6 +129,8 @@ THE SOFTWARE.
 	}
 </script>
 
+<RemovePipeline bind:open={removePipelineOpen} bind:socket bind:pipelines bind:selectedId />
+
 <div style="display: flex">
 	<div style="flex: 1">
 		<Button size="field" on:click={reset} kind="secondary">Reset</Button>
@@ -130,6 +141,18 @@ THE SOFTWARE.
 			on:select={pipelineSelected}
 			bind:items={pipelines}
 			placeholder="Select pipeline"
+		/>
+	</div>
+	<div style="margin-top: auto; margin-bottom: 0; flex: 0">
+		<Button
+			disabled={selectedId === undefined}
+			tooltipAlignment="end"
+			tooltipPosition="bottom"
+			iconDescription="Delete selected pipeline"
+			kind="danger-ghost"
+			size="field"
+			icon={TrashCan}
+			on:click={remove_pipeline}
 		/>
 	</div>
 </div>

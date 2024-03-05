@@ -30,6 +30,17 @@ export function requestMqttBrokerRemoval(hostname: string, socket: WebSocket) {
     }`)
 }
 
+export function requestPipelineRemoval(pipeline: string, socket: WebSocket) {
+    socket.send(`{
+        "jsonrpc": "2.0",
+        "method": "remove_pipeline",
+        "params": {
+            "name": "${pipeline}"
+        }
+    }`)
+
+}
+
 export function requestMqttBrokerConnection(hostname: string, socket: WebSocket) {
     // TODO: Implement id generation
     socket.send(`{
