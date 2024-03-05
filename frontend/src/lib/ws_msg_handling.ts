@@ -41,8 +41,7 @@ export type MQTTMessageParam = {
     timestamp: string;
 }
 
-export function processConfigs(params: string) {
-    const commands = JSON.parse(params) as CommandParam[];
+export function processConfigs(commands: CommandParam[]) {
     return commands.map((e, id: number) => ({
         id: `${id}`,
         text: e.name,

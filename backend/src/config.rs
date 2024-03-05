@@ -94,25 +94,28 @@ pub fn remove_from_brokers(brokers_path: &String, broker: String) {
 }
 
 pub fn add_to_commands(commands_path: &String, params: serde_json::Value) {
-    let mut commands: Vec<CommandMessage> =
-        if let Ok(file_content) = fs::read_to_string(commands_path) {
-            serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
-        } else {
-            eprintln!("Failed to read file {}", commands_path);
-            Vec::new()
-        };
-
-    if let Ok(new_command_message) = serde_json::from_value::<CommandMessage>(params) {
-        commands.push(new_command_message);
-        if let Ok(content) = serde_json::to_string(&commands) {
-            if let Err(_) = fs::write(commands_path, content) {
-                eprintln!("Failed to save new commands file to {}", commands_path);
+    if let Ok(new_command) = serde_json::from_value::<CommandMessage>(params) {
+        let new_command_path = std::format!("{}/{}.json", commands_path, new_command.name);
+        if let Some(parent_dir) = std::path::Path::new(&new_command_path).parent() {
+            fs::create_dir_all(parent_dir).expect("Failed to create directory path");
+        }
+        if let Ok(content) = serde_json::to_string(&new_command) {
+            if let Err(_) = fs::write(&new_command_path, content) {
+                eprintln!("Failed to save new commands file to {}", new_command_path);
             }
         } else {
             eprintln!("Failed to serialize updated saved commands.");
         }
     } else {
-        eprintln!("Could not deserialize new command.");
+        println!("Could not deserialize new command.");
+    }
+}
+
+pub fn remove_from_commands(commands_path: &String, params: serde_json::Value) {
+    let command = params["name"].as_str().unwrap();
+    let command_path = std::format!("{}/{}.json", commands_path, command);
+    if let Err(_) = fs::remove_file(&command_path) {
+        eprintln!("Failed to remove command file from {}", command_path);
     }
 }
 
@@ -134,11 +137,30 @@ pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
     }
 }
 
+pub fn remove_from_pipelines(pipelines_path: &String, params: serde_json::Value) {
+    let pipeline = params["name"].as_str().unwrap();
+    let pipeline_path = std::format!("{}/{}.json", pipelines_path, pipeline);
+    if let Err(_) = fs::remove_file(&pipeline_path) {
+        eprintln!("Failed to remove pipeline file from {}", pipeline_path);
+    }
+}
+
 pub fn send_commands(
     sender: &UnboundedSender<warp::filters::ws::Message>,
     commands_path: &String,
 ) -> () {
-    if let Ok(commands) = fs::read_to_string(commands_path) {
+    if let Ok(commands) = fs::read_dir(commands_path) {
+        let commands: Vec<CommandMessage> = commands
+            .filter_map(|dir_entry| {
+                if let Ok(file) = dir_entry {
+                    if let Ok(file_content) = fs::read_to_string(file.path()) {
+                        return serde_json::from_str(&file_content).ok();
+                    }
+                }
+                None
+            })
+            .collect();
+
         let jsonrpc = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method: "commands".to_string(),
@@ -195,6 +217,6 @@ pub fn send_configs(
     sender: &UnboundedSender<warp::filters::ws::Message>,
     config_path: &String,
 ) -> () {
-    send_commands(sender, &format!("{}/commands.json", config_path));
+    send_commands(sender, &format!("{}/commands", config_path));
     send_pipelines(sender, &format!("{}/pipelines", config_path));
 }

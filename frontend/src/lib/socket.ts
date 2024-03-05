@@ -20,6 +20,28 @@
  * THE SOFTWARE.
  */
 
+export function requestCommandAddition(save_command_name: string, topic: string, payload: string, socket: WebSocket) {
+    const message = JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'save_command',
+        params: { name: save_command_name, topic, payload }
+    });
+    socket.send(message);
+}
+
+export function requestPipelineAddition(pipelineName: string, newPipeline: { topic: string }[], socket: WebSocket) {
+    const message = JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'save_pipeline',
+        params: {
+            name: pipelineName,
+            pipeline: newPipeline
+        }
+    });
+
+    socket.send(message);
+}
+
 export function requestMqttBrokerRemoval(hostname: string, socket: WebSocket) {
     socket.send(`{
         "jsonrpc": "2.0",
@@ -28,6 +50,17 @@ export function requestMqttBrokerRemoval(hostname: string, socket: WebSocket) {
             "hostname": "${hostname}"
         }
     }`)
+}
+
+export function requestPipelineRemoval(pipeline: string, socket: WebSocket) {
+    socket.send(`{
+        "jsonrpc": "2.0",
+        "method": "remove_pipeline",
+        "params": {
+            "name": "${pipeline}"
+        }
+    }`)
+
 }
 
 export function requestMqttBrokerConnection(hostname: string, socket: WebSocket) {
