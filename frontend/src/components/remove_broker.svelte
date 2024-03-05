@@ -20,27 +20,26 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { requestMqttBrokerConnection } from '$lib/socket';
-	import { Modal, TextInput } from 'carbon-components-svelte';
+	import { requestMqttBrokerRemoval } from '$lib/socket';
+	import type { AppState } from '$lib/state';
+	import { Modal } from 'carbon-components-svelte';
 
 	export let open = false;
 	export let socket: WebSocket;
-
-	let ip: string | undefined = undefined;
-	const ip_default = '127.0.0.1';
-	let port: string | undefined = undefined;
-	const port_default = '1883';
+	export let app: AppState;
 
 	function submit() {
-		const hostname = `${ip?.trim() || ip_default}:${port?.trim() || port_default}`;
-		requestMqttBrokerConnection(hostname, socket);
+		requestMqttBrokerRemoval(app.selectedBroker, socket);
+		delete app.brokerRepository[app.selectedBroker];
+		app.selectedBroker = '';
 		open = false;
 	}
 </script>
 
 <Modal
 	bind:open
-	modalHeading="Add MQTT Broker"
+	danger
+	modalHeading="Remove MQTT Broker"
 	primaryButtonText="Confirm"
 	secondaryButtonText="Cancel"
 	on:click:button--secondary={() => (open = false)}
@@ -48,6 +47,15 @@ THE SOFTWARE.
 	on:close
 	on:submit={submit}
 >
-	<TextInput labelText="Ip" placeholder={ip_default} bind:value={ip} />
-	<TextInput labelText="Port" placeholder={port_default} bind:value={port} />
+	{#if app.brokerRepository[app.selectedBroker]?.markedForDeletion}
+		<h5>
+			Are you sure you want to remove the broker: {app.selectedBroker}?
+		</h5>
+		<h5>It is already disconnected, but this will still remove all messages in this webpage.</h5>
+	{:else}
+		<h5>
+			Are you sure you want to remove the broker: {app.selectedBroker}?
+		</h5>
+		<h5>This will remove it from all peers connected to this MQTT-Inspector instance.</h5>
+	{/if}
 </Modal>

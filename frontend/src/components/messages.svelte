@@ -27,7 +27,10 @@ THE SOFTWARE.
 </script>
 
 {#if broker.selectedTopic}
-	<h4>{broker.selectedTopic?.id}</h4>
+	<div style="height: 8em;">
+		<h4>Selected topic:</h4>
+		<CodeSnippet light code={broker.selectedTopic?.id}></CodeSnippet>
+	</div>
 
 	{#if broker.selectedTopic?.messages.length}
 		<Tile light>
@@ -40,15 +43,17 @@ THE SOFTWARE.
 
 	{#if broker.selectedTopic?.messages.length > 1}
 		<Tile light>
-			<h5>History</h5>
-			<div style="overflow-y: auto; max-height: 50vh">
+			<h5>History ({broker.selectedTopic.messages.length})</h5>
+			<div style="overflow-y: auto; max-height: 50vh;">
 				<Accordion>
 					{#each broker.selectedTopic?.messages as message}
 						<AccordionItem
 							title={new Date(message.timestamp).toLocaleString() +
 								(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
 						>
-							<CodeSnippet wrapText type="multi" code={message.text} />
+							<div style="margin-right: -12em">
+								<CodeSnippet wrapText type="multi" code={message.text} />
+							</div>
 						</AccordionItem>
 					{/each}
 				</Accordion>

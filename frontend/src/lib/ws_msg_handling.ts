@@ -26,7 +26,12 @@ import type { AppState, BrokerRepository, Treebranch } from "./state";
 export type Command = { id: string; text: string; topic: string; payload: string; };
 
 export type CommandParam = { id: string; name: string; topic: string; payload: string; };
-export type BrokerParam = string[];
+export type BrokerParam = {
+    broker: string; connected: boolean; topics: {
+        [key: string]: { payload: ArrayBuffer; timestamp: string; }[];
+    }
+}[]
+export type MqttConnectionStatus = { source: string; connected: boolean; };
 type PipelineParamEntry = { topic: string; };
 export type PipelineParam = { id: string; name: string; pipeline: PipelineParamEntry[]; };
 export type MQTTMessageParam = {
@@ -46,12 +51,45 @@ export function processConfigs(params: string) {
     }));
 }
 
+export function processBrokerRemoval(params: string, app: AppState) {
+    if (app.brokerRepository[params]) {
+        app.brokerRepository[params].markedForDeletion = true;
+    }
 
-export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepository) {
-    params.forEach((broker) => {
-        if (!brokerRepository[broker]) {
-            brokerRepository[broker] = { topics: [], selectedTopic: null, pipeline: [] };
+    return app;
+}
+
+export function processConnectionStatus(params: MqttConnectionStatus, app: AppState) {
+    app.brokerRepository[params.source].connected = params.connected;
+    if (params.connected) {
+        app.brokerRepository[params.source].markedForDeletion = false;
+    }
+
+    return app;
+}
+
+export function processBrokers(params: BrokerParam, decoder: TextDecoder, brokerRepository: BrokerRepository) {
+    params.forEach((param) => {
+        if (!brokerRepository[param.broker]) {
+            brokerRepository[param.broker] = { topics: [], selectedTopic: null, pipeline: [], connected: param.connected };
         }
+        else {
+            brokerRepository[param.broker].connected = param.connected;
+        }
+
+        for (const topic of Object.keys(param.topics)) {
+            for (const message of param.topics[topic]) {
+                brokerRepository[param.broker].topics = addToTopicTree(
+                    topic,
+                    brokerRepository[param.broker].topics,
+                    decoder.decode(new Uint8Array(message.payload)),
+                    message.timestamp
+                );
+
+            }
+        }
+
+        brokerRepository[param.broker].markedForDeletion = false;
     });
 
     return brokerRepository;
@@ -145,6 +183,9 @@ function addToTopicBranch(
             new_entry.delta_t = new Date(timestamp).getTime() - new Date(ff.messages[0].timestamp).getTime();
         }
         ff?.messages.unshift(new_entry);
+        while (ff.messages.length > 100) {
+            ff.messages.pop();
+        }
     }
     found.text = createTreeBranchEntryText(found);
 
@@ -168,8 +209,9 @@ export function processMQTTMessage(
     app: AppState) {
 
     if (!app.brokerRepository[message.source]) {
-        app.brokerRepository[message.source] = { topics: [], selectedTopic: null, pipeline: [] };
+        app.brokerRepository[message.source] = { topics: [], selectedTopic: null, pipeline: [], connected: true };
     }
+    app.brokerRepository[message.source].connected = true;
 
     if (app.selectedBroker === undefined) {
         app.selectedBroker = message.source;

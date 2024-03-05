@@ -43,9 +43,7 @@ THE SOFTWARE.
 
 	function send(e: Event) {
 		stopPropagation(e);
-		const ip = selectedBroker.split(':')[0];
-		const port = selectedBroker.split(':')[1];
-		requestPublishMqttMessage(ip, port, topic, payload, socket);
+		requestPublishMqttMessage(selectedBroker, topic, payload, socket);
 	}
 
 	function setTopicToSelectedTopic() {
