@@ -66,7 +66,7 @@ fn send_message_to_peers(peer_map: &PeerMap, source: &str, topic: &str, payload:
     });
 }
 
-fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
+fn send_broker_status_to_peers(peer_map: &PeerMap, source: &String, status: bool) {
     peer_map.lock().unwrap().iter().for_each(|(addr, tx)| {
         let message = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
@@ -94,7 +94,7 @@ fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
 
 fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_map: &mqtt::Map) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
-    let source = format!("{}:{}", ip, port);
+    let hostname = format!("{}:{}", ip, port);
 
     for (_i, notification) in connection.iter().enumerate() {
         match notification {
@@ -107,23 +107,19 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_ma
                 } else {
                     bytes::Bytes::from(p.payload)
                 };
-                send_message_to_peers(peer_map, &source, &p.topic, &payload);
+                send_message_to_peers(peer_map, &hostname, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
-                // Update the connection status of the broker
-                let mqtt_host: SocketAddr = format!("{}:{}", ip, port)
-                    .parse()
-                    .expect("Failed to parse MQTT host and port");
                 mqtt_map
                     .lock()
                     .unwrap()
-                    .entry(mqtt_host)
+                    .entry(hostname.clone())
                     .and_modify(|broker| {
                         broker.connected = true;
                     });
                 // Small update for the peers already connected
-                send_broker_status_to_peers(peer_map, &source, true);
-                println!("Connection event: {:?} for {:?}", a.code, source);
+                send_broker_status_to_peers(peer_map, &hostname, true);
+                println!("Connection event: {:?} for {:?}", a.code, hostname);
             }
             Ok(_) => {
                 // Handle other types of events if necessary
@@ -134,27 +130,23 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_ma
                 let payload =
                     bytes::Bytes::from(std::format!("Payload size limit exceeded: {}", p));
                 println!("Payload size limit exceeded: {}", p);
-                send_message_to_peers(peer_map, &source, "error", &payload);
+                send_message_to_peers(peer_map, &hostname, "error", &payload);
             }
             Err(err) => {
-                // TODO SocketAddr should be string?
                 // Update the connection status of the broker
-                let mqtt_host: SocketAddr = format!("{}:{}", ip, port)
-                    .parse()
-                    .expect("Failed to parse MQTT host and port");
                 mqtt_map
                     .lock()
                     .unwrap()
-                    .entry(mqtt_host)
+                    .entry(hostname.clone())
                     .and_modify(|broker| {
                         broker.connected = false;
                     });
                 // Small update for the peers already connected
-                send_broker_status_to_peers(peer_map, &source, false);
+                send_broker_status_to_peers(peer_map, &hostname, false);
                 println!(
                     "Connection error: {:?} for {:?}. Try again in 5 seconds.",
                     err.to_string(),
-                    source
+                    hostname
                 );
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
@@ -168,18 +160,13 @@ pub fn connect_to_known_brokers(broker_path: String, peer_map: PeerMap, mqtt_map
     let known_brokers = config::get_known_brokers(&broker_path);
 
     known_brokers.iter().for_each(|broker| {
-        let (ip, port) = broker.split_once(':').unwrap();
-        connect_to_broker(ip, port, peer_map_clone.clone(), mqtt_map_clone.clone());
+        connect_to_broker(broker, peer_map_clone.clone(), mqtt_map_clone.clone());
     });
 }
 
-fn connect_to_mqtt_client(mqtt_host: &SocketAddr, mqtt_map: mqtt::Map, peer_map: PeerMap) -> () {
-    let ip = mqtt_host.ip().to_string();
-    let port = mqtt_host.port();
+fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::Map, peer_map: PeerMap) -> () {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
-    let mqtt_client = mqtt_lock
-        .iter()
-        .find(|entry| entry.0.ip().to_string() == ip && entry.0.port() == port);
+    let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
     if mqtt_client.is_some() {
         println!("MQTT-Client for {} already exists.", mqtt_host);
@@ -188,30 +175,27 @@ fn connect_to_mqtt_client(mqtt_host: &SocketAddr, mqtt_map: mqtt::Map, peer_map:
             "MQTT-Client for {} does not exist. Creating new client.",
             mqtt_host
         );
-        let (client, connection) = mqtt::connect_to_mqtt_host(&ip, port);
+        let (client, connection) = mqtt::connect_to_mqtt_host(&mqtt_host);
         let broker = mqtt::MqttBroker {
             client,
             broker: mqtt_host.to_string(),
             connected: false,
-            messages: Vec::new(),
+            topics: Vec::new(),
         };
-        mqtt_lock.insert(*mqtt_host, broker);
+        mqtt_lock.insert(mqtt_host.clone(), broker);
         drop(mqtt_lock);
 
         loop_forever(connection, &peer_map, &mqtt_map);
     }
 }
 
-fn connect_to_broker(mqtt_ip: &str, mqtt_port: &str, peer_map: PeerMap, mqtt_map: mqtt::Map) {
-    // TODO SocketAddr should be string?
-    let mqtt_host: SocketAddr = format!("{}:{}", mqtt_ip, mqtt_port)
-        .parse()
-        .expect("Failed to parse MQTT host and port");
+fn connect_to_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::Map) {
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
+    let host = mqtt_host.clone();
 
     std::thread::spawn(move || {
-        connect_to_mqtt_client(&mqtt_host, mqtt_map_clone, peer_map_clone);
+        connect_to_mqtt_client(&host, mqtt_map_clone, peer_map_clone);
     });
 }
 
@@ -254,18 +238,19 @@ fn deserialize_json_rpc_and_process(
     );
     match message.method.as_str() {
         "connect" => {
-            let (ip, port) = jsonrpc::get_ip_and_port(message.params);
-            connect_to_broker(&ip, &port, peer_map.clone(), mqtt_map.clone());
+            let hostname = message.params["hostname"].as_str().unwrap().to_string();
+
+            connect_to_broker(&hostname, peer_map.clone(), mqtt_map.clone());
             let broker_path = std::format!("{}/brokers.json", config_path);
-            config::add_to_brokers(&broker_path, std::format!("{}:{}", ip, port));
+            config::add_to_brokers(&broker_path, hostname);
             broadcast_brokers(peer_map, mqtt_map)
         }
         "publish" => {
-            let (ip, port, topic, payload) = jsonrpc::get_ip_port_topic_and_payload(message.params);
-            mqtt::publish_message(&ip, &port, &topic, &payload, mqtt_map);
+            let (host, topic, payload) = jsonrpc::get_host_topic_and_payload(message.params);
+            mqtt::publish_message(&host, &topic, &payload, mqtt_map);
         }
         "save_publish" => {
-            let command_path = std::format!("{}/commands.json", config_path);
+            let command_path: String = std::format!("{}/commands.json", config_path);
             config::add_to_commands(&command_path, message.params);
             broadcast_commands(peer_map, &config_path);
         }
@@ -288,7 +273,7 @@ fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqt
     let message = JsonRpcNotification {
         jsonrpc: "2.0".to_string(),
         method: "mqtt_brokers".to_string(),
-        params: serde_json::json!(brokers),
+        params: serde_json::json!(brokers.clone()),
     };
 
     if let Ok(serialized) = serde_json::to_string(&message) {

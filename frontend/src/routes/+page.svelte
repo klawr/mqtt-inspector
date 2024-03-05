@@ -68,7 +68,6 @@ THE SOFTWARE.
 
 		socket.onopen = (event) => {
 			socketConnected = true;
-			console.log('WebSocket connection opened:', event);
 		};
 
 		socket.onmessage = (event) => {
@@ -77,6 +76,7 @@ THE SOFTWARE.
 			switch (json.method) {
 				case 'mqtt_connection_status':
 					app = processConnectionStatus(json.params, app);
+					break;
 				case 'mqtt_brokers':
 					app.brokerRepository = processBrokers(json.params, app.brokerRepository);
 					break;
@@ -153,7 +153,7 @@ THE SOFTWARE.
 	<SideNavItems>
 		{#each Object.keys(app.brokerRepository) as broker}
 			<SideNavLink
-				icon={app.brokerRepository[broker].connected ? CircleSolid : CircleDash}
+				icon={app.brokerRepository[broker].connected && socketConnected ? CircleSolid : CircleDash}
 				text={broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {
@@ -162,13 +162,15 @@ THE SOFTWARE.
 				}}
 			/>
 		{/each}
-		<SideNavLink
-			icon={Add}
-			text="Add Broker"
-			on:click={() => {
-				addMqttBrokerModalOpen = true;
-			}}
-		/>
+		<div style={socketConnected ? '' : 'pointer-events: none; opacity: 0.5'}>
+			<SideNavLink
+				icon={Add}
+				text="Add Broker"
+				on:click={() => {
+					addMqttBrokerModalOpen = true;
+				}}
+			/>
+		</div>
 		<div style="flex: 1" />
 		<SideNavDivider />
 		<SideNavMenu text="Theme">

@@ -23,6 +23,8 @@ services:
   mqtt-inspector:
     image: ghcr.io/klawr/mqtt-inspector:latest
     container_name: mqtt-inspector
+    ports:
+      - 3030:3030
     volumes:
       - ./config:/srv/config
 ```

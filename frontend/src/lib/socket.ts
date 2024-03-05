@@ -26,14 +26,13 @@ export function requestMqttBrokerConnection(ip: string, port: string, socket: We
         "jsonrpc": "2.0",
         "method": "connect",
         "params": {
-            "ip": "${ip}",
-            "port": "${port}"
+            "hostname": "${ip}:${port}"
         },
         "id": "1"
     }`)
 }
 
-export function requestPublishMqttMessage(ip: string, port: string, topic: string, payload: string, socket: WebSocket) {
+export function requestPublishMqttMessage(host: string, topic: string, payload: string, socket: WebSocket) {
     // Hey if you find a better way, feel free to help me out
     const sanitized_payload = payload
         .replace(/\\/g, '\\\\')
@@ -48,8 +47,7 @@ export function requestPublishMqttMessage(ip: string, port: string, topic: strin
         "jsonrpc": "2.0",
         "method": "publish",
         "params": {
-            "ip": "${ip}",
-            "port": "${port}",
+            "host": "${host}",
             "topic": "${topic}",
             "payload": "${sanitized_payload}"
         }

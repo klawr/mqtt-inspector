@@ -22,7 +22,6 @@
 
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     sync::{Arc, Mutex},
 };
 
@@ -50,16 +49,15 @@ pub struct MqttBroker {
     pub topics: Vec<MqttTopics>,
 }
 
-// TODO SocketAddr should be String?
-pub type Map = Arc<Mutex<HashMap<SocketAddr, MqttBroker>>>;
+pub type Map = Arc<Mutex<HashMap<String, MqttBroker>>>;
 
-pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc::Connection) {
+pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
-    println!(
-        "Connecting to Mqtt broker at {}:{} with id {}",
-        host, port, id
-    );
-    let mut mqttoptions = MqttOptions::new(id, host, port);
+    println!("Connecting to Mqtt broker at {} with id {}", host, id);
+    let hostname_ip = host.split(":").collect::<Vec<&str>>();
+    let hostname = hostname_ip[0];
+    let port = hostname_ip[1].parse::<u16>().unwrap();
+    let mut mqttoptions = MqttOptions::new(id, hostname, port);
     mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
     mqttoptions.set_max_packet_size(1000000 * 1024, 1000000 * 1024);
 
@@ -69,9 +67,9 @@ pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc:
     return (client, connection);
 }
 
-pub fn publish_message(ip: &str, port: &str, topic: &str, payload: &str, mqtt_map: Map) {
+pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: Map) {
     mqtt_map.lock().unwrap().iter().for_each(|(addr, broker)| {
-        if addr.ip().to_string() == ip && addr.port().to_string() == port {
+        if addr == host {
             broker
                 .client
                 .clone()
