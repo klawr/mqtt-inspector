@@ -107,6 +107,31 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_ma
                 } else {
                     bytes::Bytes::from(p.payload)
                 };
+                mqtt_map
+                    .lock()
+                    .unwrap()
+                    .entry(hostname.clone())
+                    .and_modify(|broker| {
+                        broker.connected = true;
+                        if broker.topics.contains_key(&p.topic) {
+                            let topic_vec = broker.topics.get_mut(&p.topic).unwrap();
+                            topic_vec.push(mqtt::MqttMessage {
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                payload: payload.to_vec(),
+                            });
+                            while topic_vec.len() > 100 {
+                                topic_vec.pop();
+                            }
+                        } else {
+                            broker.topics.insert(
+                                p.topic.clone(),
+                                vec![mqtt::MqttMessage {
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    payload: payload.to_vec(),
+                                }],
+                            );
+                        }
+                    });
                 send_message_to_peers(peer_map, &hostname, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
@@ -180,7 +205,7 @@ fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::Map, peer_map: Pee
             client,
             broker: mqtt_host.to_string(),
             connected: false,
-            topics: Vec::new(),
+            topics: HashMap::new(),
         };
         mqtt_lock.insert(mqtt_host.clone(), broker);
         drop(mqtt_lock);

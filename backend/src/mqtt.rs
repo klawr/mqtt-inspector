@@ -31,13 +31,7 @@ use serde;
 #[derive(serde::Serialize)]
 pub struct MqttMessage {
     pub timestamp: String,
-    pub payload: String,
-}
-
-#[derive(serde::Serialize)]
-pub struct MqttTopics {
-    pub topic: String,
-    pub messages: Vec<MqttMessage>,
+    pub payload: Vec<u8>,
 }
 
 #[derive(serde::Serialize)]
@@ -46,7 +40,7 @@ pub struct MqttBroker {
     pub client: rumqttc::Client,
     pub broker: String,
     pub connected: bool,
-    pub topics: Vec<MqttTopics>,
+    pub topics: HashMap<String, Vec<MqttMessage>>,
 }
 
 pub type Map = Arc<Mutex<HashMap<String, MqttBroker>>>;

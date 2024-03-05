@@ -27,10 +27,10 @@ export type Command = { id: string; text: string; topic: string; payload: string
 
 export type CommandParam = { id: string; name: string; topic: string; payload: string; };
 export type BrokerParam = {
-    broker: string; connected: boolean; messages: {
-        topic: string; messages: { timestamp: string; payload: string }[]
-    }[]
-}[];
+    broker: string; connected: boolean; topics: {
+        [key: string]: { payload: ArrayBuffer; timestamp: string; }[];
+    }
+}[]
 export type MqttConnectionStatus = { source: string; connected: boolean; };
 type PipelineParamEntry = { topic: string; };
 export type PipelineParam = { id: string; name: string; pipeline: PipelineParamEntry[]; };
@@ -57,13 +57,26 @@ export function processConnectionStatus(params: MqttConnectionStatus, app: AppSt
     return app;
 }
 
-export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepository) {
+export function processBrokers(params: BrokerParam, decoder: TextDecoder, brokerRepository: BrokerRepository) {
+
     params.forEach((param) => {
         if (!brokerRepository[param.broker]) {
             brokerRepository[param.broker] = { topics: [], selectedTopic: null, pipeline: [], connected: param.connected };
         }
         else {
             brokerRepository[param.broker].connected = param.connected;
+        }
+
+        for (const topic of Object.keys(param.topics)) {
+            for (const message of param.topics[topic]) {
+                brokerRepository[param.broker].topics = addToTopicTree(
+                    topic,
+                    brokerRepository[param.broker].topics,
+                    decoder.decode(new Uint8Array(message.payload)),
+                    message.timestamp
+                );
+
+            }
         }
     });
 

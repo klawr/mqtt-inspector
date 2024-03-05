@@ -66,7 +66,7 @@ THE SOFTWARE.
 	function initializeWebSocket() {
 		socket = new WebSocket(`ws://${$page.url.host}/ws`);
 
-		socket.onopen = (event) => {
+		socket.onopen = () => {
 			socketConnected = true;
 		};
 
@@ -78,7 +78,7 @@ THE SOFTWARE.
 					app = processConnectionStatus(json.params, app);
 					break;
 				case 'mqtt_brokers':
-					app.brokerRepository = processBrokers(json.params, app.brokerRepository);
+					app.brokerRepository = processBrokers(json.params, decoder, app.brokerRepository);
 					break;
 				case 'mqtt_message':
 					app = processMQTTMessage(json.params, decoder, app);
@@ -94,9 +94,9 @@ THE SOFTWARE.
 			}
 		};
 
-		socket.onclose = (event) => {
+		socket.onclose = () => {
 			socketConnected = false;
-			console.log('WebSocket connection closed:', event);
+			console.log('WebSocket connection closed.');
 		};
 
 		socket.onerror = (event) => {
