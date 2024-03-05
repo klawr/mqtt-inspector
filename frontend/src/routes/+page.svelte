@@ -27,6 +27,7 @@ THE SOFTWARE.
 		Content,
 		Grid,
 		Header,
+		InlineNotification,
 		RadioButton,
 		RadioButtonGroup,
 		SideNav,
@@ -43,19 +44,22 @@ THE SOFTWARE.
 	import 'carbon-components-svelte/css/all.css';
 	import Messages from '../components/messages.svelte';
 	import AddBroker from '../components/add_broker.svelte';
-	import { Add, CircleDash, CircleSolid, Connect, LogoGithub } from 'carbon-icons-svelte';
+	import { Add, CircleDash, CircleSolid, Connect, LogoGithub, TrashCan } from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
 	import Pipeline from '../components/pipeline.svelte';
 	import { AppState, type Treebranch } from '$lib/state';
 	import {
+		processBrokerRemoval,
 		processBrokers,
 		processConfigs,
 		processConnectionStatus,
 		processMQTTMessage,
 		processPipelines
 	} from '$lib/ws_msg_handling';
+	import RemoveBroker from '../components/remove_broker.svelte';
+	import { requestMqttBrokerConnection } from '$lib/socket';
 
 	let socket: WebSocket;
 	let app = new AppState();
@@ -74,6 +78,9 @@ THE SOFTWARE.
 			const message = event.data;
 			const json = JSON.parse(message);
 			switch (json.method) {
+				case 'broker_removal':
+					app = processBrokerRemoval(json.params, app);
+					break;
 				case 'mqtt_connection_status':
 					app = processConnectionStatus(json.params, app);
 					break;
@@ -109,18 +116,33 @@ THE SOFTWARE.
 	let isSideNavOpen = false;
 	let selectedTopic: Treebranch | null = null;
 	let addMqttBrokerModalOpen = false;
+	let removeMqttBrokerModalOpen = false;
 	let theme: CarbonTheme = 'g90';
 </script>
 
 <Theme bind:theme />
 
 <AddBroker bind:socket bind:open={addMqttBrokerModalOpen} />
+<RemoveBroker bind:app bind:socket bind:open={removeMqttBrokerModalOpen} />
 
 <Header platformName="MQTT-Inspector" bind:isSideNavOpen>
 	<svelte:fragment slot="skip-to-content">
 		<SkipToContent />
 	</svelte:fragment>
 	<div style="flex: 1" />
+
+	{#if app.brokerRepository[app.selectedBroker]}
+		<Button
+			iconDescription="Remove MQTT Broker"
+			tooltipPosition="bottom"
+			tooltipAlignment="end"
+			kind="danger-ghost"
+			icon={TrashCan}
+			on:click={() => {
+				removeMqttBrokerModalOpen = true;
+			}}
+		/>
+	{/if}
 
 	{#if socketConnected}
 		<Button
@@ -153,7 +175,11 @@ THE SOFTWARE.
 	<SideNavItems>
 		{#each Object.keys(app.brokerRepository) as broker}
 			<SideNavLink
-				icon={app.brokerRepository[broker].connected && socketConnected ? CircleSolid : CircleDash}
+				icon={app.brokerRepository[broker].markedForDeletion
+					? TrashCan
+					: app.brokerRepository[broker].connected && socketConnected
+						? CircleSolid
+						: CircleDash}
 				text={broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {
@@ -186,6 +212,24 @@ THE SOFTWARE.
 </SideNav>
 
 <Content style="padding: 0">
+	{#if app.brokerRepository[app.selectedBroker]?.markedForDeletion}
+		<div style="margin-left: 1em; margin-top: 3em; display: flex">
+			<div style="flex: 0"></div>
+			<InlineNotification
+				hideCloseButton
+				title="Marked for deletion"
+				subtitle="This connection is marked for deletion. It is not connected anymore and will disappear on refresh."
+			/>
+			<div style="display: flex; height: 4em; margin-top: 1.2em; margin-left: 1em">
+				<Button
+					on:click={() => requestMqttBrokerConnection(app.selectedBroker, socket)}
+					kind="tertiary"
+					size="field">Reconnect!</Button
+				>
+			</div>
+		</div>
+	{/if}
+
 	{#if app.brokerRepository[app.selectedBroker]}
 		<Grid fullWidth>
 			<div style="height: calc(100vh - 8em) !important; display: flex; flex-direction: column">
@@ -208,7 +252,7 @@ THE SOFTWARE.
 							</svelte:fragment>
 						</Tabs>
 					</div>
-					<div style="flex: 1; margin: 1em; min-width: 30em">
+					<div style="flex: 1; margin: 1em; min-width: 30em; max-width: 60em">
 						<Messages bind:broker={app.brokerRepository[app.selectedBroker]} />
 					</div>
 				</div>

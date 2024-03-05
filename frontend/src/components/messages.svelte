@@ -51,7 +51,9 @@ THE SOFTWARE.
 							title={new Date(message.timestamp).toLocaleString() +
 								(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
 						>
-							<CodeSnippet wrapText type="multi" code={message.text} />
+							<div style="margin-right: -12em">
+								<CodeSnippet wrapText type="multi" code={message.text} />
+							</div>
 						</AccordionItem>
 					{/each}
 				</Accordion>

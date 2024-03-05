@@ -9,6 +9,7 @@ Distributes all topics to all connected clients using websockets.
   - Save pipelines to visualize them effectively
   - Publish commands
   - Save favorite commands for publishing
+  - Retain messages in the backend
 
 # Deployment:
 

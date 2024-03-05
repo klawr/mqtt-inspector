@@ -60,6 +60,7 @@ export type Command = {
 }
 
 export type BrokerRepositoryEntry = {
+    markedForDeletion?: boolean;
     topics: Treebranch[];
     selectedTopic: Treebranch | null;
     pipeline: { topic: string; timestamp?: string; delta_t?: number }[];

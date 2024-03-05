@@ -62,13 +62,20 @@ pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection
 }
 
 pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: Map) {
-    mqtt_map.lock().unwrap().iter().for_each(|(addr, broker)| {
-        if addr == host {
-            broker
-                .client
-                .clone()
-                .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload.as_bytes())
-                .unwrap();
-        }
-    });
+    let binding = mqtt_map.lock().unwrap();
+    let broker = binding.get(host);
+    if broker.is_none() {
+        println!("Can't publish. Broker {} not found", host);
+        return;
+    }
+    // List all hosts in mqtt_map:
+    for (key, _value) in binding.iter() {
+        println!("{}", key);
+    }
+    broker
+        .unwrap()
+        .client
+        .clone()
+        .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload.as_bytes())
+        .unwrap();
 }

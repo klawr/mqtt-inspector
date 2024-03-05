@@ -97,6 +97,12 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_ma
     let hostname = format!("{}:{}", ip, port);
 
     for (_i, notification) in connection.iter().enumerate() {
+        let mut mqtt_lock = mqtt_map.lock().unwrap();
+        // Check if broker is still in map:
+        if !mqtt_lock.contains_key(&hostname) {
+            println!("Broker {} not found in map. Exiting loop.", hostname);
+            break;
+        }
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
                 let payload = if p.payload.len() > 1000000 {
@@ -107,65 +113,64 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_ma
                 } else {
                     bytes::Bytes::from(p.payload)
                 };
-                mqtt_map
-                    .lock()
-                    .unwrap()
-                    .entry(hostname.clone())
-                    .and_modify(|broker| {
-                        broker.connected = true;
-                        if broker.topics.contains_key(&p.topic) {
-                            let topic_vec = broker.topics.get_mut(&p.topic).unwrap();
-                            topic_vec.push(mqtt::MqttMessage {
+                mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
+                    broker.connected = true;
+                    if broker.topics.contains_key(&p.topic) {
+                        let topic_vec = broker.topics.get_mut(&p.topic).unwrap();
+                        topic_vec.push(mqtt::MqttMessage {
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            payload: payload.to_vec(),
+                        });
+                        while topic_vec.len() > 100 {
+                            topic_vec.pop();
+                        }
+                    } else {
+                        broker.topics.insert(
+                            p.topic.clone(),
+                            vec![mqtt::MqttMessage {
                                 timestamp: chrono::Utc::now().to_rfc3339(),
                                 payload: payload.to_vec(),
-                            });
-                            while topic_vec.len() > 100 {
-                                topic_vec.pop();
-                            }
-                        } else {
-                            broker.topics.insert(
-                                p.topic.clone(),
-                                vec![mqtt::MqttMessage {
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    payload: payload.to_vec(),
-                                }],
-                            );
-                        }
-                    });
+                            }],
+                        );
+                    }
+                });
                 send_message_to_peers(peer_map, &hostname, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
-                mqtt_map
-                    .lock()
-                    .unwrap()
-                    .entry(hostname.clone())
-                    .and_modify(|broker| {
-                        broker.connected = true;
-                    });
+                mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
+                    broker.connected = true;
+                });
                 // Small update for the peers already connected
                 send_broker_status_to_peers(peer_map, &hostname, true);
                 println!("Connection event: {:?} for {:?}", a.code, hostname);
             }
+            Ok(rumqttc::Event::Incoming(rumqttc::Packet::Disconnect)) => {
+                println!("Disconnect event for {:?}", hostname);
+            }
             Ok(_) => {
-                // Handle other types of events if necessary
+                // maybe handle other events
             }
             Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
                 let payload =
-                    bytes::Bytes::from(std::format!("Payload size limit exceeded: {}", p));
+                    bytes::Bytes::from(std::format!("Payload size limit exceeded: {}.", p));
                 println!("Payload size limit exceeded: {}", p);
-                send_message_to_peers(peer_map, &hostname, "error", &payload);
+                send_message_to_peers(peer_map, &hostname, "$ERROR", &payload)
+            }
+            Err(rumqttc::ConnectionError::MqttState(err)) => {
+                println!(
+                    "Got ConnectionAborted event for {:?}. Error: {}. Stopping loop",
+                    hostname,
+                    err.to_string()
+                );
+                break;
             }
             Err(err) => {
                 // Update the connection status of the broker
-                mqtt_map
-                    .lock()
-                    .unwrap()
-                    .entry(hostname.clone())
-                    .and_modify(|broker| {
-                        broker.connected = false;
-                    });
+                mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
+                    broker.connected = false;
+                });
                 // Small update for the peers already connected
                 send_broker_status_to_peers(peer_map, &hostname, false);
                 println!(
@@ -207,10 +212,45 @@ fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::Map, peer_map: Pee
             connected: false,
             topics: HashMap::new(),
         };
+
         mqtt_lock.insert(mqtt_host.clone(), broker);
         drop(mqtt_lock);
 
         loop_forever(connection, &peer_map, &mqtt_map);
+    }
+}
+
+fn remove_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::Map) {
+    let mut mqtt_lock = mqtt_map.lock().unwrap();
+    let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
+
+    if mqtt_client.is_some() {
+        println!("Removing MQTT-Client for {}", mqtt_host);
+
+        if let Err(err) = mqtt_client.unwrap().1.client.clone().disconnect() {
+            println!("Error disconnecting MQTT client: {:?}", err);
+        }
+
+        mqtt_lock.remove(mqtt_host);
+        drop(mqtt_lock);
+        peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
+            let message = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: "broker_removal".to_string(),
+                params: serde_json::json!(mqtt_host),
+            };
+
+            if let Ok(serialized) = serde_json::to_string(&message) {
+                match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
+                    Ok(_) => { /* Implement Logging */ }
+                    Err(err) => println!("Error sending message: {:?}", err),
+                }
+            } else {
+                println!("Failed to serialize brokers.");
+            }
+        });
+    } else {
+        println!("No MQTT-Client for {} found.", mqtt_host);
     }
 }
 
@@ -264,10 +304,16 @@ fn deserialize_json_rpc_and_process(
     match message.method.as_str() {
         "connect" => {
             let hostname = message.params["hostname"].as_str().unwrap().to_string();
-
             connect_to_broker(&hostname, peer_map.clone(), mqtt_map.clone());
             let broker_path = std::format!("{}/brokers.json", config_path);
             config::add_to_brokers(&broker_path, hostname);
+            broadcast_brokers(peer_map, mqtt_map)
+        }
+        "remove" => {
+            let hostname = message.params["hostname"].as_str().unwrap().to_string();
+            remove_broker(&hostname, peer_map.clone(), mqtt_map.clone());
+            let broker_path = std::format!("{}/brokers.json", config_path);
+            config::remove_from_brokers(&broker_path, hostname);
             broadcast_brokers(peer_map, mqtt_map)
         }
         "publish" => {

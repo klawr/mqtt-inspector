@@ -51,14 +51,24 @@ export function processConfigs(params: string) {
     }));
 }
 
+export function processBrokerRemoval(params: string, app: AppState) {
+    if (app.brokerRepository[params]) {
+        app.brokerRepository[params].markedForDeletion = true;
+    }
+
+    return app;
+}
+
 export function processConnectionStatus(params: MqttConnectionStatus, app: AppState) {
     app.brokerRepository[params.source].connected = params.connected;
+    if (params.connected) {
+        app.brokerRepository[params.source].markedForDeletion = false;
+    }
 
     return app;
 }
 
 export function processBrokers(params: BrokerParam, decoder: TextDecoder, brokerRepository: BrokerRepository) {
-
     params.forEach((param) => {
         if (!brokerRepository[param.broker]) {
             brokerRepository[param.broker] = { topics: [], selectedTopic: null, pipeline: [], connected: param.connected };
@@ -78,6 +88,8 @@ export function processBrokers(params: BrokerParam, decoder: TextDecoder, broker
 
             }
         }
+
+        brokerRepository[param.broker].markedForDeletion = false;
     });
 
     return brokerRepository;

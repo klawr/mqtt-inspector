@@ -20,15 +20,24 @@
  * THE SOFTWARE.
  */
 
-export function requestMqttBrokerConnection(ip: string, port: string, socket: WebSocket) {
+export function requestMqttBrokerRemoval(hostname: string, socket: WebSocket) {
+    socket.send(`{
+        "jsonrpc": "2.0",
+        "method": "remove",
+        "params": {
+            "hostname": "${hostname}"
+        }
+    }`)
+}
+
+export function requestMqttBrokerConnection(hostname: string, socket: WebSocket) {
     // TODO: Implement id generation
     socket.send(`{
         "jsonrpc": "2.0",
         "method": "connect",
         "params": {
-            "hostname": "${ip}:${port}"
-        },
-        "id": "1"
+            "hostname": "${hostname}"
+        }
     }`)
 }
 
