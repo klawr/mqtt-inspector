@@ -31,7 +31,15 @@ THE SOFTWARE.
 		StructuredListRow,
 		TextInput
 	} from 'carbon-components-svelte';
-	import { Add, ArrowDown, ArrowUp, CheckmarkFilled, Save, TrashCan } from 'carbon-icons-svelte';
+	import {
+		Add,
+		ArrowDown,
+		ArrowUp,
+		CheckmarkFilled,
+		Clean,
+		Save,
+		TrashCan
+	} from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
 	import { findbranchwithid } from '$lib/helper';
 	import RemovePipeline from './remove_pipeline.svelte';
@@ -109,6 +117,10 @@ THE SOFTWARE.
 		}
 		const index = +selectedRow.split('-')[1];
 		broker.pipeline = broker.pipeline.filter((e, i) => i !== index);
+	}
+
+	function cleanAllRows() {
+		broker.pipeline = [];
 	}
 
 	function moveSelectedRow(direction: number) {
@@ -204,7 +216,7 @@ THE SOFTWARE.
 	</StructuredList>
 </div>
 <div style="display: flex">
-	<div style="flex: 11;">
+	<div style="flex: 10;">
 		<TextInput bind:value={nextStepText} placeholder="Add topic to pipeline..." />
 	</div>
 	<div style="flex: 1">
@@ -217,30 +229,34 @@ THE SOFTWARE.
 		/>
 	</div>
 </div>
-<Button
-	on:click={() => moveSelectedRow(-1)}
-	icon={ArrowUp}
-	iconDescription="Move selected row up"
-	disabled={!selectedRow ||
-		(!!broker.selectedTopic?.id &&
-			broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-/>
-<Button
-	on:click={() => moveSelectedRow(1)}
-	icon={ArrowDown}
-	iconDescription="Move selected row down"
-	disabled={!selectedRow ||
-		(!!broker.selectedTopic?.id &&
-			broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-/>
-<Button
-	on:click={removeSelectedRow}
-	icon={TrashCan}
-	iconDescription="Remove selected row"
-	disabled={!selectedRow ||
-		(!!broker.selectedTopic?.id &&
-			broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-/>
+<div style="margin: 3px 0px 3px 0px;">
+	<Button
+		on:click={() => moveSelectedRow(-1)}
+		icon={ArrowUp}
+		iconDescription="Move selected row up"
+		disabled={!selectedRow ||
+			(!!broker.selectedTopic?.id &&
+				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+	/>
+	<Button
+		on:click={() => moveSelectedRow(1)}
+		icon={ArrowDown}
+		iconDescription="Move selected row down"
+		disabled={!selectedRow ||
+			(!!broker.selectedTopic?.id &&
+				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+	/>
+	<Button
+		kind="danger"
+		on:click={removeSelectedRow}
+		icon={TrashCan}
+		iconDescription="Remove selected row"
+		disabled={!selectedRow ||
+			(!!broker.selectedTopic?.id &&
+				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+	/>
+	<Button kind="danger" on:click={cleanAllRows} icon={Clean} iconDescription="Clean all rows" />
+</div>
 
 <div style="display: flex">
 	<div style="flex: 10">
