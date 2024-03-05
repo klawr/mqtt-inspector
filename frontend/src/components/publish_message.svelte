@@ -29,9 +29,10 @@ THE SOFTWARE.
 		TextInput,
 		Tile
 	} from 'carbon-components-svelte';
-	import { requestPublishMqttMessage } from '$lib/socket';
+	import { requestCommandAddition, requestPublishMqttMessage } from '$lib/socket';
 	import { Add, TrashCan } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
+	import OverwriteCommand from './overwrite_command.svelte';
 
 	export let savedCommands: Command[];
 	export let socket: WebSocket;
@@ -81,18 +82,26 @@ THE SOFTWARE.
 		socket.send(message);
 	}
 
+	let overwriteCommandOpen = false;
 	function save_message() {
-		const message = JSON.stringify({
-			jsonrpc: '2.0',
-			method: 'save_command',
-			params: { name: save_command_name, topic, payload }
-		});
-		socket.send(message);
+		if (savedCommands.find((c) => c.text === save_command_name)) {
+			overwriteCommandOpen = true;
+			return;
+		}
+		requestCommandAddition(save_command_name, topic, payload, socket);
 		save_command_name = '';
 	}
 
 	let save_command_name = '';
 </script>
+
+<OverwriteCommand
+	bind:open={overwriteCommandOpen}
+	bind:socket
+	bind:save_command_name
+	bind:topic
+	bind:payload
+/>
 
 <Row>
 	<ExpandableTile>

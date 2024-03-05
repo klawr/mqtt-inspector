@@ -43,7 +43,9 @@ THE SOFTWARE.
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
 	import { findbranchwithid } from '$lib/helper';
 	import RemovePipeline from './remove_pipeline.svelte';
+	import OverwritePipeline from './overwrite_pipeline.svelte';
 	import CleanPipelineRows from './cleanPipelineRows.svelte';
+	import { requestPipelineAddition } from '$lib/socket';
 
 	export let pipelines: SavedPipeline[];
 	export let broker: BrokerRepositoryEntry;
@@ -68,21 +70,20 @@ THE SOFTWARE.
 	}
 
 	let pipelineName = '';
+	let newPipeline: { topic: string }[];
+	let overwritePipelineOpen = false;
 	function save_pipeline() {
-		const new_pipeline = broker.pipeline.map((e) => ({
+		newPipeline = broker.pipeline.map((e) => ({
 			topic: e.topic
 		}));
-		const message = JSON.stringify({
-			jsonrpc: '2.0',
-			method: 'save_pipeline',
-			params: {
-				name: pipelineName,
-				pipeline: new_pipeline
-			}
-		});
 
-		socket.send(message);
-		pipelineName = '';
+		if (pipelines.find((e) => e.text === pipelineName)) {
+			overwritePipelineOpen = true;
+			return;
+		} else {
+			requestPipelineAddition(pipelineName, newPipeline, socket);
+			pipelineName = '';
+		}
 	}
 
 	let selectedId: number | undefined;
@@ -143,6 +144,12 @@ THE SOFTWARE.
 	}
 </script>
 
+<OverwritePipeline
+	bind:open={overwritePipelineOpen}
+	bind:socket
+	bind:newPipeline
+	bind:pipelineName
+/>
 <RemovePipeline bind:open={removePipelineOpen} bind:socket bind:pipelines bind:selectedId />
 <CleanPipelineRows bind:open={cleanAllRowsOpen} bind:broker bind:selectedId />
 
