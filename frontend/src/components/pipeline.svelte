@@ -43,6 +43,7 @@ THE SOFTWARE.
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
 	import { findbranchwithid } from '$lib/helper';
 	import RemovePipeline from './remove_pipeline.svelte';
+	import CleanPipelineRows from './cleanPipelineRows.svelte';
 
 	export let pipelines: SavedPipeline[];
 	export let broker: BrokerRepositoryEntry;
@@ -119,8 +120,9 @@ THE SOFTWARE.
 		broker.pipeline = broker.pipeline.filter((e, i) => i !== index);
 	}
 
+	let cleanAllRowsOpen = false;
 	function cleanAllRows() {
-		broker.pipeline = [];
+		cleanAllRowsOpen = true;
 	}
 
 	function moveSelectedRow(direction: number) {
@@ -142,6 +144,7 @@ THE SOFTWARE.
 </script>
 
 <RemovePipeline bind:open={removePipelineOpen} bind:socket bind:pipelines bind:selectedId />
+<CleanPipelineRows bind:open={cleanAllRowsOpen} bind:broker bind:selectedId />
 
 <div style="display: flex">
 	<div style="flex: 1">
