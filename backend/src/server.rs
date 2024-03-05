@@ -273,9 +273,11 @@ pub fn broadcast_pipelines(peer_map: PeerMap, config_path: &String) {
 }
 
 pub fn broadcast_commands(peer_map: PeerMap, config_path: &String) {
-    peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
-        config::send_commands(tx, &format!("{}/commands.json", config_path))
-    });
+    peer_map
+        .lock()
+        .unwrap()
+        .iter()
+        .for_each(|(_addr, tx)| config::send_commands(tx, &format!("{}/commands", config_path)));
 }
 
 fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::Map) {
@@ -321,7 +323,7 @@ fn deserialize_json_rpc_and_process(
             mqtt::publish_message(&host, &topic, &payload, mqtt_map);
         }
         "save_publish" => {
-            let command_path: String = std::format!("{}/commands.json", config_path);
+            let command_path: String = std::format!("{}/commands", config_path);
             config::add_to_commands(&command_path, message.params);
             broadcast_commands(peer_map, &config_path);
         }
