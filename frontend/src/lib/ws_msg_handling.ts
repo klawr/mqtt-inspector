@@ -26,7 +26,11 @@ import type { AppState, BrokerRepository, Treebranch } from "./state";
 export type Command = { id: string; text: string; topic: string; payload: string; };
 
 export type CommandParam = { id: string; name: string; topic: string; payload: string; };
-export type BrokerParam = string[];
+export type BrokerParam = {
+    broker: string; connected: boolean; messages: {
+        topic: string; messages: { timestamp: string; payload: string }[]
+    }[]
+}[];
 export type MqttConnectionStatus = { source: string; connected: boolean; };
 type PipelineParamEntry = { topic: string; };
 export type PipelineParam = { id: string; name: string; pipeline: PipelineParamEntry[]; };
@@ -54,9 +58,12 @@ export function processConnectionStatus(params: MqttConnectionStatus, app: AppSt
 }
 
 export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepository) {
-    params.forEach((broker) => {
-        if (!brokerRepository[broker]) {
-            brokerRepository[broker] = { topics: [], selectedTopic: null, pipeline: [], connected: false };
+    params.forEach((param) => {
+        if (!brokerRepository[param.broker]) {
+            brokerRepository[param.broker] = { topics: [], selectedTopic: null, pipeline: [], connected: param.connected };
+        }
+        else {
+            brokerRepository[param.broker].connected = param.connected;
         }
     });
 

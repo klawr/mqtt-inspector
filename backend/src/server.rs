@@ -92,7 +92,7 @@ fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
     });
 }
 
-fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
+fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_map: &mqtt::Map) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
     let source = format!("{}:{}", ip, port);
 
@@ -110,6 +110,18 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
                 send_message_to_peers(peer_map, &source, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
+                // Update the connection status of the broker
+                let mqtt_host: SocketAddr = format!("{}:{}", ip, port)
+                    .parse()
+                    .expect("Failed to parse MQTT host and port");
+                mqtt_map
+                    .lock()
+                    .unwrap()
+                    .entry(mqtt_host)
+                    .and_modify(|broker| {
+                        broker.connected = true;
+                    });
+                // Small update for the peers already connected
                 send_broker_status_to_peers(peer_map, &source, true);
                 println!("Connection event: {:?} for {:?}", a.code, source);
             }
@@ -125,12 +137,25 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap) {
                 send_message_to_peers(peer_map, &source, "error", &payload);
             }
             Err(err) => {
+                // TODO SocketAddr should be string?
+                // Update the connection status of the broker
+                let mqtt_host: SocketAddr = format!("{}:{}", ip, port)
+                    .parse()
+                    .expect("Failed to parse MQTT host and port");
+                mqtt_map
+                    .lock()
+                    .unwrap()
+                    .entry(mqtt_host)
+                    .and_modify(|broker| {
+                        broker.connected = false;
+                    });
+                // Small update for the peers already connected
+                send_broker_status_to_peers(peer_map, &source, false);
                 println!(
                     "Connection error: {:?} for {:?}. Try again in 5 seconds.",
                     err.to_string(),
                     source
                 );
-                send_broker_status_to_peers(peer_map, &source, false);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
         }
@@ -173,11 +198,12 @@ fn connect_to_mqtt_client(mqtt_host: &SocketAddr, mqtt_map: mqtt::Map, peer_map:
         mqtt_lock.insert(*mqtt_host, broker);
         drop(mqtt_lock);
 
-        loop_forever(connection, &peer_map);
+        loop_forever(connection, &peer_map, &mqtt_map);
     }
 }
 
 fn connect_to_broker(mqtt_ip: &str, mqtt_port: &str, peer_map: PeerMap, mqtt_map: mqtt::Map) {
+    // TODO SocketAddr should be string?
     let mqtt_host: SocketAddr = format!("{}:{}", mqtt_ip, mqtt_port)
         .parse()
         .expect("Failed to parse MQTT host and port");
@@ -204,10 +230,9 @@ pub fn broadcast_commands(peer_map: PeerMap, config_path: &String) {
 }
 
 fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::Map) {
-    send_brokers(
-        &peer_map.lock().unwrap().values().next().unwrap(),
-        &mqtt_map,
-    );
+    peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
+        send_brokers(tx, &mqtt_map);
+    });
 }
 
 fn deserialize_json_rpc_and_process(
@@ -258,12 +283,8 @@ fn deserialize_json_rpc_and_process(
 
 fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::Map) {
     // TODO String -> MqttBroker
-    let brokers: Vec<String> = mqtt_map
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(addr, _client)| std::format!("{}:{}", addr.ip().to_string(), addr.port()))
-        .collect();
+    let binding = mqtt_map.lock().unwrap();
+    let brokers: Vec<&mqtt::MqttBroker> = binding.iter().map(|broker| broker.1).collect();
     let message = JsonRpcNotification {
         jsonrpc: "2.0".to_string(),
         method: "mqtt_brokers".to_string(),

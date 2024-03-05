@@ -27,24 +27,30 @@ use std::{
 };
 
 use rumqttc::{MqttOptions, QoS};
+use serde;
 
+#[derive(serde::Serialize)]
 pub struct MqttMessage {
     pub timestamp: String,
     pub payload: String,
 }
 
+#[derive(serde::Serialize)]
 pub struct MqttTopics {
     pub topic: String,
     pub messages: Vec<MqttMessage>,
 }
 
+#[derive(serde::Serialize)]
 pub struct MqttBroker {
+    #[serde(skip)]
     pub client: rumqttc::Client,
     pub broker: String,
     pub connected: bool,
-    pub messages: Vec<MqttTopics>,
+    pub topics: Vec<MqttTopics>,
 }
 
+// TODO SocketAddr should be String?
 pub type Map = Arc<Mutex<HashMap<SocketAddr, MqttBroker>>>;
 
 pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc::Connection) {
