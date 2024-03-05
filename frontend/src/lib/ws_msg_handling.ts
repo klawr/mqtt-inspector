@@ -158,6 +158,9 @@ function addToTopicBranch(
             new_entry.delta_t = new Date(timestamp).getTime() - new Date(ff.messages[0].timestamp).getTime();
         }
         ff?.messages.unshift(new_entry);
+        while (ff.messages.length > 100) {
+            ff.messages.pop();
+        }
     }
     found.text = createTreeBranchEntryText(found);
 
