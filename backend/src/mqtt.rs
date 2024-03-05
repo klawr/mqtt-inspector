@@ -28,7 +28,24 @@ use std::{
 
 use rumqttc::{MqttOptions, QoS};
 
-pub type Map = Arc<Mutex<HashMap<SocketAddr, rumqttc::Client>>>;
+pub struct MqttMessage {
+    pub timestamp: String,
+    pub payload: String,
+}
+
+pub struct MqttTopics {
+    pub topic: String,
+    pub messages: Vec<MqttMessage>,
+}
+
+pub struct MqttBroker {
+    pub client: rumqttc::Client,
+    pub broker: String,
+    pub connected: bool,
+    pub messages: Vec<MqttTopics>,
+}
+
+pub type Map = Arc<Mutex<HashMap<SocketAddr, MqttBroker>>>;
 
 pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
@@ -47,9 +64,10 @@ pub fn connect_to_mqtt_host(host: &str, port: u16) -> (rumqttc::Client, rumqttc:
 }
 
 pub fn publish_message(ip: &str, port: &str, topic: &str, payload: &str, mqtt_map: Map) {
-    mqtt_map.lock().unwrap().iter().for_each(|(addr, client)| {
+    mqtt_map.lock().unwrap().iter().for_each(|(addr, broker)| {
         if addr.ip().to_string() == ip && addr.port().to_string() == port {
-            client
+            broker
+                .client
                 .clone()
                 .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload.as_bytes())
                 .unwrap();

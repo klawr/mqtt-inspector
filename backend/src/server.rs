@@ -154,7 +154,7 @@ fn connect_to_mqtt_client(mqtt_host: &SocketAddr, mqtt_map: mqtt::Map, peer_map:
     let mut mqtt_lock = mqtt_map.lock().unwrap();
     let mqtt_client = mqtt_lock
         .iter()
-        .find(|client| client.0.ip().to_string() == ip && client.0.port() == port);
+        .find(|entry| entry.0.ip().to_string() == ip && entry.0.port() == port);
 
     if mqtt_client.is_some() {
         println!("MQTT-Client for {} already exists.", mqtt_host);
@@ -164,7 +164,13 @@ fn connect_to_mqtt_client(mqtt_host: &SocketAddr, mqtt_map: mqtt::Map, peer_map:
             mqtt_host
         );
         let (client, connection) = mqtt::connect_to_mqtt_host(&ip, port);
-        mqtt_lock.insert(*mqtt_host, client);
+        let broker = mqtt::MqttBroker {
+            client,
+            broker: mqtt_host.to_string(),
+            connected: false,
+            messages: Vec::new(),
+        };
+        mqtt_lock.insert(*mqtt_host, broker);
         drop(mqtt_lock);
 
         loop_forever(connection, &peer_map);
@@ -251,6 +257,7 @@ fn deserialize_json_rpc_and_process(
 }
 
 fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::Map) {
+    // TODO String -> MqttBroker
     let brokers: Vec<String> = mqtt_map
         .lock()
         .unwrap()
