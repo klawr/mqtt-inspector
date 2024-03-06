@@ -20,11 +20,6 @@
  * THE SOFTWARE.
  */
 
-type Message = {
-    timestamp: string,
-    delta_t?: number,
-    text: string,
-}
 
 export class AppState {
     selectedBroker: string = "";
@@ -32,6 +27,12 @@ export class AppState {
     brokerRepository: BrokerRepository = {};
     pipelines: SavedPipeline[] = [];
     commands: Command[] = [];
+}
+
+type Message = {
+    timestamp: string,
+    delta_t?: number,
+    text: string,
 }
 
 export type Treebranch = {

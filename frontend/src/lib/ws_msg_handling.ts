@@ -59,6 +59,9 @@ export function processBrokerRemoval(params: string, app: AppState) {
 }
 
 export function processConnectionStatus(params: MqttConnectionStatus, app: AppState) {
+    if (!app.brokerRepository[params.source]) {
+        return app;
+    }
     app.brokerRepository[params.source].connected = params.connected;
     if (params.connected) {
         app.brokerRepository[params.source].markedForDeletion = false;

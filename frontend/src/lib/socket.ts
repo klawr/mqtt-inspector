@@ -64,7 +64,6 @@ export function requestPipelineRemoval(pipeline: string, socket: WebSocket) {
 }
 
 export function requestMqttBrokerConnection(hostname: string, socket: WebSocket) {
-    // TODO: Implement id generation
     socket.send(`{
         "jsonrpc": "2.0",
         "method": "connect",
