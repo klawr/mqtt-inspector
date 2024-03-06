@@ -21,9 +21,9 @@
  */
 
 use super::jsonrpc;
-use std::fs;
 
 use futures_channel::mpsc::UnboundedSender;
+use std::fs;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct CommandMessage {
