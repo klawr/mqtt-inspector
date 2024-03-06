@@ -9,27 +9,33 @@ on:
       - master
 
 jobs:
-  svelte:
+  frontend:
     runs-on: ubuntu-22.04
     container:
       image: node:18-alpine3.17
-    needs:
-      - test-svelte
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
 
-      - name: Install dependencies and build svelte
+      - name: Install dependencies
         run: |
           cd frontend
           yarn install
-          yarn build
 
-      - name: Check svelte code quality
-        run: yarn lint
+      - name: Check code quality
+        run: |
+          cd frontend
+          yarn lint
 
       - name: Test svelte code
-        run: yarn test
+        run: |
+          cd frontend
+          yarn test
+
+      - name: Build svelte app
+        run: |
+          cd frontend
+          yarn build
 
       - name: Upload svelte artifact
         uses: actions/upload-artifact@v3
@@ -37,26 +43,28 @@ jobs:
           name: svelte-app
           path: wwwroot
 
-  rust:
+  backend:
     runs-on: ubuntu-22.04
     container:
       image: mcr.microsoft.com/devcontainers/rust:1-1-bookworm
-    needs:
-      - test-rust
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
 
-      - name: Build rust app
+      - name: Check code quality
+        run: |
+          cd backend
+          cargo clippy
+
+      - name: Run tests
+        run: |
+          cd backend
+          cargo test
+
+      - name: Build app
         run: |
           cd backend
           cargo build --release
-
-      - name: Run Rust tests
-        run: cargo test
-
-      - name: Check rust code quality
-        run: cargo clippy
 
       - name: Upload rust artifact
         uses: actions/upload-artifact@v3
@@ -69,8 +77,8 @@ jobs:
     container:
       image: docker:23.0
     needs:
-      - build-svelte
-      - build-rust
+      - frontend
+      - backend
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
