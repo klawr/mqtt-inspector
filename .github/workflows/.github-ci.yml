@@ -48,13 +48,28 @@ jobs:
           name: rust-app
           path: backend/target/release/backend
 
+  test-rust:
+    runs-on: ubuntu-22.04
+    container:
+      image: mcr.microsoft.com/devcontainers/rust:1-1-bookworm
+    needs:
+      - build-rust
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Run Rust tests
+        run: |
+          cd backend
+          cargo test
+
   build-docker:
     runs-on: ubuntu-22.04
     container:
       image: docker:23.0
     needs:
       - build-svelte
-      - build-rust
+      - test-rust
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
