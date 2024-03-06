@@ -61,7 +61,7 @@ pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection
     return (client, connection);
 }
 
-pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: BrokerMap) {
+pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: &BrokerMap) {
     let binding = mqtt_map.lock().unwrap();
     let broker = binding.get(host);
 

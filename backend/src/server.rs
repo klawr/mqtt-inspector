@@ -43,16 +43,19 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
 
     let broker_path = &std::format!("{}/brokers.json", config_path);
     broker_peer_bridge::connect_to_known_brokers(&broker_path, &peer_map, &mqtt_map);
-
-    let config_path_clone = config_path.clone();
+    println!(
+        "Listening for connections on {} using static files from {} and config {}",
+        server_addr, static_files, config_path
+    );
 
     let ws = warp::path("ws")
         .and(warp::ws())
         .and(warp::addr::remote())
         .map(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
-            let peer_map = peer_map.clone();
-            let mqtt_map = mqtt_map.clone();
-            let config_path = config_path_clone.clone();
+            let peer_map = std::sync::Arc::clone(&peer_map);
+            let mqtt_map = std::sync::Arc::clone(&mqtt_map);
+            // TODO can I avoid cloning config_path here?
+            let config_path = config_path.clone();
             ws.on_upgrade(move |socket| async move {
                 let (ws_tx, ws_rx) = socket.split();
                 let (tx, rx) = unbounded();
@@ -70,9 +73,9 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
                     if let Ok(text) = msg.to_str() {
                         broker_peer_bridge::deserialize_json_rpc_and_process(
                             text,
-                            peer_map.clone(),
-                            mqtt_map.clone(),
-                            config_path.clone(),
+                            &peer_map,
+                            &mqtt_map,
+                            &config_path,
                         );
                     }
 
@@ -89,10 +92,6 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
             })
         });
 
-    println!(
-        "Listening for connections on {} using static files from {} and config {}",
-        server_addr, static_files, config_path
-    );
     let routes = warp::get().and(ws.or(warp::fs::dir(static_files)));
     let warp_handle = tokio::spawn(async move {
         warp::serve(routes).run(server_addr).await;

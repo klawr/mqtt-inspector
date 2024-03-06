@@ -27,12 +27,12 @@ mod utils {
         let static_files = if args.len() < 2 {
             "../frontend/wwwroot".to_string()
         } else {
-            args[1].clone()
+            args[1].to_string()
         };
         let config_dir = if args.len() < 3 {
             "../test/config".to_string()
         } else {
-            args[2].clone()
+            args[2].to_string()
         };
 
         (static_files, config_dir)

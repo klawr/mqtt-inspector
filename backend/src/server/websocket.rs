@@ -42,8 +42,8 @@ pub fn send_message_to_peers(
 ) {
     peer_map.lock().unwrap().iter().for_each(|(addr, tx)| {
         let message = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0".to_string(),
-            method: "mqtt_message".to_string(),
+            jsonrpc: "2.0",
+            method: "mqtt_message",
             params: serde_json::json!({
                 "source": source,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -67,11 +67,11 @@ pub fn send_message_to_peers(
     });
 }
 
-pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &String, status: bool) {
+pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
     peer_map.lock().unwrap().iter().for_each(|(addr, tx)| {
         let message = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0".to_string(),
-            method: "mqtt_connection_status".to_string(),
+            jsonrpc: "2.0",
+            method: "mqtt_connection_status",
             params: serde_json::json!({
                 "source": source,
                 "connected": status,
@@ -93,10 +93,7 @@ pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &String, status: 
     });
 }
 
-pub fn send_configs(
-    sender: &UnboundedSender<warp::filters::ws::Message>,
-    config_path: &String,
-) -> () {
+pub fn send_configs(sender: &UnboundedSender<warp::filters::ws::Message>, config_path: &str) -> () {
     send_commands(sender, &format!("{}/commands", config_path));
     send_pipelines(sender, &format!("{}/pipelines", config_path));
 }
@@ -118,8 +115,8 @@ pub fn send_commands(
             .collect();
 
         let jsonrpc = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0".to_string(),
-            method: "commands".to_string(),
+            jsonrpc: "2.0",
+            method: "commands",
             params: serde_json::json!(&commands),
         };
 
@@ -153,8 +150,8 @@ pub fn send_pipelines(
             .collect();
 
         let jsonrpc = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0".to_string(),
-            method: "pipelines".to_string(),
+            jsonrpc: "2.0",
+            method: "pipelines",
             params: serde_json::json!(&pipelines),
         };
 
@@ -169,7 +166,7 @@ pub fn send_pipelines(
     }
 }
 
-pub fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
+pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
     peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
         send_brokers(tx, &mqtt_map);
     });
@@ -179,8 +176,8 @@ pub fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: 
     let binding = mqtt_map.lock().unwrap();
     let brokers: Vec<&mqtt::MqttBroker> = binding.iter().map(|broker| broker.1).collect();
     let message = jsonrpc::JsonRpcNotification {
-        jsonrpc: "2.0".to_string(),
-        method: "mqtt_brokers".to_string(),
+        jsonrpc: "2.0",
+        method: "mqtt_brokers",
         params: serde_json::json!(brokers.clone()),
     };
 
@@ -194,7 +191,7 @@ pub fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: 
     }
 }
 
-pub fn broadcast_pipelines(peer_map: PeerMap, config_path: &String) {
+pub fn broadcast_pipelines(peer_map: &PeerMap, config_path: &str) {
     peer_map
         .lock()
         .unwrap()
@@ -202,7 +199,7 @@ pub fn broadcast_pipelines(peer_map: PeerMap, config_path: &String) {
         .for_each(|(_addr, tx)| send_pipelines(tx, &format!("{}/pipelines", config_path)));
 }
 
-pub fn broadcast_commands(peer_map: PeerMap, config_path: &String) {
+pub fn broadcast_commands(peer_map: &PeerMap, config_path: &str) {
     peer_map
         .lock()
         .unwrap()

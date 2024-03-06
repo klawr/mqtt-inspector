@@ -23,9 +23,9 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct JsonRpcNotification {
-    pub jsonrpc: String,
-    pub method: String,
+pub struct JsonRpcNotification<'a> {
+    pub jsonrpc: &'a str,
+    pub method: &'a str,
     pub params: serde_json::Value,
 }
 
