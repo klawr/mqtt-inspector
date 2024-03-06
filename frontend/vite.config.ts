@@ -9,6 +9,10 @@ export default defineConfig({
 		},
 	},
 	test: {
-		include: ['src/**/*.{test,spec}.{js,ts}']
-	}
+		include: ['src/**/*.{test,spec}.{js,ts}'],
+		exclude: ['node_modules', '**/wwwroot/**'],
+		coverage: {
+			exclude: ['wwwroot', '.svelte-kit', '**/**.svelte'],
+		}
+	},
 });
