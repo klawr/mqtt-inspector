@@ -20,9 +20,6 @@
  * THE SOFTWARE.
  */
 
-mod config;
-mod jsonrpc;
-mod mqtt;
 mod server;
 
 fn get_arguments_or_default() -> (String, String) {

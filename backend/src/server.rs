@@ -20,6 +20,10 @@
  * THE SOFTWARE.
  */
 
+mod config;
+mod jsonrpc;
+mod mqtt;
+
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -30,11 +34,7 @@ use futures_channel::mpsc::{unbounded, UnboundedSender};
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use warp::Filter;
 
-use crate::{
-    config,
-    jsonrpc::{self, JsonRpcNotification},
-    mqtt,
-};
+use jsonrpc::JsonRpcNotification;
 
 type PeerMap = Arc<Mutex<HashMap<SocketAddr, UnboundedSender<warp::filters::ws::Message>>>>;
 

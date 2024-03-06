@@ -20,11 +20,10 @@
  * THE SOFTWARE.
  */
 
+use super::jsonrpc;
 use std::fs;
 
 use futures_channel::mpsc::UnboundedSender;
-
-use crate::jsonrpc::JsonRpcNotification;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct CommandMessage {
@@ -161,7 +160,7 @@ pub fn send_commands(
             })
             .collect();
 
-        let jsonrpc = JsonRpcNotification {
+        let jsonrpc = jsonrpc::JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method: "commands".to_string(),
             params: serde_json::json!(&commands),
@@ -196,7 +195,7 @@ pub fn send_pipelines(
             })
             .collect();
 
-        let jsonrpc = JsonRpcNotification {
+        let jsonrpc = jsonrpc::JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method: "pipelines".to_string(),
             params: serde_json::json!(&pipelines),
