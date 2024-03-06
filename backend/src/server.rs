@@ -42,7 +42,7 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     let peer_map = websocket::PeerMap::new(Mutex::new(HashMap::new()));
 
     let broker_path = &std::format!("{}/brokers.json", config_path);
-    broker_peer_bridge::connect_to_known_brokers(&broker_path, &peer_map, &mqtt_map);
+    broker_peer_bridge::connect_to_known_brokers(broker_path, &peer_map, &mqtt_map);
     println!(
         "Listening for connections on {} using static files from {} and config {}",
         server_addr, static_files, config_path
@@ -93,9 +93,9 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
         });
 
     let routes = warp::get().and(ws.or(warp::fs::dir(static_files)));
-    let warp_handle = tokio::spawn(async move {
-        warp::serve(routes).run(server_addr).await;
-    });
+    
 
-    warp_handle
+    tokio::spawn(async move {
+        warp::serve(routes).run(server_addr).await;
+    })
 }

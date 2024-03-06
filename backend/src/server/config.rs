@@ -41,8 +41,8 @@ pub struct PipelineMessage {
 }
 
 pub fn get_known_brokers(brokers_path: &str) -> VecDeque<String> {
-    if let Ok(file_content) = &std::fs::read_to_string(&brokers_path) {
-        serde_json::from_str(&file_content).unwrap_or_else(|_| VecDeque::new())
+    if let Ok(file_content) = &std::fs::read_to_string(brokers_path) {
+        serde_json::from_str(file_content).unwrap_or_else(|_| VecDeque::new())
     } else {
         eprintln!("Failed to read file {}", &brokers_path);
         VecDeque::new()
@@ -59,7 +59,7 @@ pub fn add_to_brokers(brokers_path: &str, broker: &str) {
 
     brokers.push(broker.to_string());
     if let Ok(content) = serde_json::to_string(&brokers) {
-        if let Err(_) = std::fs::write(&brokers_path, content) {
+        if std::fs::write(brokers_path, content).is_err() {
             eprintln!("Failed to save new brokers file to {}", brokers_path);
         }
     } else {
@@ -78,7 +78,7 @@ pub fn remove_from_brokers(brokers_path: &str, broker: &str) {
     if let Some(index) = brokers.iter().position(|b| b == broker) {
         brokers.remove(index);
         if let Ok(content) = serde_json::to_string(&brokers) {
-            if let Err(_) = std::fs::write(&brokers_path, content) {
+            if std::fs::write(brokers_path, content).is_err() {
                 eprintln!("Failed to save new brokers file to {}", brokers_path);
             }
         } else {
@@ -96,7 +96,7 @@ pub fn add_to_commands(commands_path: &str, params: serde_json::Value) {
             std::fs::create_dir_all(parent_dir).expect("Failed to create directory path");
         }
         if let Ok(content) = serde_json::to_string(&new_command) {
-            if let Err(_) = std::fs::write(&new_command_path, content) {
+            if std::fs::write(&new_command_path, content).is_err() {
                 eprintln!("Failed to save new commands file to {}", new_command_path);
             }
         } else {
@@ -110,7 +110,7 @@ pub fn add_to_commands(commands_path: &str, params: serde_json::Value) {
 pub fn remove_from_commands(commands_path: &String, params: serde_json::Value) {
     let command = params["name"].as_str().unwrap();
     let command_path = std::format!("{}/{}.json", commands_path, command);
-    if let Err(_) = std::fs::remove_file(&command_path) {
+    if std::fs::remove_file(&command_path).is_err() {
         eprintln!("Failed to remove command file from {}", command_path);
     }
 }
@@ -122,7 +122,7 @@ pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
             std::fs::create_dir_all(parent_dir).expect("Failed to create directory path");
         }
         if let Ok(content) = serde_json::to_string(&new_pipeline) {
-            if let Err(_) = std::fs::write(&new_pipeline_path, content) {
+            if std::fs::write(&new_pipeline_path, content).is_err() {
                 eprintln!("Failed to save new commands file to {}", new_pipeline_path);
             }
         } else {
@@ -136,7 +136,7 @@ pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
 pub fn remove_from_pipelines(pipelines_path: &String, params: serde_json::Value) {
     let pipeline = params["name"].as_str().unwrap();
     let pipeline_path = std::format!("{}/{}.json", pipelines_path, pipeline);
-    if let Err(_) = std::fs::remove_file(&pipeline_path) {
+    if std::fs::remove_file(&pipeline_path).is_err() {
         eprintln!("Failed to remove pipeline file from {}", pipeline_path);
     }
 }

@@ -40,7 +40,7 @@ mod utils {
 }
 
 #[tokio::main]
-async fn main() -> () {
+async fn main() {
     let (static_files, config_dir) = utils::get_arguments_or_default();
 
     match std::fs::create_dir_all(&config_dir) {

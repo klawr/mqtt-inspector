@@ -93,7 +93,7 @@ pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: boo
     });
 }
 
-pub fn send_configs(sender: &UnboundedSender<warp::filters::ws::Message>, config_path: &str) -> () {
+pub fn send_configs(sender: &UnboundedSender<warp::filters::ws::Message>, config_path: &str) {
     send_commands(sender, &format!("{}/commands", config_path));
     send_pipelines(sender, &format!("{}/pipelines", config_path));
 }
@@ -101,7 +101,7 @@ pub fn send_configs(sender: &UnboundedSender<warp::filters::ws::Message>, config
 pub fn send_commands(
     sender: &UnboundedSender<warp::filters::ws::Message>,
     commands_path: &String,
-) -> () {
+) {
     if let Ok(commands) = std::fs::read_dir(commands_path) {
         let commands: Vec<CommandMessage> = commands
             .filter_map(|dir_entry| {
@@ -136,7 +136,7 @@ pub fn send_commands(
 pub fn send_pipelines(
     sender: &UnboundedSender<warp::filters::ws::Message>,
     pipelines_path: &String,
-) -> () {
+) {
     if let Ok(pipelines) = std::fs::read_dir(pipelines_path) {
         let pipelines: Vec<PipelineMessage> = pipelines
             .filter_map(|dir_entry| {
@@ -168,7 +168,7 @@ pub fn send_pipelines(
 
 pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
     peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
-        send_brokers(tx, &mqtt_map);
+        send_brokers(tx, mqtt_map);
     });
 }
 
