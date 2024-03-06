@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: node:18-alpine3.17
+    needs:
+      - test-svelte
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
@@ -33,6 +35,8 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: mcr.microsoft.com/devcontainers/rust:1-1-bookworm
+    needs:
+      - test-rust
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
@@ -52,8 +56,6 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: mcr.microsoft.com/devcontainers/rust:1-1-bookworm
-    needs:
-      - build-rust
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
@@ -67,8 +69,6 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: node:18-alpine3.17
-    needs:
-      - build-svelte
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
@@ -84,8 +84,8 @@ jobs:
     container:
       image: docker:23.0
     needs:
-      - test-svelte
-      - test-rust
+      - build-svelte
+      - build-rust
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v2
