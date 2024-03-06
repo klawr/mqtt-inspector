@@ -25,7 +25,6 @@ use super::jsonrpc;
 use super::mqtt;
 use super::websocket;
 
-use futures_channel::mpsc::UnboundedSender;
 use std::collections::HashMap;
 
 fn loop_forever(
@@ -126,20 +125,93 @@ fn loop_forever(
 }
 
 pub fn connect_to_known_brokers(
-    broker_path: String,
+    broker_path: &String,
+    peer_map: &websocket::PeerMap,
+    mqtt_map: &mqtt::BrokerMap,
+) {
+    config::get_known_brokers(&broker_path)
+        .iter()
+        .for_each(|broker| {
+            connect_to_broker(broker, peer_map.clone(), mqtt_map.clone());
+        });
+}
+
+pub fn deserialize_json_rpc_and_process(
+    json_rpc: &str,
     peer_map: websocket::PeerMap,
     mqtt_map: mqtt::BrokerMap,
-) {
+    config_path: String,
+) -> () {
+    let result = jsonrpc::deserialize_json_rpc(json_rpc);
+    if result.is_err() {
+        println!("Error deserializing JSON-RPC: {:?}", result.err());
+        return;
+    }
+    let message = result.unwrap();
+    println!(
+        "Got method \"{}\" with params {}",
+        message.method,
+        message.params.clone()
+    );
+    match message.method.as_str() {
+        "connect" => {
+            let hostname = message.params["hostname"].as_str().unwrap().to_string();
+            connect_to_broker(&hostname, peer_map.clone(), mqtt_map.clone());
+            let broker_path = std::format!("{}/brokers.json", config_path);
+            config::add_to_brokers(&broker_path, hostname);
+            websocket::broadcast_brokers(peer_map, mqtt_map)
+        }
+        "remove" => {
+            let hostname = message.params["hostname"].as_str().unwrap().to_string();
+            remove_broker(&hostname, peer_map.clone(), mqtt_map.clone());
+            let broker_path = std::format!("{}/brokers.json", config_path);
+            config::remove_from_brokers(&broker_path, hostname);
+            websocket::broadcast_brokers(peer_map, mqtt_map)
+        }
+        "publish" => {
+            let host = message.params["host"].as_str().unwrap();
+            let topic = message.params["topic"].as_str().unwrap();
+            let payload = message.params["payload"].as_str().unwrap();
+            mqtt::publish_message(&host, &topic, &payload, mqtt_map);
+        }
+        "save_command" => {
+            let command_path: String = std::format!("{}/commands", config_path);
+            config::add_to_commands(&command_path, message.params);
+            websocket::broadcast_commands(peer_map, &config_path);
+        }
+        "remove_command" => {
+            let command_path: String = std::format!("{}/commands", config_path);
+            config::remove_from_commands(&command_path, message.params);
+            websocket::broadcast_commands(peer_map, &config_path);
+        }
+        "save_pipeline" => {
+            let pipelines_path = std::format!("{}/pipelines", config_path);
+            config::add_to_pipelines(&pipelines_path, message.params);
+            websocket::broadcast_pipelines(peer_map, &config_path);
+        }
+        "remove_pipeline" => {
+            let pipelines_path = std::format!("{}/pipelines", config_path);
+            config::remove_from_pipelines(&pipelines_path, message.params);
+            websocket::broadcast_pipelines(peer_map, &config_path);
+        }
+        _ => {
+            // Implement other methods
+        }
+    }
+    // Implement deserialization and processing of JSON-RPC message
+}
+
+fn connect_to_broker(mqtt_host: &String, peer_map: websocket::PeerMap, mqtt_map: mqtt::BrokerMap) {
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
-    let known_brokers = config::get_known_brokers(&broker_path);
+    let mqtt_host_clone = mqtt_host.clone();
 
-    known_brokers.iter().for_each(|broker| {
-        connect_to_broker(broker, peer_map_clone.clone(), mqtt_map_clone.clone());
+    std::thread::spawn(move || {
+        connect_to_mqtt_client_and_loop_forever(&mqtt_host_clone, mqtt_map_clone, peer_map_clone);
     });
 }
 
-fn connect_to_mqtt_client(
+fn connect_to_mqtt_client_and_loop_forever(
     mqtt_host: &String,
     mqtt_map: mqtt::BrokerMap,
     peer_map: websocket::PeerMap,
@@ -200,105 +272,5 @@ fn remove_broker(mqtt_host: &String, peer_map: websocket::PeerMap, mqtt_map: mqt
         });
     } else {
         println!("No MQTT-Client for {} found.", mqtt_host);
-    }
-}
-
-fn connect_to_broker(mqtt_host: &String, peer_map: websocket::PeerMap, mqtt_map: mqtt::BrokerMap) {
-    let mqtt_map_clone = mqtt_map.clone();
-    let peer_map_clone = peer_map.clone();
-    let host = mqtt_host.clone();
-
-    std::thread::spawn(move || {
-        connect_to_mqtt_client(&host, mqtt_map_clone, peer_map_clone);
-    });
-}
-
-pub fn deserialize_json_rpc_and_process(
-    json_rpc: &str,
-    peer_map: websocket::PeerMap,
-    mqtt_map: mqtt::BrokerMap,
-    config_path: String,
-) -> () {
-    let result = jsonrpc::deserialize_json_rpc(json_rpc);
-    if result.is_err() {
-        println!("Error deserializing JSON-RPC: {:?}", result.err());
-        return;
-    }
-    let message = result.unwrap();
-    println!(
-        "Got method \"{}\" with params {}",
-        message.method,
-        message.params.clone()
-    );
-    match message.method.as_str() {
-        "connect" => {
-            let hostname = message.params["hostname"].as_str().unwrap().to_string();
-            connect_to_broker(&hostname, peer_map.clone(), mqtt_map.clone());
-            let broker_path = std::format!("{}/brokers.json", config_path);
-            config::add_to_brokers(&broker_path, hostname);
-            broadcast_brokers(peer_map, mqtt_map)
-        }
-        "remove" => {
-            let hostname = message.params["hostname"].as_str().unwrap().to_string();
-            remove_broker(&hostname, peer_map.clone(), mqtt_map.clone());
-            let broker_path = std::format!("{}/brokers.json", config_path);
-            config::remove_from_brokers(&broker_path, hostname);
-            broadcast_brokers(peer_map, mqtt_map)
-        }
-        "publish" => {
-            let host = message.params["host"].as_str().unwrap();
-            let topic = message.params["topic"].as_str().unwrap();
-            let payload = message.params["payload"].as_str().unwrap();
-            mqtt::publish_message(&host, &topic, &payload, mqtt_map);
-        }
-        "save_command" => {
-            let command_path: String = std::format!("{}/commands", config_path);
-            config::add_to_commands(&command_path, message.params);
-            websocket::broadcast_commands(peer_map, &config_path);
-        }
-        "remove_command" => {
-            let command_path: String = std::format!("{}/commands", config_path);
-            config::remove_from_commands(&command_path, message.params);
-            websocket::broadcast_commands(peer_map, &config_path);
-        }
-        "save_pipeline" => {
-            let pipelines_path = std::format!("{}/pipelines", config_path);
-            config::add_to_pipelines(&pipelines_path, message.params);
-            websocket::broadcast_pipelines(peer_map, &config_path);
-        }
-        "remove_pipeline" => {
-            let pipelines_path = std::format!("{}/pipelines", config_path);
-            config::remove_from_pipelines(&pipelines_path, message.params);
-            websocket::broadcast_pipelines(peer_map, &config_path);
-        }
-        _ => {
-            // Implement other methods
-        }
-    }
-    // Implement deserialization and processing of JSON-RPC message
-}
-
-fn broadcast_brokers(peer_map: websocket::PeerMap, mqtt_map: mqtt::BrokerMap) {
-    peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
-        send_brokers(tx, &mqtt_map);
-    });
-}
-
-pub fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::BrokerMap) {
-    let binding = mqtt_map.lock().unwrap();
-    let brokers: Vec<&mqtt::MqttBroker> = binding.iter().map(|broker| broker.1).collect();
-    let message = jsonrpc::JsonRpcNotification {
-        jsonrpc: "2.0".to_string(),
-        method: "mqtt_brokers".to_string(),
-        params: serde_json::json!(brokers.clone()),
-    };
-
-    if let Ok(serialized) = serde_json::to_string(&message) {
-        match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
-            Ok(_) => { /* Implement Logging */ }
-            Err(err) => println!("Error sending message: {:?}", err),
-        }
-    } else {
-        println!("Failed to serialize brokers.");
     }
 }

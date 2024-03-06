@@ -41,11 +41,8 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
     let peer_map = websocket::PeerMap::new(Mutex::new(HashMap::new()));
 
-    broker_peer_bridge::connect_to_known_brokers(
-        std::format!("{}/brokers.json", config_path),
-        peer_map.clone(),
-        mqtt_map.clone(),
-    );
+    let broker_path = &std::format!("{}/brokers.json", config_path);
+    broker_peer_bridge::connect_to_known_brokers(&broker_path, &peer_map, &mqtt_map);
 
     let config_path_clone = config_path.clone();
 
@@ -62,8 +59,8 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
 
                 if let Some(addr) = addr {
                     println!("Received new WebSocket connection from {}", addr);
-                    broker_peer_bridge::send_brokers(&tx, &mqtt_map);
-                    config::send_configs(&tx, &config_path);
+                    websocket::send_brokers(&tx, &mqtt_map);
+                    websocket::send_configs(&tx, &config_path);
 
                     peer_map.lock().unwrap().insert(addr, tx);
                 }
