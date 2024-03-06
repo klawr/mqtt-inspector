@@ -23,11 +23,12 @@
 mod config;
 mod jsonrpc;
 mod mqtt;
+mod websocket;
 
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use futures_channel::mpsc::{unbounded, UnboundedSender};
@@ -36,65 +37,9 @@ use warp::Filter;
 
 use jsonrpc::JsonRpcNotification;
 
-type PeerMap = Arc<Mutex<HashMap<SocketAddr, UnboundedSender<warp::filters::ws::Message>>>>;
-
-fn send_message_to_peers(peer_map: &PeerMap, source: &str, topic: &str, payload: &bytes::Bytes) {
-    peer_map.lock().unwrap().iter().for_each(|(addr, tx)| {
-        let message = JsonRpcNotification {
-            jsonrpc: "2.0".to_string(),
-            method: "mqtt_message".to_string(),
-            params: serde_json::json!({
-                "source": source,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "topic": topic,
-                "payload": payload.to_vec(), // Convert Bytes to Vec<u8>
-            }),
-        };
-
-        if let Ok(serialized) = serde_json::to_string(&message) {
-            match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
-                Ok(_) => { /* Implement Logging */ }
-                Err(err) => {
-                    if tx.is_closed() {
-                        println!("Peer {} is closed. Removing from peer map.", addr);
-                        peer_map.lock().unwrap().remove(addr);
-                    }
-                    println!("Error sending message to {}: {:?}", addr, err);
-                }
-            }
-        }
-    });
-}
-
-fn send_broker_status_to_peers(peer_map: &PeerMap, source: &String, status: bool) {
-    peer_map.lock().unwrap().iter().for_each(|(addr, tx)| {
-        let message = JsonRpcNotification {
-            jsonrpc: "2.0".to_string(),
-            method: "mqtt_connection_status".to_string(),
-            params: serde_json::json!({
-                "source": source,
-                "connected": status,
-            }),
-        };
-
-        if let Ok(serialized) = serde_json::to_string(&message) {
-            match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
-                Ok(_) => { /* Implement Logging */ }
-                Err(err) => {
-                    if tx.is_closed() {
-                        println!("Peer {} is closed. Removing from peer map.", addr);
-                        peer_map.lock().unwrap().remove(addr);
-                    }
-                    println!("Error sending message to {}: {:?}", addr, err);
-                }
-            }
-        }
-    });
-}
-
 fn loop_forever(
     mut connection: rumqttc::Connection,
-    peer_map: &PeerMap,
+    peer_map: &websocket::PeerMap,
     mqtt_map: &mqtt::BrokerMap,
 ) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
@@ -138,14 +83,14 @@ fn loop_forever(
                         );
                     }
                 });
-                send_message_to_peers(peer_map, &hostname, &p.topic, &payload);
+                websocket::send_message_to_peers(peer_map, &hostname, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
                 mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
                     broker.connected = true;
                 });
                 // Small update for the peers already connected
-                send_broker_status_to_peers(peer_map, &hostname, true);
+                websocket::send_broker_status_to_peers(peer_map, &hostname, true);
                 println!("Connection event: {:?} for {:?}", a.code, hostname);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Disconnect)) => {
@@ -160,7 +105,7 @@ fn loop_forever(
                 let payload =
                     bytes::Bytes::from(std::format!("Payload size limit exceeded: {}.", p));
                 println!("Payload size limit exceeded: {}", p);
-                send_message_to_peers(peer_map, &hostname, "$ERROR", &payload)
+                websocket::send_message_to_peers(peer_map, &hostname, "$ERROR", &payload)
             }
             Err(rumqttc::ConnectionError::MqttState(err)) => {
                 println!(
@@ -176,7 +121,7 @@ fn loop_forever(
                     broker.connected = false;
                 });
                 // Small update for the peers already connected
-                send_broker_status_to_peers(peer_map, &hostname, false);
+                websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                 println!(
                     "Connection error: {:?} for {:?}. Try again in 5 seconds.",
                     err.to_string(),
@@ -189,7 +134,11 @@ fn loop_forever(
     }
 }
 
-pub fn connect_to_known_brokers(broker_path: String, peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
+fn connect_to_known_brokers(
+    broker_path: String,
+    peer_map: websocket::PeerMap,
+    mqtt_map: mqtt::BrokerMap,
+) {
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
     let known_brokers = config::get_known_brokers(&broker_path);
@@ -199,7 +148,11 @@ pub fn connect_to_known_brokers(broker_path: String, peer_map: PeerMap, mqtt_map
     });
 }
 
-fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::BrokerMap, peer_map: PeerMap) -> () {
+fn connect_to_mqtt_client(
+    mqtt_host: &String,
+    mqtt_map: mqtt::BrokerMap,
+    peer_map: websocket::PeerMap,
+) -> () {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
@@ -225,7 +178,7 @@ fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::BrokerMap, peer_ma
     }
 }
 
-fn remove_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
+fn remove_broker(mqtt_host: &String, peer_map: websocket::PeerMap, mqtt_map: mqtt::BrokerMap) {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
@@ -259,7 +212,7 @@ fn remove_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::BrokerMa
     }
 }
 
-fn connect_to_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
+fn connect_to_broker(mqtt_host: &String, peer_map: websocket::PeerMap, mqtt_map: mqtt::BrokerMap) {
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
     let host = mqtt_host.clone();
@@ -269,23 +222,7 @@ fn connect_to_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::Brok
     });
 }
 
-pub fn broadcast_pipelines(peer_map: PeerMap, config_path: &String) {
-    peer_map
-        .lock()
-        .unwrap()
-        .iter()
-        .for_each(|(_addr, tx)| config::send_pipelines(tx, &format!("{}/pipelines", config_path)));
-}
-
-pub fn broadcast_commands(peer_map: PeerMap, config_path: &String) {
-    peer_map
-        .lock()
-        .unwrap()
-        .iter()
-        .for_each(|(_addr, tx)| config::send_commands(tx, &format!("{}/commands", config_path)));
-}
-
-fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
+fn broadcast_brokers(peer_map: websocket::PeerMap, mqtt_map: mqtt::BrokerMap) {
     peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
         send_brokers(tx, &mqtt_map);
     });
@@ -293,7 +230,7 @@ fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
 
 fn deserialize_json_rpc_and_process(
     json_rpc: &str,
-    peer_map: PeerMap,
+    peer_map: websocket::PeerMap,
     mqtt_map: mqtt::BrokerMap,
     config_path: String,
 ) -> () {
@@ -330,22 +267,22 @@ fn deserialize_json_rpc_and_process(
         "save_command" => {
             let command_path: String = std::format!("{}/commands", config_path);
             config::add_to_commands(&command_path, message.params);
-            broadcast_commands(peer_map, &config_path);
+            websocket::broadcast_commands(peer_map, &config_path);
         }
         "remove_command" => {
             let command_path: String = std::format!("{}/commands", config_path);
             config::remove_from_commands(&command_path, message.params);
-            broadcast_commands(peer_map, &config_path);
+            websocket::broadcast_commands(peer_map, &config_path);
         }
         "save_pipeline" => {
             let pipelines_path = std::format!("{}/pipelines", config_path);
             config::add_to_pipelines(&pipelines_path, message.params);
-            broadcast_pipelines(peer_map, &config_path);
+            websocket::broadcast_pipelines(peer_map, &config_path);
         }
         "remove_pipeline" => {
             let pipelines_path = std::format!("{}/pipelines", config_path);
             config::remove_from_pipelines(&pipelines_path, message.params);
-            broadcast_pipelines(peer_map, &config_path);
+            websocket::broadcast_pipelines(peer_map, &config_path);
         }
         _ => {
             // Implement other methods
@@ -355,7 +292,6 @@ fn deserialize_json_rpc_and_process(
 }
 
 fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::BrokerMap) {
-    // TODO String -> MqttBroker
     let binding = mqtt_map.lock().unwrap();
     let brokers: Vec<&mqtt::MqttBroker> = binding.iter().map(|broker| broker.1).collect();
     let message = JsonRpcNotification {
@@ -377,7 +313,7 @@ fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqt
 pub fn run_server(static_files: String, config_path: String) -> tokio::task::JoinHandle<()> {
     let mqtt_map = mqtt::BrokerMap::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
-    let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
+    let peer_map = websocket::PeerMap::new(Mutex::new(HashMap::new()));
 
     connect_to_known_brokers(
         std::format!("{}/brokers.json", config_path),
