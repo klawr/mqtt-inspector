@@ -92,7 +92,11 @@ fn send_broker_status_to_peers(peer_map: &PeerMap, source: &String, status: bool
     });
 }
 
-fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_map: &mqtt::Map) {
+fn loop_forever(
+    mut connection: rumqttc::Connection,
+    peer_map: &PeerMap,
+    mqtt_map: &mqtt::BrokerMap,
+) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
     let hostname = format!("{}:{}", ip, port);
 
@@ -178,13 +182,14 @@ fn loop_forever(mut connection: rumqttc::Connection, peer_map: &PeerMap, mqtt_ma
                     err.to_string(),
                     hostname
                 );
+                drop(mqtt_lock);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
         }
     }
 }
 
-pub fn connect_to_known_brokers(broker_path: String, peer_map: PeerMap, mqtt_map: mqtt::Map) {
+pub fn connect_to_known_brokers(broker_path: String, peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
     let known_brokers = config::get_known_brokers(&broker_path);
@@ -194,7 +199,7 @@ pub fn connect_to_known_brokers(broker_path: String, peer_map: PeerMap, mqtt_map
     });
 }
 
-fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::Map, peer_map: PeerMap) -> () {
+fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::BrokerMap, peer_map: PeerMap) -> () {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
@@ -220,7 +225,7 @@ fn connect_to_mqtt_client(mqtt_host: &String, mqtt_map: mqtt::Map, peer_map: Pee
     }
 }
 
-fn remove_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::Map) {
+fn remove_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
@@ -254,7 +259,7 @@ fn remove_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::Map) {
     }
 }
 
-fn connect_to_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::Map) {
+fn connect_to_broker(mqtt_host: &String, peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
     let host = mqtt_host.clone();
@@ -280,7 +285,7 @@ pub fn broadcast_commands(peer_map: PeerMap, config_path: &String) {
         .for_each(|(_addr, tx)| config::send_commands(tx, &format!("{}/commands", config_path)));
 }
 
-fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::Map) {
+fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::BrokerMap) {
     peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
         send_brokers(tx, &mqtt_map);
     });
@@ -289,7 +294,7 @@ fn broadcast_brokers(peer_map: PeerMap, mqtt_map: mqtt::Map) {
 fn deserialize_json_rpc_and_process(
     json_rpc: &str,
     peer_map: PeerMap,
-    mqtt_map: mqtt::Map,
+    mqtt_map: mqtt::BrokerMap,
     config_path: String,
 ) -> () {
     let result = jsonrpc::deserialize_json_rpc(json_rpc);
@@ -349,7 +354,7 @@ fn deserialize_json_rpc_and_process(
     // Implement deserialization and processing of JSON-RPC message
 }
 
-fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::Map) {
+fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::BrokerMap) {
     // TODO String -> MqttBroker
     let binding = mqtt_map.lock().unwrap();
     let brokers: Vec<&mqtt::MqttBroker> = binding.iter().map(|broker| broker.1).collect();
@@ -370,7 +375,7 @@ fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqt
 }
 
 pub fn run_server(static_files: String, config_path: String) -> tokio::task::JoinHandle<()> {
-    let mqtt_map = mqtt::Map::new(Mutex::new(HashMap::new()));
+    let mqtt_map = mqtt::BrokerMap::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
 

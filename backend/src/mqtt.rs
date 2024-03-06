@@ -43,7 +43,7 @@ pub struct MqttBroker {
     pub topics: HashMap<String, Vec<MqttMessage>>,
 }
 
-pub type Map = Arc<Mutex<HashMap<String, MqttBroker>>>;
+pub type BrokerMap = Arc<Mutex<HashMap<String, MqttBroker>>>;
 
 pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
@@ -61,21 +61,26 @@ pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection
     return (client, connection);
 }
 
-pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: Map) {
+pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: BrokerMap) {
     let binding = mqtt_map.lock().unwrap();
     let broker = binding.get(host);
-    if broker.is_none() {
+
+    if let Some(broker) = broker {
+        match broker.client.clone().publish(
+            topic,
+            rumqttc::QoS::AtLeastOnce,
+            false,
+            payload.as_bytes(),
+        ) {
+            Ok(_) => {
+                // Successfully published
+            }
+            Err(err) => {
+                // Handle the error
+                println!("Error publishing: {}", err);
+            }
+        }
+    } else {
         println!("Can't publish. Broker {} not found", host);
-        return;
     }
-    // List all hosts in mqtt_map:
-    for (key, _value) in binding.iter() {
-        println!("{}", key);
-    }
-    broker
-        .unwrap()
-        .client
-        .clone()
-        .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload.as_bytes())
-        .unwrap();
 }
