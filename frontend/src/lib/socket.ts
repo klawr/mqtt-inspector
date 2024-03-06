@@ -20,71 +20,84 @@
  * THE SOFTWARE.
  */
 
-export function requestCommandAddition(save_command_name: string, topic: string, payload: string, socket: WebSocket) {
-    const message = JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'save_command',
-        params: { name: save_command_name, topic, payload }
-    });
-    socket.send(message);
+export function requestCommandAddition(
+	save_command_name: string,
+	topic: string,
+	payload: string,
+	socket: WebSocket
+) {
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'save_command',
+		params: { name: save_command_name, topic, payload }
+	});
+	socket.send(message);
 }
 
-export function requestPipelineAddition(pipelineName: string, newPipeline: { topic: string }[], socket: WebSocket) {
-    const message = JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'save_pipeline',
-        params: {
-            name: pipelineName,
-            pipeline: newPipeline
-        }
-    });
+export function requestPipelineAddition(
+	pipelineName: string,
+	newPipeline: { topic: string }[],
+	socket: WebSocket
+) {
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'save_pipeline',
+		params: {
+			name: pipelineName,
+			pipeline: newPipeline
+		}
+	});
 
-    socket.send(message);
+	socket.send(message);
 }
 
 export function requestMqttBrokerRemoval(hostname: string, socket: WebSocket) {
-    socket.send(`{
+	socket.send(`{
         "jsonrpc": "2.0",
         "method": "remove",
         "params": {
             "hostname": "${hostname}"
         }
-    }`)
+    }`);
 }
 
 export function requestPipelineRemoval(pipeline: string, socket: WebSocket) {
-    socket.send(`{
+	socket.send(`{
         "jsonrpc": "2.0",
         "method": "remove_pipeline",
         "params": {
             "name": "${pipeline}"
         }
-    }`)
-
+    }`);
 }
 
 export function requestMqttBrokerConnection(hostname: string, socket: WebSocket) {
-    socket.send(`{
+	socket.send(`{
         "jsonrpc": "2.0",
         "method": "connect",
         "params": {
             "hostname": "${hostname}"
         }
-    }`)
+    }`);
 }
 
-export function requestPublishMqttMessage(host: string, topic: string, payload: string, socket: WebSocket) {
-    // Hey if you find a better way, feel free to help me out
-    const sanitized_payload = payload
-        .replace(/\\/g, '\\\\')
-        .replace(/\//g, '\\/')
-        .replace(/"/g, '\\"')
-        .replace(/\n/g, '\\n')
-        .replace(/\r/g, '\\r')
-        .replace(/\t/g, '\\t')
-        .replace(/\f/g, '\\f');
+export function requestPublishMqttMessage(
+	host: string,
+	topic: string,
+	payload: string,
+	socket: WebSocket
+) {
+	// Hey if you find a better way, feel free to help me out
+	const sanitized_payload = payload
+		.replace(/\\/g, '\\\\')
+		.replace(/\//g, '\\/')
+		.replace(/"/g, '\\"')
+		.replace(/\n/g, '\\n')
+		.replace(/\r/g, '\\r')
+		.replace(/\t/g, '\\t')
+		.replace(/\f/g, '\\f');
 
-    const message = `{
+	const message = `{
         "jsonrpc": "2.0",
         "method": "publish",
         "params": {
@@ -94,5 +107,5 @@ export function requestPublishMqttMessage(host: string, topic: string, payload: 
         }
     }`;
 
-    socket.send(message);
+	socket.send(message);
 }

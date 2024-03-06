@@ -48,7 +48,7 @@ pub type BrokerMap = Arc<Mutex<HashMap<String, MqttBroker>>>;
 pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
     println!("Connecting to Mqtt broker at {} with id {}", host, id);
-    let hostname_ip = host.split(":").collect::<Vec<&str>>();
+    let hostname_ip = host.trim_matches('"').split(":").collect::<Vec<&str>>();
     let hostname = hostname_ip[0];
     let port = hostname_ip[1].parse::<u16>().unwrap();
     let mut mqttoptions = MqttOptions::new(id, hostname, port);

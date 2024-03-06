@@ -56,7 +56,7 @@ THE SOFTWARE.
 	}
 
 	let selectedCommandId: string;
-	function saved_message_selected(e: any) {
+	function saved_message_selected(e: CustomEvent) {
 		const item = e.detail.selectedItem;
 		if (!item) {
 			return;
@@ -66,7 +66,7 @@ THE SOFTWARE.
 		payload = item.payload;
 	}
 
-	function remove_command(e: any) {
+	function remove_command() {
 		const selectedCommand = savedCommands.find((c) => c.id === selectedCommandId)?.text;
 
 		selectedCommandId = '';
@@ -142,7 +142,7 @@ THE SOFTWARE.
 					<div style="margin-top: auto; margin-bottom: 0; flex: 2">
 						<ComboBox
 							bind:selectedId={selectedCommandId}
-							on:clear={(e) => (selectedCommandId = '')}
+							on:clear={() => (selectedCommandId = '')}
 							on:select={saved_message_selected}
 							titleText="Saved commands"
 							placeholder="Search..."

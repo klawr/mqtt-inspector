@@ -59,7 +59,7 @@ pub fn add_to_brokers(brokers_path: &str, broker: &str) {
 
     brokers.push(broker.to_string());
     if let Ok(content) = serde_json::to_string(&brokers) {
-        if let Err(_) = std::fs::write(brokers_path, content) {
+        if let Err(_) = std::fs::write(&brokers_path, content) {
             eprintln!("Failed to save new brokers file to {}", brokers_path);
         }
     } else {
@@ -78,7 +78,7 @@ pub fn remove_from_brokers(brokers_path: &str, broker: &str) {
     if let Some(index) = brokers.iter().position(|b| b == broker) {
         brokers.remove(index);
         if let Ok(content) = serde_json::to_string(&brokers) {
-            if let Err(_) = std::fs::write(brokers_path, content) {
+            if let Err(_) = std::fs::write(&brokers_path, content) {
                 eprintln!("Failed to save new brokers file to {}", brokers_path);
             }
         } else {

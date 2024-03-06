@@ -49,7 +49,7 @@ THE SOFTWARE.
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
 	import Pipeline from '../components/pipeline.svelte';
-	import { AppState, type Treebranch } from '$lib/state';
+	import { AppState } from '$lib/state';
 	import {
 		processBrokerRemoval,
 		processBrokers,
@@ -114,7 +114,6 @@ THE SOFTWARE.
 	onMount(initializeWebSocket);
 
 	let isSideNavOpen = false;
-	let selectedTopic: Treebranch | null = null;
 	let addMqttBrokerModalOpen = false;
 	let removeMqttBrokerModalOpen = false;
 	let theme: CarbonTheme = 'g90';
@@ -183,7 +182,6 @@ THE SOFTWARE.
 				text={broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {
-					selectedTopic = app.brokerRepository[broker].selectedTopic;
 					app.selectedBroker = broker;
 				}}
 			/>
@@ -200,7 +198,7 @@ THE SOFTWARE.
 		<div style="flex: 1" />
 		<SideNavDivider />
 		<SideNavMenu text="Theme">
-			<div style="margin-top: auto; margin-bottom: 0; margin: 1em">
+			<div style="margin: auto 1em 0px 1em">
 				<RadioButtonGroup orientation="vertical" legendText="Carbon theme" bind:selected={theme}>
 					{#each ['white', 'g10', 'g90', 'g100'] as value}
 						<RadioButton labelText={value} {value} />

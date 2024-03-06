@@ -53,7 +53,7 @@ THE SOFTWARE.
 	export let socket: WebSocket;
 
 	function clicked_row(e: Event) {
-		const value = (e.target as any).value;
+		const value = (e.target as HTMLInputElement).value;
 		if (value === undefined) {
 			return;
 		}
@@ -87,11 +87,11 @@ THE SOFTWARE.
 	}
 
 	let selectedId: number | undefined;
-	function pipelineSelected(e: Event) {
+	function pipelineSelected() {
 		if (selectedId === undefined) {
 			return;
 		}
-		broker.pipeline = pipelines[selectedId].pipeline.map((e: any) => ({
+		broker.pipeline = pipelines[selectedId].pipeline.map((e) => ({
 			topic: e.topic
 		}));
 	}

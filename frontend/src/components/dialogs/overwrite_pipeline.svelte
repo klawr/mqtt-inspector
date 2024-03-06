@@ -21,7 +21,6 @@ THE SOFTWARE.
 
 <script lang="ts">
 	import { requestPipelineAddition } from '$lib/socket';
-	import type { BrokerRepositoryEntry } from '$lib/state';
 	import { Modal } from 'carbon-components-svelte';
 
 	export let open = false;

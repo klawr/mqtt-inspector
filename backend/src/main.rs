@@ -25,7 +25,7 @@ mod utils {
     pub fn get_arguments_or_default() -> (String, String) {
         let args: Vec<String> = std::env::args().collect();
         let static_files = if args.len() < 2 {
-            "../frontend/wwwroot".to_string()
+            "../wwwroot".to_string()
         } else {
             args[1].to_string()
         };
@@ -42,6 +42,16 @@ mod utils {
 #[tokio::main]
 async fn main() -> () {
     let (static_files, config_dir) = utils::get_arguments_or_default();
+
+    match std::fs::create_dir_all(&config_dir) {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!(
+                "Failed to create config directory: {}. Changes will not persist.",
+                err
+            );
+        }
+    }
 
     let warp_handle = server::run_server(static_files, config_dir);
 

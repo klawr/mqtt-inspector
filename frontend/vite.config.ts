@@ -6,13 +6,10 @@ export default defineConfig({
 	server: {
 		proxy: {
 			'/ws': 'ws://localhost:3030/ws'
-		},
+		}
 	},
 	test: {
 		include: ['src/**/*.{test,spec}.{js,ts}'],
-		exclude: ['node_modules', '**/wwwroot/**'],
-		coverage: {
-			exclude: ['wwwroot', '.svelte-kit', '**/**.svelte'],
-		}
-	},
+		exclude: ['node_modules']
+	}
 });

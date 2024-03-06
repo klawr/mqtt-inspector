@@ -20,54 +20,53 @@
  * THE SOFTWARE.
  */
 
-
 export class AppState {
-    selectedBroker: string = "";
-    selectedTopic: Treebranch | null = null;
-    brokerRepository: BrokerRepository = {};
-    pipelines: SavedPipeline[] = [];
-    commands: Command[] = [];
+	selectedBroker: string = '';
+	selectedTopic: Treebranch | null = null;
+	brokerRepository: BrokerRepository = {};
+	pipelines: SavedPipeline[] = [];
+	commands: Command[] = [];
 }
 
 type Message = {
-    timestamp: string,
-    delta_t?: number,
-    text: string,
-}
+	timestamp: string;
+	delta_t?: number;
+	text: string;
+};
 
 export type Treebranch = {
-    id: string,
-    text: string,
-    children?: Treebranch[],
-    original_text: string,
-    number_of_messages: number,
-    messages: Message[]
+	id: string;
+	text: string;
+	children?: Treebranch[];
+	original_text: string;
+	number_of_messages: number;
+	messages: Message[];
 };
 
 type PipelineEntry = {
-    topic: string
-}
+	topic: string;
+};
 export type SavedPipeline = {
-    id: number;
-    text: string;
-    pipeline: PipelineEntry[]
-}
+	id: number;
+	text: string;
+	pipeline: PipelineEntry[];
+};
 
 export type Command = {
-    id: string;
-    text: string;
-    topic: string;
-    payload: string
-}
+	id: string;
+	text: string;
+	topic: string;
+	payload: string;
+};
 
 export type BrokerRepositoryEntry = {
-    markedForDeletion?: boolean;
-    topics: Treebranch[];
-    selectedTopic: Treebranch | null;
-    pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
-    connected: boolean;
-}
+	markedForDeletion?: boolean;
+	topics: Treebranch[];
+	selectedTopic: Treebranch | null;
+	pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
+	connected: boolean;
+};
 
 export type BrokerRepository = {
-    [key: string]: BrokerRepositoryEntry;
-}
+	[key: string]: BrokerRepositoryEntry;
+};

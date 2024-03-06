@@ -10,7 +10,7 @@
             "name": "Debug",
             "program": "${workspaceFolder}/backend/target/debug/backend",
             "args": [
-                "/workspaces/mqtt-inspector/frontend/wwwroot",
+                "/workspaces/mqtt-inspector/wwwroot",
                 "/workspaces/mqtt-inspector/test/config"
             ],
             "cwd": "${workspaceFolder}"

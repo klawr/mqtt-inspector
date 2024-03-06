@@ -155,21 +155,30 @@ pub fn deserialize_json_rpc_and_process(
     );
     match message.method {
         "connect" => {
-            let hostname = message.params["hostname"].to_string();
+            let hostname = message.params["hostname"]
+                .to_string()
+                .trim_matches('"')
+                .to_string();
             connect_to_broker(&hostname, &peer_map, &mqtt_map);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::add_to_brokers(&broker_path, &hostname);
             websocket::broadcast_brokers(&peer_map, &mqtt_map)
         }
         "remove" => {
-            let hostname = message.params["hostname"].as_str().unwrap();
+            let hostname = message.params["hostname"]
+                .to_string()
+                .trim_matches('"')
+                .to_string();
             remove_broker(&hostname, &peer_map, &mqtt_map);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::remove_from_brokers(&broker_path, &hostname);
             websocket::broadcast_brokers(&peer_map, &mqtt_map)
         }
         "publish" => {
-            let host = message.params["host"].as_str().unwrap();
+            let host = message.params["host"]
+                .to_string()
+                .trim_matches('"')
+                .to_string();
             let topic = message.params["topic"].as_str().unwrap();
             let payload = message.params["payload"].as_str().unwrap();
             mqtt::publish_message(&host, &topic, &payload, &mqtt_map);
@@ -206,7 +215,7 @@ fn connect_to_broker(
     peer_map: &websocket::PeerMap,
     mqtt_map: &mqtt::BrokerMap,
 ) {
-    let mqtt_host_clone = mqtt_host.clone();
+    let mqtt_host_clone = mqtt_host.trim_matches('"').to_string();
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
 
