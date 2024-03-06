@@ -17,3 +17,6 @@ bytes = "1.5.0"
 chrono = "0.4.34"
 warp = "0.3.6"
 uuid = { version = "1.7.0", features = ["v4"] }
+
+[dev-dependencies]
+copy_dir = "0.1.3"

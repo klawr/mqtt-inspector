@@ -1,0 +1,5 @@
+{
+    "name": "first_command",
+    "topic": "test",
+    "payload": "I am a test"
+}

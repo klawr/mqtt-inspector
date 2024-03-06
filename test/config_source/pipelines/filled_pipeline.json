@@ -1,0 +1,17 @@
+{
+    "name": "filled_pipeline",
+    "pipeline": [
+        {
+            "topic": "first_entry"
+        },
+        {
+            "topic": "second_entry"
+        },
+        {
+            "topic": "third_entry"
+        },
+        {
+            "topic": "fourth_entry"
+        }
+    ]
+}
