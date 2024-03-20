@@ -40,3 +40,20 @@ export function findbranchwithid(
 		}
 	}
 }
+
+export function getAllTopics(branch: Treebranch[], topics: Treebranch[] = []) {
+	branch.forEach((topic) => {
+		topics.push(topic);
+		if (topic.children) {
+			getAllTopics(topic.children, topics);
+		}
+	});
+	return topics;
+}
+
+export function shouldFilterItem(item: { text: string }, value: string) {
+	if (!value) return true;
+
+	const text = item.text.toLowerCase();
+	return text.toLowerCase().includes(value);
+}

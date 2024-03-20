@@ -23,8 +23,7 @@ THE SOFTWARE.
 	import { Button, ButtonSet, ComboBox, TreeView } from 'carbon-components-svelte';
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
 	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
-	import { findbranchwithid } from '$lib/helper';
-	import { shouldFilterItem } from './topic_tree';
+	import { findbranchwithid, getAllTopics, shouldFilterItem } from '$lib/helper';
 
 	export let broker: BrokerRepositoryEntry;
 	let activeId = broker.selectedTopic?.id || '';
@@ -50,16 +49,6 @@ THE SOFTWARE.
 		treeview.showNode(searchTopic.id);
 		broker.selectedTopic = findbranchwithid(searchTopic.id, broker.topics) || null;
 		searchTopic = undefined;
-	}
-
-	function getAllTopics(branch: Treebranch[], topics: Treebranch[] = []) {
-		branch.forEach((topic) => {
-			topics.push(topic);
-			if (topic.children) {
-				getAllTopics(topic.children, topics);
-			}
-		});
-		return topics;
 	}
 
 	let searchTopics: { text: string; id: string }[] = [];

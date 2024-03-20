@@ -41,7 +41,7 @@ THE SOFTWARE.
 		TrashCan
 	} from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
-	import { findbranchwithid } from '$lib/helper';
+	import { findbranchwithid, getAllTopics, shouldFilterItem } from '$lib/helper';
 	import RemovePipeline from './dialogs/remove_pipeline.svelte';
 	import OverwritePipeline from './dialogs/overwrite_pipeline.svelte';
 	import CleanPipelineRows from './cleanPipelineRows.svelte';
@@ -142,6 +142,13 @@ THE SOFTWARE.
 
 		selectedRow = `row-${newIndex}-value`;
 	}
+
+	let searchTopics: { text: string; id: string }[] = [];
+	$: {
+		searchTopics = getAllTopics(broker.topics).map((topic) => {
+			return { text: topic.id, id: topic.id };
+		});
+	}
 </script>
 
 <OverwritePipeline
@@ -227,7 +234,15 @@ THE SOFTWARE.
 </div>
 <div style="display: flex">
 	<div style="flex: 10;">
-		<TextInput bind:value={nextStepText} placeholder="Add topic to pipeline..." />
+		<ComboBox
+			placeholder="Add topic to pipeline..."
+			items={searchTopics}
+			value={nextStepText}
+			on:select={(e) => {
+				nextStepText = e.detail.selectedItem?.id || '';
+			}}
+			{shouldFilterItem}
+		/>
 	</div>
 	<div style="flex: 1">
 		<Button
