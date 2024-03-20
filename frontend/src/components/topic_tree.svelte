@@ -20,10 +20,11 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { Button, ButtonSet, TreeView } from 'carbon-components-svelte';
+	import { Button, ButtonSet, ComboBox, TreeView } from 'carbon-components-svelte';
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
-	import type { BrokerRepositoryEntry } from '$lib/state';
+	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
 	import { findbranchwithid } from '$lib/helper';
+	import { shouldFilterItem } from './topic_tree';
 
 	export let broker: BrokerRepositoryEntry;
 	let activeId = broker.selectedTopic?.id || '';
@@ -39,12 +40,49 @@ THE SOFTWARE.
 	}
 
 	let treeview: TreeView;
+
+	let searchTopic: Treebranch | undefined;
+	function selectSearchTopic(e: CustomEvent) {
+		searchTopic = e.detail.selectedItem;
+		if (!searchTopic) {
+			return;
+		}
+		treeview.showNode(searchTopic.id);
+		broker.selectedTopic = findbranchwithid(searchTopic.id, broker.topics) || null;
+		searchTopic = undefined;
+	}
+
+	function getAllTopics(branch: Treebranch[], topics: Treebranch[] = []) {
+		branch.forEach((topic) => {
+			topics.push(topic);
+			if (topic.children) {
+				getAllTopics(topic.children, topics);
+			}
+		});
+		return topics;
+	}
+
+	let searchTopics: { text: string; id: string }[] = [];
+	$: {
+		searchTopics = getAllTopics(broker.topics).map((topic) => {
+			return { text: topic.id, id: topic.id };
+		});
+	}
 </script>
 
 <ButtonSet>
 	<Button size="small" on:click={treeview?.expandAll} kind="secondary">Expand all</Button>
 	<Button size="small" on:click={treeview?.collapseAll}>Collapse all</Button>
 </ButtonSet>
+
+<ComboBox
+	placeholder="Search for a topic..."
+	selectedId={searchTopic?.id}
+	items={searchTopics}
+	value={searchTopic?.text}
+	on:select={selectSearchTopic}
+	{shouldFilterItem}
+/>
 
 <TreeView
 	bind:this={treeview}

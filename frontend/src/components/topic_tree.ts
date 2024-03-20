@@ -20,10 +20,10 @@
  * THE SOFTWARE.
  */
 
-export function prettyPrint(obj: string) {
-	try {
-		return JSON.stringify(JSON.parse(obj), null, 2);
-	} catch (e) {
-		return obj;
-	}
+
+export function shouldFilterItem(item: { text: string }, value: string) {
+    if (!value) return true;
+
+    const text = item.text.toLowerCase();
+    return text.toLowerCase().includes(value);
 }
