@@ -101,7 +101,7 @@ jobs:
           username: ${{github.actor}}
           password: ${{secrets.GITHUB_TOKEN}}
 
-      - name: Build docker image and deploy
+      - name: Build docker image latest and deploy
         run: |
           docker build -t ghcr.io/klawr/mqtt-inspector:latest .
           docker push ghcr.io/klawr/mqtt-inspector:latest
