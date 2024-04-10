@@ -1,0 +1,63 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build frontend",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceFolder}/frontend"
+            },
+            "command": "npm",
+            "args": [
+                "run",
+                "build"
+            ],
+            "group": {
+                "kind": "build"
+            }
+        },
+        {
+            "label": "build backend",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceFolder}/backend"
+            },
+            "command": "cargo",
+            "args": [
+                "build"
+            ],
+            "group": {
+                "kind": "build"
+            }
+        },
+        {
+            "label": "build all",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "dependsOn": [
+                "build frontend",
+                "build backend"
+            ]
+        },
+        {
+            "label": "run",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceFolder}/backend"
+            },
+            "command": "cargo",
+            "args": [
+                "run"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "dependsOn": [
+                "build backend"
+            ]
+        }
+    ]
+}

@@ -22,7 +22,7 @@ THE SOFTWARE.
 <script lang="ts">
 	import type { BrokerRepositoryEntry } from '$lib/state';
 	import { Accordion, AccordionItem, CodeSnippet, Tile } from 'carbon-components-svelte';
-	import { prettyPrint } from './messages';
+	import Monaco from './monaco.svelte';
 
 	export let broker: BrokerRepositoryEntry;
 </script>
@@ -38,11 +38,9 @@ THE SOFTWARE.
 			<h5>
 				Latest message: {new Date(broker.selectedTopic?.messages[0].timestamp).toLocaleString()}
 			</h5>
-			<CodeSnippet
-				wrapText
-				type="multi"
-				code={prettyPrint(broker.selectedTopic?.messages[0].text)}
-			/>
+			<div style="height: 30em;">
+				<Monaco readonly bind:code={broker.selectedTopic.messages[0].text} />
+			</div>
 		</Tile>
 	{/if}
 
@@ -57,7 +55,9 @@ THE SOFTWARE.
 								(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
 						>
 							<div style="margin-right: -12em">
-								<CodeSnippet wrapText type="multi" code={prettyPrint(message.text)} />
+								<div style="height: 20em;">
+									<Monaco readonly bind:code={message.text} />
+								</div>
 							</div>
 						</AccordionItem>
 					{/each}

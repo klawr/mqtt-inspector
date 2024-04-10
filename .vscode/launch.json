@@ -10,10 +10,11 @@
             "name": "Debug",
             "program": "${workspaceFolder}/backend/target/debug/backend",
             "args": [
-                "/workspaces/mqtt-inspector/wwwroot",
-                "/workspaces/mqtt-inspector/test/config"
+                "${workspaceFolder}/wwwroot",
+                "${workspaceFolder}/test/config"
             ],
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build backend"
         }
     ]
 }
