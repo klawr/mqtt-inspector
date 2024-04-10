@@ -1,0 +1,15 @@
+name: mqtt-inspector
+
+on:
+  push:
+    branches:
+      - master
+
+  jobs:
+    build:
+      uses: ./.github/workflows/reusable-build.yaml   
+    deploy:
+      needs:
+        - build
+      uses: ./github/workflows/reusable-deploy-latest.yaml
+       

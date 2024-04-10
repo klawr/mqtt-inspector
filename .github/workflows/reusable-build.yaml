@@ -1,12 +1,5 @@
-name: mqtt-inspector
-
-on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
+name: build
+on: workflow_call
 
 jobs:
   frontend:
@@ -71,37 +64,3 @@ jobs:
         with:
           name: rust-app
           path: backend/target/release/backend
-
-  deploy:
-    runs-on: ubuntu-22.04
-    container:
-      image: docker:23.0
-    needs:
-      - frontend
-      - backend
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v2
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: svelte-app
-          path: wwwroot
-
-      - uses: actions/download-artifact@v3
-        with:
-          name: rust-app
-          path: backend/target/release
-
-      - name: 'Login to GitHub Container Registry'
-        uses: docker/login-action@v1
-        with:
-          registry: ghcr.io
-          username: ${{github.actor}}
-          password: ${{secrets.GITHUB_TOKEN}}
-
-      - name: Build docker image latest and deploy
-        run: |
-          docker build -t ghcr.io/klawr/mqtt-inspector:latest .
-          docker push ghcr.io/klawr/mqtt-inspector:latest
