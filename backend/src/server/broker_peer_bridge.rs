@@ -104,18 +104,13 @@ fn loop_forever(
                 );
                 break;
             }
-            Err(err) => {
+            Err(_err) => {
                 // Update the connection status of the broker
                 mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
                     broker.connected = false;
                 });
                 // Small update for the peers already connected
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
-                println!(
-                    "Connection error: {:?} for {:?}. Try again in 5 seconds.",
-                    err.to_string(),
-                    hostname
-                );
                 drop(mqtt_lock);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
