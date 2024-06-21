@@ -152,7 +152,7 @@ THE SOFTWARE.
 				</div>
 			</div>
 			<div style="height: 30em">
-				<Monaco bind:result={payload} />
+				<Monaco bind:result={payload} bind:code={payload} />
 			</div>
 
 			<Button on:click={send}>Send</Button>
