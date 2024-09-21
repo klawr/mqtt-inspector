@@ -123,12 +123,12 @@ THE SOFTWARE.
 		theme = t.id;
 	});
 
-	function themeChanged(e: any) {
-		const newId = e?.target?.value;
+	function themeChanged(e: Event): void {
+		const newId = e?.target as unknown as { value: string };
 		if (!newId) {
 			return;
 		}
-		const newTheme = availableThemes.find((t) => t.id == newId);
+		const newTheme = availableThemes.find((t) => t.id == newId.value);
 		if (!newTheme) {
 			return;
 		}

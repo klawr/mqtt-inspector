@@ -20,20 +20,21 @@
  * THE SOFTWARE.
  */
 
-import type { CarbonTheme } from "carbon-components-svelte/src/Theme/Theme.svelte";
-import { writable, type Writable } from "svelte/store";
-
+import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
+import { writable, type Writable } from 'svelte/store';
 
 export class Theme {
-    constructor(public dark: boolean, public id: CarbonTheme) {
-    }
+	constructor(
+		public dark: boolean,
+		public id: CarbonTheme
+	) {}
 }
 
 export const availableThemes = [
-    new Theme(false, "white"),
-    new Theme(false, "g10"),
-    new Theme(true, "g90"),
-    new Theme(true, "g100")
+	new Theme(false, 'white'),
+	new Theme(false, 'g10'),
+	new Theme(true, 'g90'),
+	new Theme(true, 'g100')
 ];
 
 export const selectedTheme: Writable<Theme> = writable(availableThemes[2]);
