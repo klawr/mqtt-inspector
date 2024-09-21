@@ -50,10 +50,6 @@ THE SOFTWARE.
 			theme: 'vs-dark',
 			language: 'json'
 		});
-
-		editor.onDidChangeModelContent(() => {
-			result = editor.getValue();
-		});
 	});
 
 	onDestroy(async () => {
