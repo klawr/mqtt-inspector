@@ -60,6 +60,7 @@ THE SOFTWARE.
 	} from '$lib/ws_msg_handling';
 	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
 	import { requestMqttBrokerConnection } from '$lib/socket';
+	import { selectedTheme, availableThemes } from '../store';
 
 	let socket: WebSocket;
 	let app = new AppState();
@@ -116,7 +117,23 @@ THE SOFTWARE.
 	let isSideNavOpen = false;
 	let addMqttBrokerModalOpen = false;
 	let removeMqttBrokerModalOpen = false;
-	let theme: CarbonTheme = 'g90';
+
+	let theme: CarbonTheme;
+	selectedTheme.subscribe((t) => {
+		theme = t.id;
+	});
+
+	function themeChanged(e: Event): void {
+		const newId = e?.target as unknown as { value: string };
+		if (!newId) {
+			return;
+		}
+		const newTheme = availableThemes.find((t) => t.id == newId.value);
+		if (!newTheme) {
+			return;
+		}
+		selectedTheme.set(newTheme);
+	}
 </script>
 
 <Theme bind:theme />
@@ -200,8 +217,8 @@ THE SOFTWARE.
 		<SideNavMenu text="Theme">
 			<div style="margin: auto 1em 0px 1em">
 				<RadioButtonGroup orientation="vertical" legendText="Carbon theme" bind:selected={theme}>
-					{#each ['white', 'g10', 'g90', 'g100'] as value}
-						<RadioButton labelText={value} {value} />
+					{#each availableThemes as value}
+						<RadioButton labelText={value.id} value={value.id} on:change={themeChanged} />
 					{/each}
 				</RadioButtonGroup>
 			</div>
@@ -275,5 +292,9 @@ THE SOFTWARE.
 	:global(.bx--side-nav) {
 		border-right: 1px !important;
 		border-style: solid !important;
+	}
+
+	:global(.bx--side-nav__submenu-chevron) {
+		transform: scaleY(-1) !important;
 	}
 </style>

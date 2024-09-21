@@ -23,6 +23,7 @@ THE SOFTWARE.
 	import { onDestroy, onMount } from 'svelte';
 	import { prettyPrint } from './messages';
 	import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
+	import { selectedTheme, type Theme } from '../store';
 
 	export let readonly = false;
 	export let code: string = '';
@@ -33,7 +34,7 @@ THE SOFTWARE.
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	let editor: any;
 
-	onMount(async () => {
+	async function setEditor() {
 		const monaco = await import('monaco-editor');
 
 		self.MonacoEnvironment = {
@@ -47,9 +48,21 @@ THE SOFTWARE.
 		editor = monaco.editor.create(editorElement, {
 			readOnly: readonly,
 			automaticLayout: true,
-			theme: 'vs-dark',
+			theme: !theme?.dark ? 'vs-light' : 'vs-dark',
 			language: 'json'
 		});
+	}
+
+	let theme: Theme;
+	onMount(() => {
+		selectedTheme.subscribe((value) => {
+			theme = value;
+			if (!editor || !theme) {
+				return;
+			}
+			setEditor();
+		});
+		setEditor();
 	});
 
 	onDestroy(async () => {
