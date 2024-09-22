@@ -254,27 +254,29 @@ THE SOFTWARE.
 							<Tab label="Treeview" />
 							<Tab label="Pipeline" />
 							<svelte:fragment slot="content">
-							<TabContent>
-								<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
-							</TabContent>
-							<TabContent>
-								<Pipeline
-									bind:pipelines={app.pipelines}
-									bind:broker={app.brokerRepository[app.selectedBroker]}
-									bind:socket
-								/>
-							</TabContent>
-						</svelte:fragment>
-					</Tabs>
+								<TabContent>
+									<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
+								</TabContent>
+								<TabContent>
+									<Pipeline
+										bind:pipelines={app.pipelines}
+										bind:broker={app.brokerRepository[app.selectedBroker]}
+										bind:socket
+									/>
+								</TabContent>
+							</svelte:fragment>
+						</Tabs>
+					</div>
+					<div style="flex: 1">
+						{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+							<Messages
+								bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+							/>
+						{/if}
+					</div>
 				</div>
-				<div style="flex: 1">
-					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-						<Messages
-							bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic} />
-					{/if}
-				</div>
-			</div>
-		</Grid>
+			</div></Grid
+		>
 		<PublishMessage
 			bind:savedCommands={app.commands}
 			bind:selectedBroker={app.selectedBroker}

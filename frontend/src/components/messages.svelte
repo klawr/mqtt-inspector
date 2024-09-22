@@ -26,10 +26,12 @@ THE SOFTWARE.
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
-	let selectedMessage = selectedTopic?.messages[0]!;
+	let selectedMessage = selectedTopic?.messages[0];
 	function selectMessage(message: CustomEvent) {
-		selectedMessage = selectedTopic?.messages
-			.find(msg => msg.timestamp == message.detail)!;
+		const foundMessage = selectedTopic?.messages.find((msg) => msg.timestamp == message.detail);
+		if (foundMessage) {
+			selectedMessage = foundMessage;
+		}
 	}
 </script>
 
@@ -41,12 +43,14 @@ THE SOFTWARE.
 
 	{#if selectedTopic?.messages.length}
 		<Tile light>
-			<h5>
-				Selected message: {new Date(selectedMessage.timestamp).toLocaleString()}
-			</h5>
-			<div style="height: 30em;">
-				<Monaco readonly bind:code={selectedMessage.text} />
-			</div>
+			{#if selectedMessage}
+				<h5>
+					Selected message: {new Date(selectedMessage.timestamp).toLocaleString()}
+				</h5>
+				<div style="height: 30em;">
+					<Monaco readonly bind:code={selectedMessage.text} />
+				</div>
+			{/if}
 		</Tile>
 	{/if}
 
@@ -57,7 +61,7 @@ THE SOFTWARE.
 				{#each selectedTopic?.messages as message}
 					<RadioTile value={message.timestamp} style="height: 1em">
 						{new Date(message.timestamp).toLocaleString() +
-								(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
+							(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
 					</RadioTile>
 				{/each}
 			</TileGroup>

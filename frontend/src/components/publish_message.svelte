@@ -20,7 +20,7 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { Button, ComboBox, Row, TextInput, Tile } from 'carbon-components-svelte';
+	import { Button, ComboBox, TextInput, Tile } from 'carbon-components-svelte';
 	import { requestCommandAddition, requestPublishMqttMessage } from '$lib/socket';
 	import { Add, TrashCan } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
@@ -93,7 +93,7 @@ THE SOFTWARE.
 	function clicked() {
 		setTimeout(() => {
 			if (open) {
-				scrollBy({top: 1000, behavior: 'smooth'});
+				scrollBy({ top: 1000, behavior: 'smooth' });
 			}
 		}, 0);
 	}
