@@ -93,7 +93,7 @@ THE SOFTWARE.
 	function clicked() {
 		setTimeout(() => {
 			if (open) {
-				scrollBy({top: 10000, behavior: 'smooth'});
+				scrollBy({top: 1000, behavior: 'smooth'});
 			}
 		}, 0);
 	}

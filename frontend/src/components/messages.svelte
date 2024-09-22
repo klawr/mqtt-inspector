@@ -20,49 +20,47 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import type { BrokerRepositoryEntry } from '$lib/state';
-	import { Accordion, AccordionItem, CodeSnippet, Tile } from 'carbon-components-svelte';
+	import type { Treebranch } from '$lib/state';
+	import { CodeSnippet, RadioTile, Tile, TileGroup } from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 
-	export let broker: BrokerRepositoryEntry;
+	export let selectedTopic: Treebranch | null; // Can't be null.
+
+	let selectedMessage = selectedTopic?.messages[0]!;
+	function selectMessage(message: CustomEvent) {
+		selectedMessage = selectedTopic?.messages
+			.find(msg => msg.timestamp == message.detail)!;
+	}
 </script>
 
-{#if broker.selectedTopic}
+{#if selectedTopic}
 	<div style="height: 8em;">
 		<h4>Selected topic:</h4>
-		<CodeSnippet light code={broker.selectedTopic?.id}></CodeSnippet>
+		<CodeSnippet light code={selectedTopic?.id}></CodeSnippet>
 	</div>
 
-	{#if broker.selectedTopic?.messages.length}
+	{#if selectedTopic?.messages.length}
 		<Tile light>
 			<h5>
-				Latest message: {new Date(broker.selectedTopic?.messages[0].timestamp).toLocaleString()}
+				Selected message: {new Date(selectedMessage.timestamp).toLocaleString()}
 			</h5>
 			<div style="height: 30em;">
-				<Monaco readonly bind:code={broker.selectedTopic.messages[0].text} />
+				<Monaco readonly bind:code={selectedMessage.text} />
 			</div>
 		</Tile>
 	{/if}
 
-	{#if broker.selectedTopic?.messages.length > 1}
+	{#if selectedTopic?.messages.length > 1}
 		<Tile light>
-			<h5>History ({broker.selectedTopic.messages.length})</h5>
-			<div style="overflow-y: auto; max-height: 50vh;">
-				<Accordion>
-					{#each broker.selectedTopic?.messages as message}
-						<AccordionItem
-							title={new Date(message.timestamp).toLocaleString() +
+			<h5>History ({selectedTopic.messages.length})</h5>
+			<TileGroup on:select={selectMessage} selected={selectedMessage?.timestamp}>
+				{#each selectedTopic?.messages as message}
+					<RadioTile value={message.timestamp} style="height: 1em">
+						{new Date(message.timestamp).toLocaleString() +
 								(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
-						>
-							<div style="margin-right: -12em">
-								<div style="height: 20em;">
-									<Monaco readonly bind:code={message.text} />
-								</div>
-							</div>
-						</AccordionItem>
-					{/each}
-				</Accordion>
-			</div>
+					</RadioTile>
+				{/each}
+			</TileGroup>
 		</Tile>
 	{/if}
 {/if}

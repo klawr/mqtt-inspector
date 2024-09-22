@@ -268,7 +268,10 @@ THE SOFTWARE.
 					</Tabs>
 				</div>
 				<div style="flex: 1">
-					<Messages bind:broker={app.brokerRepository[app.selectedBroker]} />
+					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+						<Messages
+							bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic} />
+					{/if}
 				</div>
 			</div>
 		</Grid>
