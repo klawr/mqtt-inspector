@@ -246,40 +246,38 @@ THE SOFTWARE.
 	{/if}
 
 	{#if app.brokerRepository[app.selectedBroker]}
-		<Grid fullWidth>
-			<div style="height: calc(100vh - 8em) !important; display: flex; flex-direction: column">
-				<div style="display: flex">
-					<div style="flex: 1; margin: 1em; min-width: 30em; max-width: 50em">
+		<Grid fullWidth style="height: calc(100vh - 7em); overflow-y: auto;">
+			<div style="display:flex; flex-direction: column; height: calc(100vh - 4em)">
+				<div style="display:flex; flex-direction: row; flex: 1;">
+					<div style="width: 40%; min-width: 30em; max-width: 50em">
 						<Tabs autoWidth type="container">
 							<Tab label="Treeview" />
 							<Tab label="Pipeline" />
 							<svelte:fragment slot="content">
-								<TabContent>
-									<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
-								</TabContent>
-								<TabContent>
-									<Pipeline
-										bind:pipelines={app.pipelines}
-										bind:broker={app.brokerRepository[app.selectedBroker]}
-										bind:socket
-									/>
-								</TabContent>
-							</svelte:fragment>
-						</Tabs>
-					</div>
-					<div style="flex: 1; margin: 1em; min-width: 30em; max-width: 60em">
-						<Messages bind:broker={app.brokerRepository[app.selectedBroker]} />
-					</div>
+							<TabContent>
+								<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
+							</TabContent>
+							<TabContent>
+								<Pipeline
+									bind:pipelines={app.pipelines}
+									bind:broker={app.brokerRepository[app.selectedBroker]}
+									bind:socket
+								/>
+							</TabContent>
+						</svelte:fragment>
+					</Tabs>
 				</div>
-				<div style="flex: 1;" />
-				<PublishMessage
-					bind:savedCommands={app.commands}
-					bind:selectedBroker={app.selectedBroker}
-					bind:socket
-					bind:broker={app.brokerRepository[app.selectedBroker]}
-				/>
+				<div style="flex: 1">
+					<Messages bind:broker={app.brokerRepository[app.selectedBroker]} />
+				</div>
 			</div>
 		</Grid>
+		<PublishMessage
+			bind:savedCommands={app.commands}
+			bind:selectedBroker={app.selectedBroker}
+			bind:socket
+			bind:broker={app.brokerRepository[app.selectedBroker]}
+		/>
 	{/if}
 </Content>
 

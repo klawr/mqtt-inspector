@@ -26,6 +26,8 @@ THE SOFTWARE.
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
 	import OverwriteCommand from './dialogs/overwrite_command.svelte';
 	import Monaco from './monaco.svelte';
+	import Accordion from 'carbon-components-svelte/src/Accordion/Accordion.svelte';
+	import AccordionItem from 'carbon-components-svelte/src/Accordion/AccordionItem.svelte';
 
 	export let savedCommands: Command[];
 	export let socket: WebSocket;
@@ -86,6 +88,15 @@ THE SOFTWARE.
 	}
 
 	let save_command_name = '';
+
+	let open = false;
+	function clicked() {
+		setTimeout(() => {
+			if (open) {
+				scrollBy({top: 10000, behavior: 'smooth'});
+			}
+		}, 0);
+	}
 </script>
 
 <OverwriteCommand
@@ -96,10 +107,10 @@ THE SOFTWARE.
 	bind:payload
 />
 
-<Row>
-	<div style="width: 100vw">
+<Accordion>
+	<AccordionItem title="Publish message" on:click={clicked} bind:open>
 		<Tile light on:click={stopPropagation}>
-			<div style="display: flex;">
+			<div style="display: flex; width: 100%; bottom: 0">
 				<div style="flex: 4">
 					<TextInput on:click={stopPropagation} labelText="Topic" bind:value={topic} />
 				</div>
@@ -157,5 +168,5 @@ THE SOFTWARE.
 
 			<Button on:click={send}>Send</Button>
 		</Tile>
-	</div>
-</Row>
+	</AccordionItem>
+</Accordion>
