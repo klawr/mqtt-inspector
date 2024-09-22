@@ -27,6 +27,10 @@ THE SOFTWARE.
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
 	let selectedMessage = selectedTopic?.messages[0];
+	$: if (selectedMessage) {
+		selectedMessage = selectedTopic?.messages[0];
+	}
+
 	function selectMessage(message: CustomEvent) {
 		const foundMessage = selectedTopic?.messages.find((msg) => msg.timestamp == message.detail);
 		if (foundMessage) {
