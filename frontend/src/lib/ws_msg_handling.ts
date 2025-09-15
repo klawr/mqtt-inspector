@@ -195,9 +195,11 @@ function addToTopicBranch(
 		const ff = found || topicbranch?.find((element) => element.original_text === key);
 		const new_entry = { timestamp: timestamp, text: payload, delta_t: 0 };
 		if (ff?.messages.length) {
-			new_entry.delta_t =
+			ff.messages[0].delta_t =
 				new Date(timestamp).getTime() - new Date(ff.messages[0].timestamp).getTime();
 		}
+		new_entry.delta_t = 0;
+
 		ff?.messages.unshift(new_entry);
 		while (ff.messages.length > 100) {
 			ff.messages.pop();

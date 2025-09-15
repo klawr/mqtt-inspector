@@ -21,21 +21,48 @@ THE SOFTWARE.
 
 <script lang="ts">
 	import type { Treebranch } from '$lib/state';
-	import { CodeSnippet, RadioTile, Tile, TileGroup } from 'carbon-components-svelte';
+	import {
+		Checkbox,
+		CodeSnippet,
+		ProgressIndicator,
+		ProgressStep,
+		Tile
+	} from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
-	let selectedMessage = selectedTopic?.messages[0];
-	$: if (selectedMessage) {
-		selectedMessage = selectedTopic?.messages[0];
+	let lockedIndex = false;
+	$: if (selectedTopic) {
+		if (!lockedIndex) {
+			selectedMessage = selectedTopic.messages[selectedIndex];
+		} else {
+			selectedIndex = 0;
+		}
 	}
 
-	function selectMessage(message: CustomEvent) {
-		const foundMessage = selectedTopic?.messages.find((msg) => msg.timestamp == message.detail);
-		if (foundMessage) {
-			selectedMessage = foundMessage;
+	let selectedIndex = 0;
+	let selectedMessage = selectedTopic?.messages[selectedIndex];
+
+	function selectMessage(index: number) {
+		lockedIndex = true;
+		selectedIndex = index;
+		selectedMessage = selectedTopic?.messages[index];
+	}
+
+	let scrollDiv: HTMLDivElement | null = null;
+	function handleWheel(event: WheelEvent) {
+		if (scrollDiv && event.deltaY !== 0) {
+			scrollDiv.scrollLeft += event.deltaY;
+			event.preventDefault();
 		}
+	}
+
+	function curateDate(dateString: string) {
+		const date = new Date(dateString);
+		return `${date.toLocaleDateString('de-DE')}, ${date.toLocaleTimeString(undefined, {
+			hour12: false
+		})}.${String(date.getMilliseconds())}`;
 	}
 </script>
 
@@ -43,32 +70,44 @@ THE SOFTWARE.
 	<div style="height: 8em;">
 		<h4>Selected topic:</h4>
 		<CodeSnippet light code={selectedTopic?.id}></CodeSnippet>
+
+		<p>Messages: {selectedTopic?.messages.length || 0}</p>
 	</div>
 
 	{#if selectedTopic?.messages.length}
-		<Tile light>
-			{#if selectedMessage}
-				<h5>
-					Selected message: {new Date(selectedMessage.timestamp).toLocaleString()}
-				</h5>
-				<div style="height: 30em;">
-					<Monaco readonly bind:code={selectedMessage.text} />
-				</div>
-			{/if}
-		</Tile>
-	{/if}
+		<div style="width: 100em">
+			<Tile light>
+				{#if selectedMessage}
+					<h5>
+						Selected message: {curateDate(selectedMessage.timestamp)}
+					</h5>
+					<div style="height: 30em;">
+						<Monaco readonly bind:code={selectedMessage.text} />
+					</div>
+				{/if}
 
-	{#if selectedTopic?.messages.length > 1}
-		<Tile light>
-			<h5>History ({selectedTopic.messages.length})</h5>
-			<TileGroup on:select={selectMessage} selected={selectedMessage?.timestamp}>
-				{#each selectedTopic?.messages as message}
-					<RadioTile value={message.timestamp} style="height: 1em">
-						{new Date(message.timestamp).toLocaleString() +
-							(message.delta_t ? ' (' + message.delta_t + ' ms)' : '')}
-					</RadioTile>
-				{/each}
-			</TileGroup>
-		</Tile>
+				<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
+
+				<div
+					bind:this={scrollDiv}
+					style="overflow-x: auto; padding-bottom: 1em;"
+					on:wheel={handleWheel}
+				>
+					<ProgressIndicator
+						currentIndex={lockedIndex
+							? selectedTopic?.messages.findIndex((e) => e.timestamp == selectedMessage?.timestamp)
+							: selectedIndex}
+					>
+						{#each selectedTopic?.messages as message, index}
+							<ProgressStep
+								label={`${message.delta_t ? message.delta_t : 0} ms`}
+								on:click={() => selectMessage(index)}
+								title={curateDate(message.timestamp)}
+							/>
+						{/each}
+					</ProgressIndicator>
+				</div>
+			</Tile>
+		</div>
 	{/if}
 {/if}
