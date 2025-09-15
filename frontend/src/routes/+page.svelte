@@ -246,43 +246,57 @@ THE SOFTWARE.
 	{/if}
 
 	{#if app.brokerRepository[app.selectedBroker]}
-		<Grid fullWidth style="height: calc(100vh - 7em); overflow-y: auto;">
+		<Grid fullWidth>
 			<div style="display:flex; flex-direction: column; height: calc(100vh - 4em)">
-				<div style="display:flex; flex-direction: row; flex: 1;">
-					<div style="width: 40%; min-width: 30em; max-width: 50em">
-						<Tabs autoWidth type="container">
-							<Tab label="Treeview" />
-							<Tab label="Pipeline" />
-							<svelte:fragment slot="content">
-								<TabContent>
+				<Tabs autoWidth type="container">
+					<Tab label="Treeview" />
+					<Tab label="Pipeline" />
+					<Tab label="Publish" />
+					<svelte:fragment slot="content">
+						<TabContent>
+							<div style="display:flex; flex-direction: row; flex: 1;">
+								<div style="width: 40%; min-width: 30em; max-width: 50em">
 									<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
-								</TabContent>
-								<TabContent>
+								</div>
+								<div style="flex: 1">
+									{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+										<Messages
+											bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+										/>
+									{/if}
+								</div>
+							</div>
+						</TabContent>
+						<TabContent>
+							<div style="display:flex; flex-direction: row; flex: 1;">
+								<div style="width: 40%; min-width: 30em; max-width: 50em">
 									<Pipeline
 										bind:pipelines={app.pipelines}
 										bind:broker={app.brokerRepository[app.selectedBroker]}
 										bind:socket
 									/>
-								</TabContent>
-							</svelte:fragment>
-						</Tabs>
-					</div>
-					<div style="flex: 1">
-						{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-							<Messages
-								bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+								</div>
+								<div style="flex: 1">
+									{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+										<Messages
+											bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+										/>
+									{/if}
+								</div>
+							</div>
+						</TabContent>
+						<TabContent>
+							<PublishMessage
+								bind:savedCommands={app.commands}
+								bind:selectedBroker={app.selectedBroker}
+								bind:socket
+								bind:broker={app.brokerRepository[app.selectedBroker]}
 							/>
-						{/if}
-					</div>
-				</div>
-			</div></Grid
-		>
-		<PublishMessage
-			bind:savedCommands={app.commands}
-			bind:selectedBroker={app.selectedBroker}
-			bind:socket
-			bind:broker={app.brokerRepository[app.selectedBroker]}
-		/>
+						</TabContent>
+					</svelte:fragment>
+				</Tabs>
+			</div>
+		</Grid>
 	{/if}
 </Content>
 

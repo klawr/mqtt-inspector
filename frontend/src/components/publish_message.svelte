@@ -107,66 +107,56 @@ THE SOFTWARE.
 	bind:payload
 />
 
-<Accordion>
-	<AccordionItem title="Publish message" on:click={clicked} bind:open>
-		<Tile light on:click={stopPropagation}>
-			<div style="display: flex; width: 100%; bottom: 0">
-				<div style="flex: 4">
-					<TextInput on:click={stopPropagation} labelText="Topic" bind:value={topic} />
-				</div>
-				<div style="margin-top: auto; margin-bottom: 0; flex: 3">
-					<Button
-						disabled={!broker.selectedTopic?.id}
-						on:click={setTopicToSelectedTopic}
-						size="field">Use selected</Button
-					>
-				</div>
-				<div style="margin-top: auto; margin-bottom: auto; flex: 2">
-					<TextInput
-						labelText="Save command"
-						bind:value={save_command_name}
-						placeholder="Add name"
-					/>
-				</div>
-				<div style="margin-top: auto; margin-bottom: 0; flex: 0">
-					<Button
-						tooltipAlignment="end"
-						tooltipPosition="bottom"
-						iconDescription="Save command"
-						icon={Add}
-						disabled={!topic || !save_command_name}
-						on:click={save_message}
-						size="field"
-					/>
-				</div>
-				<div style="margin-top: auto; margin-bottom: 0; flex: 2">
-					<ComboBox
-						bind:selectedId={selectedCommandId}
-						on:clear={() => (selectedCommandId = '')}
-						on:select={saved_message_selected}
-						titleText="Saved commands"
-						placeholder="Search..."
-						items={savedCommands}
-					/>
-				</div>
-				<div style="margin-top: auto; margin-bottom: 0; flex: 0">
-					<Button
-						disabled={!selectedCommandId}
-						tooltipAlignment="end"
-						tooltipPosition="bottom"
-						iconDescription="Delete selected command"
-						kind="danger-ghost"
-						size="field"
-						icon={TrashCan}
-						on:click={remove_command}
-					/>
-				</div>
-			</div>
-			<div style="height: 30em">
-				<Monaco bind:result={payload} bind:code={payload} />
-			</div>
+<Tile light on:click={stopPropagation}>
+	<div style="display: flex; width: 100%">
+		<div style="flex: 4">
+			<TextInput on:click={stopPropagation} labelText="Topic" bind:value={topic} />
+		</div>
+		<div style="margin-top: auto; margin-bottom: 0; flex: 3">
+			<Button disabled={!broker.selectedTopic?.id} on:click={setTopicToSelectedTopic} size="field"
+				>Use selected</Button
+			>
+		</div>
+		<div style="margin-top: auto; margin-bottom: auto; flex: 2">
+			<TextInput labelText="Save command" bind:value={save_command_name} placeholder="Add name" />
+		</div>
+		<div style="margin-top: auto; margin-bottom: 0; flex: 0">
+			<Button
+				tooltipAlignment="end"
+				tooltipPosition="bottom"
+				iconDescription="Save command"
+				icon={Add}
+				disabled={!topic || !save_command_name}
+				on:click={save_message}
+				size="field"
+			/>
+		</div>
+		<div style="margin-top: auto; margin-bottom: 0; flex: 2">
+			<ComboBox
+				bind:selectedId={selectedCommandId}
+				on:clear={() => (selectedCommandId = '')}
+				on:select={saved_message_selected}
+				titleText="Saved commands"
+				placeholder="Search..."
+				items={savedCommands}
+			/>
+		</div>
+		<div style="margin-top: auto; margin-bottom: 0; flex: 0">
+			<Button
+				disabled={!selectedCommandId}
+				tooltipAlignment="end"
+				tooltipPosition="bottom"
+				iconDescription="Delete selected command"
+				kind="danger-ghost"
+				size="field"
+				icon={TrashCan}
+				on:click={remove_command}
+			/>
+		</div>
+	</div>
+	<div style="height: 30em">
+		<Monaco bind:result={payload} bind:code={payload} />
+	</div>
 
-			<Button on:click={send}>Send</Button>
-		</Tile>
-	</AccordionItem>
-</Accordion>
+	<Button on:click={send}>Send</Button>
+</Tile>
