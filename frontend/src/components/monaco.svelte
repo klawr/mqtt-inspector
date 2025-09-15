@@ -33,6 +33,8 @@ THE SOFTWARE.
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	let editor: any;
+	let isUpdatingFromEditor = false;
+	let isUpdatingFromCode = false;
 
 	async function setEditor() {
 		const monaco = await import('monaco-editor');
@@ -50,6 +52,17 @@ THE SOFTWARE.
 			automaticLayout: true,
 			theme: !theme?.dark ? 'vs-light' : 'vs-dark',
 			language: 'json'
+		});
+
+		editor.onDidChangeModelContent(() => {
+			if (isUpdatingFromCode) return;
+			isUpdatingFromEditor = true;
+			const value = editor.getValue();
+			console.log(code);
+			if (value !== code) {
+				code = value;
+			}
+			isUpdatingFromEditor = false;
 		});
 	}
 
@@ -69,9 +82,13 @@ THE SOFTWARE.
 		editor?.dispose();
 	});
 
-	$: if (editor) {
-		editor.setValue(code ? prettyPrint(code) : '');
-		result = editor.getValue();
+	$: if (editor && !isUpdatingFromEditor) {
+		if (editor.getValue() !== code) {
+			isUpdatingFromCode = true;
+			editor.setValue(code ? prettyPrint(code) : '');
+			isUpdatingFromCode = false;
+		}
+		result = editor?.getValue();
 	}
 </script>
 

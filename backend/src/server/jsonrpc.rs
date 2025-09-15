@@ -31,12 +31,12 @@ pub struct JsonRpcNotification<'a> {
 
 #[derive(Debug)]
 pub enum JsonRpcError {
-    DeserializationError(serde_json::Error),
+    DeserializationError,
 }
 
 pub fn deserialize_json_rpc(json_rpc: &str) -> Result<JsonRpcNotification, JsonRpcError> {
     match serde_json::from_str(json_rpc) {
         Ok(result) => Ok(result),
-        Err(error) => Err(JsonRpcError::DeserializationError(error)),
+        Err(_error) => Err(JsonRpcError::DeserializationError),
     }
 }

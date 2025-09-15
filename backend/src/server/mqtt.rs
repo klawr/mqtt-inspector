@@ -27,7 +27,6 @@ use std::{
 
 use rumqttc::{MqttOptions, QoS};
 
-
 #[derive(serde::Serialize)]
 pub struct MqttMessage {
     pub timestamp: String,
@@ -77,7 +76,7 @@ pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: &Broker
             }
             Err(err) => {
                 // Handle the error
-                println!("Error publishing: {}", err);
+                println!("Error publishing: {:?}", err);
             }
         }
     } else {
