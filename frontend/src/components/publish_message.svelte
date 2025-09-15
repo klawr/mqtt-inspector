@@ -26,8 +26,6 @@ THE SOFTWARE.
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
 	import OverwriteCommand from './dialogs/overwrite_command.svelte';
 	import Monaco from './monaco.svelte';
-	import Accordion from 'carbon-components-svelte/src/Accordion/Accordion.svelte';
-	import AccordionItem from 'carbon-components-svelte/src/Accordion/AccordionItem.svelte';
 
 	export let savedCommands: Command[];
 	export let socket: WebSocket;
@@ -88,15 +86,6 @@ THE SOFTWARE.
 	}
 
 	let save_command_name = '';
-
-	let open = false;
-	function clicked() {
-		setTimeout(() => {
-			if (open) {
-				scrollBy({ top: 1000, behavior: 'smooth' });
-			}
-		}, 0);
-	}
 </script>
 
 <OverwriteCommand
