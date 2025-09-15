@@ -1,0 +1,29 @@
+services:
+  mqtt-inspector-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mqtt-inspector-dev
+    volumes:
+      - ..:/workspaces/mqtt-inspector:cached
+      - /home/me/.config/nvim:/home/dev/.config/nvim:cached
+    command: sleep infinity
+    networks:
+      - mqtt-inspector-dev
+    ports:
+      - 5000:5173
+
+  mqtt:
+    image: eclipse-mosquitto:2.0.22
+    container_name: mqtt-inspector-dev-mosquitto
+    ports:
+      - 1883:1883
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - mqtt-inspector-dev
+
+
+networks:
+  mqtt-inspector-dev:
+    name: mqtt-inspector-dev
