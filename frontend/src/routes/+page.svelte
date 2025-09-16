@@ -141,7 +141,7 @@ THE SOFTWARE.
 <AddBroker bind:socket bind:open={addMqttBrokerModalOpen} />
 <RemoveBroker bind:app bind:socket bind:open={removeMqttBrokerModalOpen} />
 
-<Header platformName="MQTT-Inspector" bind:isSideNavOpen>
+<Header platformName="MQTT-Inspector" bind:isSideNavOpen persistentHamburgerMenu={true}>
 	<svelte:fragment slot="skip-to-content">
 		<SkipToContent />
 	</svelte:fragment>
@@ -246,61 +246,82 @@ THE SOFTWARE.
 	{/if}
 
 	{#if app.brokerRepository[app.selectedBroker]}
-		<Grid fullWidth>
-			<div style="display:flex; flex-direction: column; height: calc(100vh - 4em)">
-				<Tabs autoWidth type="container">
-					<Tab label="Treeview" />
-					<Tab label="Pipeline" />
-					<Tab label="Publish" />
-					<svelte:fragment slot="content">
-						<TabContent>
-							<div style="display:flex; flex-direction: row; flex: 1;">
-								<div style="width: 40%; min-width: 30em; max-width: 50em">
-									<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
-								</div>
-								<div style="flex: 1">
-									{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-										<Messages
-											bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-										/>
-									{/if}
-								</div>
+			<Tabs autoWidth type="container">
+				<Tab label="Treeview" />
+				<Tab label="Pipeline" />
+				<Tab label="Publish" />
+				<svelte:fragment slot="content">
+					<TabContent>
+						<div class="treeview-flex">
+							<div class="treeview-col" style="max-width: 40em">
+								<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
 							</div>
-						</TabContent>
-						<TabContent>
-							<div style="display:flex; flex-direction: row; flex: 1;">
-								<div style="width: 40%; min-width: 30em; max-width: 50em">
-									<Pipeline
-										bind:pipelines={app.pipelines}
-										bind:broker={app.brokerRepository[app.selectedBroker]}
-										bind:socket
+							<div class="treeview-col">
+								{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+									<Messages
+										bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
 									/>
-								</div>
-								<div style="flex: 1">
-									{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-										<Messages
-											bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-										/>
-									{/if}
-								</div>
+								{/if}
 							</div>
-						</TabContent>
-						<TabContent>
-							<PublishMessage
-								bind:savedCommands={app.commands}
-								bind:selectedBroker={app.selectedBroker}
-								bind:socket
-								bind:broker={app.brokerRepository[app.selectedBroker]}
-							/>
-						</TabContent>
-					</svelte:fragment>
-				</Tabs>
-			</div>
-		</Grid>
+						</div>
+					</TabContent>
+					<TabContent>
+						<div class="treeview-flex">
+							<div class="treeview-col" style="max-width: 40em">
+								<Pipeline
+									bind:pipelines={app.pipelines}
+									bind:broker={app.brokerRepository[app.selectedBroker]}
+									bind:socket
+								/>
+							</div>
+							<div class="treeview-col">
+								{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+									<Messages
+										bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+									/>
+								{/if}
+							</div>
+						</div>
+					</TabContent>
+					<TabContent>
+						<PublishMessage
+							bind:savedCommands={app.commands}
+							bind:selectedBroker={app.selectedBroker}
+							bind:socket
+							bind:broker={app.brokerRepository[app.selectedBroker]}
+						/>
+					</TabContent>
+				</svelte:fragment>
+			</Tabs>
 	{/if}
 </Content>
 
 <style>
+
+	.treeview-flex {
+		display: flex;
+		flex-direction: row;
+		width: 100%;
+		gap: 1rem;
+		box-sizing: border-box;
+	}
+
+	.treeview-col {
+		flex: 1 1 50%;
+		min-width: 0;
+		overflow: hidden;
+		box-sizing: border-box;
+	}
+
+	@media (max-width: 60em) {
+		.treeview-flex {
+			flex-direction: column;
+		}
+		.treeview-col {
+			min-width: 100%;
+		}
+	}
+
 	:global(.bx--side-nav__items) {
 		display: flex;
 		flex-direction: column;

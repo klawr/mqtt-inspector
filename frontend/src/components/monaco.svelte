@@ -92,4 +92,15 @@ THE SOFTWARE.
 	}
 </script>
 
-<div style="height: 100%" bind:this={editorElement} />
+<div class="monaco-container" bind:this={editorElement} />
+
+<style>
+.monaco-container {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  /* Optional: */
+  overflow: hidden;
+}
+</style>

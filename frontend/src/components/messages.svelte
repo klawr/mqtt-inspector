@@ -75,39 +75,37 @@ THE SOFTWARE.
 	</div>
 
 	{#if selectedTopic?.messages.length}
-		<div style="width: 100em">
-			<Tile light>
-				{#if selectedMessage}
-					<h5>
-						Selected message: {curateDate(selectedMessage.timestamp)}
-					</h5>
-					<div style="height: 30em;">
-						<Monaco readonly bind:code={selectedMessage.text} />
-					</div>
-				{/if}
-
-				<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
-
-				<div
-					bind:this={scrollDiv}
-					style="overflow-x: auto; padding-bottom: 1em;"
-					on:wheel={handleWheel}
-				>
-					<ProgressIndicator
-						currentIndex={lockedIndex
-							? selectedTopic?.messages.findIndex((e) => e.timestamp == selectedMessage?.timestamp)
-							: selectedIndex}
-					>
-						{#each selectedTopic?.messages as message, index}
-							<ProgressStep
-								label={`${message.delta_t ? message.delta_t : 0} ms`}
-								on:click={() => selectMessage(index)}
-								title={curateDate(message.timestamp)}
-							/>
-						{/each}
-					</ProgressIndicator>
+		<Tile light>
+			{#if selectedMessage}
+				<h5>
+					Selected message: {curateDate(selectedMessage.timestamp)}
+				</h5>
+				<div style="height: 30em; display: flex; flex-direction: column;">
+					<Monaco readonly bind:code={selectedMessage.text} />
 				</div>
-			</Tile>
-		</div>
+			{/if}
+
+			<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
+
+			<div
+				bind:this={scrollDiv}
+				style="overflow-x: auto; padding-bottom: 1em;"
+				on:wheel={handleWheel}
+			>
+				<ProgressIndicator
+					currentIndex={lockedIndex
+						? selectedTopic?.messages.findIndex((e) => e.timestamp == selectedMessage?.timestamp)
+						: selectedIndex}
+				>
+					{#each selectedTopic?.messages as message, index}
+						<ProgressStep
+							label={`${message.delta_t ? message.delta_t : 0} ms`}
+							on:click={() => selectMessage(index)}
+							title={curateDate(message.timestamp)}
+						/>
+					{/each}
+				</ProgressIndicator>
+			</div>
+		</Tile>
 	{/if}
 {/if}
