@@ -55,6 +55,7 @@ THE SOFTWARE.
 			readOnly: readonly,
 			automaticLayout: true,
 			theme: !theme?.dark ? 'vs-light' : 'vs-dark',
+			scrollBeyondLastLine: false,
 		});
 
 		editor.setModel({
@@ -94,12 +95,11 @@ THE SOFTWARE.
 <div class="monaco-container" bind:this={editorElement} />
 
 <style>
-	.monaco-container {
-		width: 100%;
-		height: 100%;
-		min-height: 0;
-		min-width: 0;
-		/* Optional: */
-		overflow: hidden;
-	}
+.monaco-container {
+  width: 100%;
+  height: 100%;
+  bottom: 1em;
+  min-height: 0;
+  min-width: 0;
+}
 </style>

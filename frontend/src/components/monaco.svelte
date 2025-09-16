@@ -52,7 +52,8 @@ THE SOFTWARE.
 			readOnly: readonly,
 			automaticLayout: true,
 			theme: !theme?.dark ? 'vs-light' : 'vs-dark',
-			language: 'json'
+			language: 'json',
+			scrollBeyondLastLine: false,
 		});
 
 		editor.onDidChangeModelContent(() => {
@@ -98,9 +99,8 @@ THE SOFTWARE.
 .monaco-container {
   width: 100%;
   height: 100%;
+  bottom: 1em;
   min-height: 0;
   min-width: 0;
-  /* Optional: */
-  overflow: hidden;
 }
 </style>

@@ -96,7 +96,7 @@ THE SOFTWARE.
 	bind:payload
 />
 
-<Tile light on:click={stopPropagation}>
+<Tile light on:click={stopPropagation} style="height: calc(100vh - 9em)">
 	<div style="display: flex; width: 100%">
 		<div style="flex: 4">
 			<TextInput on:click={stopPropagation} labelText="Topic" bind:value={topic} />
@@ -143,9 +143,9 @@ THE SOFTWARE.
 			/>
 		</div>
 	</div>
-	<div style="height: 30em">
+	<div style="height: calc(100% - 8em)">
 		<Monaco bind:result={payload} bind:code={payload} />
 	</div>
 
-	<Button on:click={send}>Send</Button>
+	<Button on:click={send} style="width: 100%">Send</Button>
 </Tile>

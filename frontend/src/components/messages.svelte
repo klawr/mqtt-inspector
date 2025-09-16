@@ -30,8 +30,6 @@ THE SOFTWARE.
 	} from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 	import MonacoDiff from './monaco_diff.svelte';
-	import { GroupPresentation } from 'carbon-icons-svelte';
-	import { redirect } from '@sveltejs/kit';
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
@@ -65,7 +63,7 @@ THE SOFTWARE.
 	let scrollDiv: HTMLDivElement | null = null;
 	function handleWheel(event: WheelEvent) {
 		if (scrollDiv && event.deltaY !== 0) {
-			scrollDiv.scrollLeft += event.deltaY;
+			scrollDiv.scrollLeft -= event.deltaY;
 			event.preventDefault();
 		}
 	}
@@ -79,18 +77,18 @@ THE SOFTWARE.
 </script>
 
 {#if selectedTopic}
-	<div style="height: 8em;">
+	<div style="height: 6em;">
 		<h4>Selected topic:</h4>
 		<CodeSnippet light code={selectedTopic?.id}></CodeSnippet>
 	</div>
 
 	{#if selectedTopic?.messages.length}
-		<Tile light>
+		<Tile light style="height: calc(100vh - 15em)">
 			{#if selectedMessage}
 				<h5>
 					Selected message: {curateDate(selectedMessage.timestamp)}
 				</h5>
-				<div style="height: 30em; display: flex; flex-direction: column;">
+				<div style="height: calc(100% - 9em">
 					{#if compareMessage && selectedMessageCompare}
 						<MonacoDiff
 							bind:code={selectedMessage.text}
@@ -151,7 +149,6 @@ THE SOFTWARE.
 					</ProgressIndicator>
 				{/if}
 				<style>
-
 					.green-indicator {
 						--cds-interactive-04: #4ec9b0;
 					}
