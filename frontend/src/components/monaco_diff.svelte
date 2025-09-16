@@ -24,6 +24,7 @@ THE SOFTWARE.
 	import { prettyPrint } from './messages';
 	import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 	import { selectedTheme, type Theme } from '../store';
+	import type * as monacoType from 'monaco-editor';
 
 	export let readonly = false;
 	export let code: string = '';
@@ -31,12 +32,11 @@ THE SOFTWARE.
 
 	let editorElement: HTMLDivElement;
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let editor: any;
+	let editor: monacoType.editor.IStandaloneDiffEditor;
 	let theme: Theme;
 
-	let originalModel: any;
-	let modifiedModel: any;
+	let originalModel: monacoType.editor.ITextModel;
+	let modifiedModel: monacoType.editor.ITextModel;
 
 	async function setEditor() {
 		const monaco = await import('monaco-editor');
@@ -55,7 +55,7 @@ THE SOFTWARE.
 			readOnly: readonly,
 			automaticLayout: true,
 			theme: !theme?.dark ? 'vs-light' : 'vs-dark',
-			scrollBeyondLastLine: false,
+			scrollBeyondLastLine: false
 		});
 
 		editor.setModel({
@@ -95,11 +95,11 @@ THE SOFTWARE.
 <div class="monaco-container" bind:this={editorElement} />
 
 <style>
-.monaco-container {
-  width: 100%;
-  height: 100%;
-  bottom: 1em;
-  min-height: 0;
-  min-width: 0;
-}
+	.monaco-container {
+		width: 100%;
+		height: 100%;
+		bottom: 1em;
+		min-height: 0;
+		min-width: 0;
+	}
 </style>

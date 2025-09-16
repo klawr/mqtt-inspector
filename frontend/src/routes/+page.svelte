@@ -25,7 +25,6 @@ THE SOFTWARE.
 	import {
 		Button,
 		Content,
-		Grid,
 		Header,
 		InlineNotification,
 		RadioButton,
@@ -246,58 +245,57 @@ THE SOFTWARE.
 	{/if}
 
 	{#if app.brokerRepository[app.selectedBroker]}
-			<Tabs autoWidth type="container">
-				<Tab label="Treeview" />
-				<Tab label="Pipeline" />
-				<Tab label="Publish" />
-				<svelte:fragment slot="content">
-					<TabContent>
-						<div class="treeview-flex">
-							<div class="treeview-col" style="max-width: 40em">
-								<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
-							</div>
-							<div class="treeview-col">
-								{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-									<Messages
-										bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-									/>
-								{/if}
-							</div>
+		<Tabs autoWidth type="container">
+			<Tab label="Treeview" />
+			<Tab label="Pipeline" />
+			<Tab label="Publish" />
+			<svelte:fragment slot="content">
+				<TabContent>
+					<div class="treeview-flex">
+						<div class="treeview-col" style="max-width: 40em">
+							<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
 						</div>
-					</TabContent>
-					<TabContent>
-						<div class="treeview-flex">
-							<div class="treeview-col" style="max-width: 40em">
-								<Pipeline
-									bind:pipelines={app.pipelines}
-									bind:broker={app.brokerRepository[app.selectedBroker]}
-									bind:socket
+						<div class="treeview-col">
+							{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+								<Messages
+									bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
 								/>
-							</div>
-							<div class="treeview-col">
-								{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-									<Messages
-										bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-									/>
-								{/if}
-							</div>
+							{/if}
 						</div>
-					</TabContent>
-					<TabContent>
-						<PublishMessage
-							bind:savedCommands={app.commands}
-							bind:selectedBroker={app.selectedBroker}
-							bind:socket
-							bind:broker={app.brokerRepository[app.selectedBroker]}
-						/>
-					</TabContent>
-				</svelte:fragment>
-			</Tabs>
+					</div>
+				</TabContent>
+				<TabContent>
+					<div class="treeview-flex">
+						<div class="treeview-col" style="max-width: 40em">
+							<Pipeline
+								bind:pipelines={app.pipelines}
+								bind:broker={app.brokerRepository[app.selectedBroker]}
+								bind:socket
+							/>
+						</div>
+						<div class="treeview-col">
+							{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+								<Messages
+									bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+								/>
+							{/if}
+						</div>
+					</div>
+				</TabContent>
+				<TabContent>
+					<PublishMessage
+						bind:savedCommands={app.commands}
+						bind:selectedBroker={app.selectedBroker}
+						bind:socket
+						bind:broker={app.brokerRepository[app.selectedBroker]}
+					/>
+				</TabContent>
+			</svelte:fragment>
+		</Tabs>
 	{/if}
 </Content>
 
 <style>
-
 	.treeview-flex {
 		display: flex;
 		flex-direction: row;
