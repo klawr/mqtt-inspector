@@ -29,9 +29,11 @@ THE SOFTWARE.
 		Tile
 	} from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
+	import MonacoDiff from './monaco_diff.svelte';
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
+	let compareMessage = false;
 	let lockedIndex = false;
 	$: if (selectedTopic) {
 		if (!lockedIndex) {
@@ -44,10 +46,18 @@ THE SOFTWARE.
 	let selectedIndex = 0;
 	let selectedMessage = selectedTopic?.messages[selectedIndex];
 
+	let selectedIndexCompare = 0;
+	let selectedMessageCompare = selectedTopic?.messages[selectedIndexCompare];
+
 	function selectMessage(index: number) {
 		lockedIndex = true;
 		selectedIndex = index;
 		selectedMessage = selectedTopic?.messages[index];
+	}
+
+	function selectMessageCompare(index: number) {
+		selectedIndexCompare = index;
+		selectedMessageCompare = selectedTopic?.messages[index];
 	}
 
 	let scrollDiv: HTMLDivElement | null = null;
@@ -70,8 +80,6 @@ THE SOFTWARE.
 	<div style="height: 8em;">
 		<h4>Selected topic:</h4>
 		<CodeSnippet light code={selectedTopic?.id}></CodeSnippet>
-
-		<p>Messages: {selectedTopic?.messages.length || 0}</p>
 	</div>
 
 	{#if selectedTopic?.messages.length}
@@ -81,11 +89,28 @@ THE SOFTWARE.
 					Selected message: {curateDate(selectedMessage.timestamp)}
 				</h5>
 				<div style="height: 30em; display: flex; flex-direction: column;">
-					<Monaco readonly bind:code={selectedMessage.text} />
+					{#if compareMessage && selectedMessageCompare}
+						<MonacoDiff
+							bind:code={selectedMessage.text}
+							bind:codeCompare={selectedMessageCompare.text}
+						/>
+					{:else}
+						<Monaco readonly bind:code={selectedMessage.text} />
+					{/if}
 				</div>
 			{/if}
 
-			<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
+			<div style="display: flex;">
+				<div style="margin-right: 1em;">
+					<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
+				</div>
+				<div style="margin-right: 1em;">
+					<Checkbox labelText="Compare message" bind:checked={compareMessage} />
+				</div>
+				<div style="align-self: center;">
+					Cached Messages: {selectedTopic?.messages.length || 0}
+				</div>
+			</div>
 
 			<div
 				bind:this={scrollDiv}
@@ -105,6 +130,22 @@ THE SOFTWARE.
 						/>
 					{/each}
 				</ProgressIndicator>
+				{#if compareMessage}
+					<div style="height: 1em" />
+					<ProgressIndicator
+						currentIndex={selectedTopic?.messages.findIndex(
+							(e) => e.timestamp == selectedMessageCompare?.timestamp
+						)}
+					>
+						{#each selectedTopic?.messages as compareMessage, compareIndex}
+							<ProgressStep
+								label={`${compareMessage.delta_t ? compareMessage.delta_t : 0} ms`}
+								on:click={() => selectMessageCompare(compareIndex)}
+								title={curateDate(compareMessage.timestamp)}
+							/>
+						{/each}
+					</ProgressIndicator>
+				{/if}
 			</div>
 		</Tile>
 	{/if}

@@ -313,7 +313,7 @@ THE SOFTWARE.
 		box-sizing: border-box;
 	}
 
-	@media (max-width: 60em) {
+	@media (max-width: 75em) {
 		.treeview-flex {
 			flex-direction: column;
 		}

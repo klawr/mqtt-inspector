@@ -27,15 +27,16 @@ THE SOFTWARE.
 
 	export let readonly = false;
 	export let code: string = '';
-	export let result: string = '';
+	export let codeCompare: string = '';
 
 	let editorElement: HTMLDivElement;
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	let editor: any;
 	let theme: Theme;
-	let isUpdatingFromEditor = false;
-	let isUpdatingFromCode = false;
+
+	let originalModel: any;
+	let modifiedModel: any;
 
 	async function setEditor() {
 		const monaco = await import('monaco-editor');
@@ -48,23 +49,28 @@ THE SOFTWARE.
 		};
 
 		monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
-		editor = monaco.editor.create(editorElement, {
+		originalModel = monaco.editor.createModel(prettyPrint(codeCompare), 'json');
+		modifiedModel = monaco.editor.createModel(prettyPrint(code), 'json');
+		editor = monaco.editor.createDiffEditor(editorElement, {
 			readOnly: readonly,
 			automaticLayout: true,
 			theme: !theme?.dark ? 'vs-light' : 'vs-dark',
-			language: 'json'
 		});
 
-		editor.onDidChangeModelContent(() => {
-			if (isUpdatingFromCode) return;
-			isUpdatingFromEditor = true;
-			const value = editor.getValue();
-			console.log(code);
-			if (value !== code) {
-				code = value;
-			}
-			isUpdatingFromEditor = false;
+		editor.setModel({
+			original: originalModel,
+			modified: modifiedModel
 		});
+	}
+
+	// Minimal reactive update for code/codeCompare
+	$: if (originalModel && codeCompare !== undefined) {
+		const val = prettyPrint(codeCompare);
+		if (originalModel.getValue() !== val) originalModel.setValue(val);
+	}
+	$: if (modifiedModel && code !== undefined) {
+		const val = prettyPrint(code);
+		if (modifiedModel.getValue() !== val) modifiedModel.setValue(val);
 	}
 
 	onMount(() => {
@@ -80,27 +86,20 @@ THE SOFTWARE.
 
 	onDestroy(async () => {
 		editor?.dispose();
+		originalModel?.dispose();
+		modifiedModel?.dispose();
 	});
-
-	$: if (editor && !isUpdatingFromEditor) {
-		if (editor.getValue() !== code) {
-			isUpdatingFromCode = true;
-			editor.setValue(code ? prettyPrint(code) : '');
-			isUpdatingFromCode = false;
-		}
-		result = editor?.getValue();
-	}
 </script>
 
 <div class="monaco-container" bind:this={editorElement} />
 
 <style>
-.monaco-container {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  min-width: 0;
-  /* Optional: */
-  overflow: hidden;
-}
+	.monaco-container {
+		width: 100%;
+		height: 100%;
+		min-height: 0;
+		min-width: 0;
+		/* Optional: */
+		overflow: hidden;
+	}
 </style>
