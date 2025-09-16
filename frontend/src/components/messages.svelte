@@ -30,6 +30,8 @@ THE SOFTWARE.
 	} from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 	import MonacoDiff from './monaco_diff.svelte';
+	import { GroupPresentation } from 'carbon-icons-svelte';
+	import { redirect } from '@sveltejs/kit';
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
@@ -118,6 +120,7 @@ THE SOFTWARE.
 				on:wheel={handleWheel}
 			>
 				<ProgressIndicator
+					class={compareMessage ? 'green-indicator' : ''}
 					currentIndex={lockedIndex
 						? selectedTopic?.messages.findIndex((e) => e.timestamp == selectedMessage?.timestamp)
 						: selectedIndex}
@@ -133,6 +136,7 @@ THE SOFTWARE.
 				{#if compareMessage}
 					<div style="height: 1em" />
 					<ProgressIndicator
+						class="red-indicator"
 						currentIndex={selectedTopic?.messages.findIndex(
 							(e) => e.timestamp == selectedMessageCompare?.timestamp
 						)}
@@ -146,6 +150,15 @@ THE SOFTWARE.
 						{/each}
 					</ProgressIndicator>
 				{/if}
+				<style>
+
+					.green-indicator {
+						--cds-interactive-04: #4ec9b0;
+					}
+					.red-indicator {
+						--cds-interactive-04: #f44747;
+					}
+				</style>
 			</div>
 		</Tile>
 	{/if}
