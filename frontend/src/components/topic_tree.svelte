@@ -57,6 +57,23 @@ THE SOFTWARE.
 			return { text: topic.id, id: topic.id };
 		});
 	}
+
+	function sanitizeTree(nodes: Treebranch[]): TreeNode[] {
+		return nodes.map((node) => {
+			const sanitized: TreeNode = {
+				id: node.id,
+				text: node.text
+			};
+			if (node.children) {
+				sanitized.children = sanitizeTree(node.children);
+			}
+
+			return sanitized;
+		});
+	}
+
+	let sanitizedTopics: TreeNode[] = [];
+	$: sanitizedTopics = sanitizeTree(broker.topics);
 </script>
 
 <ButtonSet>
@@ -76,7 +93,7 @@ THE SOFTWARE.
 <div class="overflow-auto treeview-col">
 	<TreeView
 		bind:this={treeview}
-		bind:children={broker.topics}
+		bind:children={sanitizedTopics}
 		bind:activeId
 		bind:selectedIds
 		on:select={({ detail }) => select(detail)}
