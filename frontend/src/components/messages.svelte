@@ -1,4 +1,4 @@
-<!-- Copyright (c) 2024 Kai Lawrence -->
+<!-- Copyright (c) 2024-2025 Kai Lawrence -->
 <!--
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -77,13 +77,13 @@ THE SOFTWARE.
 </script>
 
 {#if selectedTopic}
-	<div style="height: 6em;">
+	<div style="height: 5.25em;">
 		<h4>Selected topic:</h4>
 		<CodeSnippet light code={selectedTopic?.id}></CodeSnippet>
 	</div>
 
 	{#if selectedTopic?.messages.length}
-		<Tile light style="height: calc(100vh - 15em)">
+		<Tile light style="height: calc(100vh - 11em)">
 			{#if selectedMessage}
 				<h5>
 					Selected message: {curateDate(selectedMessage.timestamp)}

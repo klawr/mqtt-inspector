@@ -1,4 +1,4 @@
-<!-- Copyright (c) 2024 Kai Lawrence -->
+<!-- Copyright (c) 2024-2025 Kai Lawrence -->
 <!--
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -73,10 +73,19 @@ THE SOFTWARE.
 	{shouldFilterItem}
 />
 
-<TreeView
-	bind:this={treeview}
-	bind:children={broker.topics}
-	bind:activeId
-	bind:selectedIds
-	on:select={({ detail }) => select(detail)}
-/>
+<div class="overflow-auto treeview-col">
+	<TreeView
+		bind:this={treeview}
+		bind:children={broker.topics}
+		bind:activeId
+		bind:selectedIds
+		on:select={({ detail }) => select(detail)}
+	/>
+</div>
+
+<style>
+	.overflow-auto {
+		overflow: auto;
+		height: calc(100vh - 9rem);
+	}
+</style>

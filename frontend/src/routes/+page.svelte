@@ -1,4 +1,4 @@
-<!-- Copyright (c) 2024 Kai Lawrence -->
+<!-- Copyright (c) 2024-2025 Kai Lawrence -->
 <!--
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -35,9 +35,6 @@ THE SOFTWARE.
 		SideNavLink,
 		SideNavMenu,
 		SkipToContent,
-		Tab,
-		TabContent,
-		Tabs,
 		Theme
 	} from 'carbon-components-svelte';
 	import 'carbon-components-svelte/css/all.css';
@@ -65,6 +62,8 @@ THE SOFTWARE.
 	let app = new AppState();
 
 	const decoder = new TextDecoder('utf-8');
+
+	let selectedTab = 0;
 
 	let socketConnected = false;
 	function initializeWebSocket() {
@@ -144,6 +143,27 @@ THE SOFTWARE.
 	<svelte:fragment slot="skip-to-content">
 		<SkipToContent />
 	</svelte:fragment>
+
+	<Button
+		kind={selectedTab === 1 ? 'primary' : 'secondary'}
+		on:click={() => {
+			selectedTab = 1;
+		}}>Treeview</Button
+	>
+
+	<Button
+		kind={selectedTab === 2 ? 'primary' : 'secondary'}
+		on:click={() => {
+			selectedTab = 2;
+		}}>Pipeline</Button
+	>
+	<Button
+		kind={selectedTab === 3 ? 'primary' : 'secondary'}
+		on:click={() => {
+			selectedTab = 3;
+		}}>Publish</Button
+	>
+
 	<div style="flex: 1" />
 
 	{#if app.brokerRepository[app.selectedBroker]}
@@ -225,7 +245,7 @@ THE SOFTWARE.
 	</SideNavItems>
 </SideNav>
 
-<Content style="padding: 0">
+<Content style="padding: 1em">
 	{#if app.brokerRepository[app.selectedBroker]?.markedForDeletion}
 		<div style="margin-left: 1em; margin-top: 3em; display: flex">
 			<div style="flex: 0"></div>
@@ -245,53 +265,40 @@ THE SOFTWARE.
 	{/if}
 
 	{#if app.brokerRepository[app.selectedBroker]}
-		<Tabs autoWidth type="container">
-			<Tab label="Treeview" />
-			<Tab label="Pipeline" />
-			<Tab label="Publish" />
-			<svelte:fragment slot="content">
-				<TabContent>
-					<div class="treeview-flex">
-						<div class="treeview-col" style="max-width: 40em">
-							<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
-						</div>
-						<div class="treeview-col">
-							{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-								<Messages
-									bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-								/>
-							{/if}
-						</div>
-					</div>
-				</TabContent>
-				<TabContent>
-					<div class="treeview-flex">
-						<div class="treeview-col" style="max-width: 40em">
-							<Pipeline
-								bind:pipelines={app.pipelines}
-								bind:broker={app.brokerRepository[app.selectedBroker]}
-								bind:socket
-							/>
-						</div>
-						<div class="treeview-col">
-							{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-								<Messages
-									bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-								/>
-							{/if}
-						</div>
-					</div>
-				</TabContent>
-				<TabContent>
-					<PublishMessage
-						bind:savedCommands={app.commands}
-						bind:selectedBroker={app.selectedBroker}
-						bind:socket
+		{#if selectedTab === 1}
+			<div class="treeview-flex">
+				<div class="treeview-col" style="max-width: 40em; margin-top: -0.27em">
+					<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
+				</div>
+				<div class="treeview-col">
+					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+						<Messages bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic} />
+					{/if}
+				</div>
+			</div>
+		{:else if selectedTab === 2}
+			<div class="treeview-flex">
+				<div class="treeview-col" style="max-width: 40em">
+					<Pipeline
+						bind:pipelines={app.pipelines}
 						bind:broker={app.brokerRepository[app.selectedBroker]}
+						bind:socket
 					/>
-				</TabContent>
-			</svelte:fragment>
-		</Tabs>
+				</div>
+				<div class="treeview-col">
+					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
+						<Messages bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic} />
+					{/if}
+				</div>
+			</div>
+		{:else if selectedTab === 3}
+			<PublishMessage
+				bind:savedCommands={app.commands}
+				bind:selectedBroker={app.selectedBroker}
+				bind:socket
+				bind:broker={app.brokerRepository[app.selectedBroker]}
+			/>
+		{/if}
 	{/if}
 </Content>
 
@@ -302,6 +309,7 @@ THE SOFTWARE.
 		width: 100%;
 		gap: 1rem;
 		box-sizing: border-box;
+		min-height: 0;
 	}
 
 	.treeview-col {
@@ -309,6 +317,8 @@ THE SOFTWARE.
 		min-width: 0;
 		overflow: hidden;
 		box-sizing: border-box;
+		max-height: calc(100vh - 4.8rem);
+		min-height: 0;
 	}
 
 	@media (max-width: 75em) {

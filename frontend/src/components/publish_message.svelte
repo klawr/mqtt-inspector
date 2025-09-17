@@ -1,4 +1,4 @@
-<!-- Copyright (c) 2024 Kai Lawrence -->
+<!-- Copyright (c) 2024-2025 Kai Lawrence -->
 <!--
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -96,7 +96,7 @@ THE SOFTWARE.
 	bind:payload
 />
 
-<Tile light on:click={stopPropagation} style="height: calc(100vh - 9em)">
+<Tile light on:click={stopPropagation} style="height: calc(100vh - 5em)">
 	<div style="display: flex; width: 100%">
 		<div style="flex: 4">
 			<TextInput on:click={stopPropagation} labelText="Topic" bind:value={topic} />

@@ -1,4 +1,4 @@
-<!-- Copyright (c) 2024 Kai Lawrence -->
+<!-- Copyright (c) 2024-2025 Kai Lawrence -->
 <!--
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -151,150 +151,159 @@ THE SOFTWARE.
 	}
 </script>
 
-<OverwritePipeline
-	bind:open={overwritePipelineOpen}
-	bind:socket
-	bind:newPipeline
-	bind:pipelineName
-/>
-<RemovePipeline bind:open={removePipelineOpen} bind:socket bind:pipelines bind:selectedId />
-<CleanPipelineRows bind:open={cleanAllRowsOpen} bind:broker bind:selectedId />
+<div class="overflow-auto">
+	<OverwritePipeline
+		bind:open={overwritePipelineOpen}
+		bind:socket
+		bind:newPipeline
+		bind:pipelineName
+	/>
+	<RemovePipeline bind:open={removePipelineOpen} bind:socket bind:pipelines bind:selectedId />
+	<CleanPipelineRows bind:open={cleanAllRowsOpen} bind:broker bind:selectedId />
 
-<div style="display: flex">
-	<div style="flex: 1">
-		<Button size="field" on:click={reset} kind="secondary">Reset</Button>
+	<div style="display: flex">
+		<div style="flex: 1">
+			<Button size="field" on:click={reset} kind="secondary">Reset</Button>
+		</div>
+		<div style="flex: 11">
+			<ComboBox
+				bind:selectedId
+				on:select={pipelineSelected}
+				bind:items={pipelines}
+				placeholder="Select pipeline"
+			/>
+		</div>
+		<div style="margin-top: auto; margin-bottom: 0; flex: 0">
+			<Button
+				disabled={selectedId === undefined}
+				tooltipAlignment="end"
+				tooltipPosition="bottom"
+				iconDescription="Delete selected pipeline"
+				kind="danger-ghost"
+				size="field"
+				icon={TrashCan}
+				on:click={remove_pipeline}
+			/>
+		</div>
 	</div>
-	<div style="flex: 11">
-		<ComboBox
-			bind:selectedId
-			on:select={pipelineSelected}
-			bind:items={pipelines}
-			placeholder="Select pipeline"
-		/>
-	</div>
-	<div style="margin-top: auto; margin-bottom: 0; flex: 0">
-		<Button
-			disabled={selectedId === undefined}
-			tooltipAlignment="end"
-			tooltipPosition="bottom"
-			iconDescription="Delete selected pipeline"
-			kind="danger-ghost"
-			size="field"
-			icon={TrashCan}
-			on:click={remove_pipeline}
-		/>
-	</div>
-</div>
 
-<div style="margin-bottom: -5em">
-	<StructuredList condensed selection bind:selected={selectedRow}>
-		<StructuredListHead>
-			<StructuredListRow head>
-				<StructuredListCell head>Topic</StructuredListCell>
+	<div style="margin-bottom: -5em">
+		<StructuredList condensed selection bind:selected={selectedRow}>
+			<StructuredListHead>
+				<StructuredListRow head>
+					<StructuredListCell head>Topic</StructuredListCell>
+					<StructuredListCell head>
+						<div style="text-align: end;">Time</div>
+					</StructuredListCell>
+					<StructuredListCell head />
+				</StructuredListRow>
+			</StructuredListHead>
+			<StructuredListBody>
+				{#each broker.pipeline as item, index}
+					<StructuredListRow on:click={clicked_row} label for="row-{index}">
+						<StructuredListCell>{item.topic}</StructuredListCell>
+						<StructuredListCell>
+							<div style="text-align: end;">
+								{item.delta_t !== undefined ? `${item.delta_t} ms` : ' - '}
+							</div>
+						</StructuredListCell>
+						<StructuredListCell>
+							<div style="width: 0">
+								<StructuredListInput id="row-{index}" value="row-{index}-value" />
+								{#if (selectedRow === `row-${index}-value` && !broker.selectedTopic?.id) || broker.selectedTopic?.id === item.topic}
+									<CheckmarkFilled />
+								{/if}
+							</div>
+						</StructuredListCell>
+					</StructuredListRow>
+				{/each}
+			</StructuredListBody>
+		</StructuredList>
+	</div>
+	<div style="margin-bottom: -5em">
+		<StructuredList>
+			<StructuredListRow>
+				<StructuredListCell head>Total:</StructuredListCell>
 				<StructuredListCell head>
-					<div style="text-align: end;">Time</div>
+					<div style="text-align: end;">
+						{broker.pipeline.reduce((pre, cur) => pre + (cur.delta_t || 0), 0)} ms
+					</div>
 				</StructuredListCell>
 				<StructuredListCell head />
 			</StructuredListRow>
-		</StructuredListHead>
-		<StructuredListBody>
-			{#each broker.pipeline as item, index}
-				<StructuredListRow on:click={clicked_row} label for="row-{index}">
-					<StructuredListCell>{item.topic}</StructuredListCell>
-					<StructuredListCell>
-						<div style="text-align: end;">
-							{item.delta_t !== undefined ? `${item.delta_t} ms` : ' - '}
-						</div>
-					</StructuredListCell>
-					<StructuredListCell>
-						<div style="width: 0">
-							<StructuredListInput id="row-{index}" value="row-{index}-value" />
-							{#if (selectedRow === `row-${index}-value` && !broker.selectedTopic?.id) || broker.selectedTopic?.id === item.topic}
-								<CheckmarkFilled />
-							{/if}
-						</div>
-					</StructuredListCell>
-				</StructuredListRow>
-			{/each}
-		</StructuredListBody>
-	</StructuredList>
-</div>
-<div style="margin-bottom: -5em">
-	<StructuredList>
-		<StructuredListRow>
-			<StructuredListCell head>Total:</StructuredListCell>
-			<StructuredListCell head>
-				<div style="text-align: end;">
-					{broker.pipeline.reduce((pre, cur) => pre + (cur.delta_t || 0), 0)} ms
-				</div>
-			</StructuredListCell>
-			<StructuredListCell head />
-		</StructuredListRow>
-	</StructuredList>
-</div>
-<div style="display: flex">
-	<div style="flex: 10;">
-		<ComboBox
-			placeholder="Add topic to pipeline..."
-			items={searchTopics}
-			value={nextStepText}
-			on:select={(e) => {
-				nextStepText = e.detail.selectedItem?.id || '';
-			}}
-			{shouldFilterItem}
-		/>
+		</StructuredList>
 	</div>
-	<div style="flex: 1">
+	<div style="display: flex">
+		<div style="flex: 10;">
+			<ComboBox
+				placeholder="Add topic to pipeline..."
+				items={searchTopics}
+				value={nextStepText}
+				on:select={(e) => {
+					nextStepText = e.detail.selectedItem?.id || '';
+				}}
+				{shouldFilterItem}
+			/>
+		</div>
+		<div style="flex: 1">
+			<Button
+				disabled={!nextStepText}
+				iconDescription="Add"
+				icon={Add}
+				on:click={add_to_pipeline}
+				size="field"
+			/>
+		</div>
+	</div>
+	<div style="margin: 3px 0px 3px 0px;">
 		<Button
-			disabled={!nextStepText}
-			iconDescription="Add"
-			icon={Add}
-			on:click={add_to_pipeline}
-			size="field"
+			on:click={() => moveSelectedRow(-1)}
+			icon={ArrowUp}
+			iconDescription="Move selected row up"
+			disabled={!selectedRow ||
+				(!!broker.selectedTopic?.id &&
+					broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
 		/>
-	</div>
-</div>
-<div style="margin: 3px 0px 3px 0px;">
-	<Button
-		on:click={() => moveSelectedRow(-1)}
-		icon={ArrowUp}
-		iconDescription="Move selected row up"
-		disabled={!selectedRow ||
-			(!!broker.selectedTopic?.id &&
-				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-	/>
-	<Button
-		on:click={() => moveSelectedRow(1)}
-		icon={ArrowDown}
-		iconDescription="Move selected row down"
-		disabled={!selectedRow ||
-			(!!broker.selectedTopic?.id &&
-				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-	/>
-	<Button
-		kind="danger"
-		on:click={removeSelectedRow}
-		icon={TrashCan}
-		iconDescription="Remove selected row"
-		disabled={!selectedRow ||
-			(!!broker.selectedTopic?.id &&
-				broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
-	/>
-	<Button kind="danger" on:click={cleanAllRows} icon={Clean} iconDescription="Clean all rows" />
-</div>
-
-<div style="display: flex">
-	<div style="flex: 10">
-		<TextInput bind:value={pipelineName} placeholder="Save pipeline as..." />
+		<Button
+			on:click={() => moveSelectedRow(1)}
+			icon={ArrowDown}
+			iconDescription="Move selected row down"
+			disabled={!selectedRow ||
+				(!!broker.selectedTopic?.id &&
+					broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+		/>
+		<Button
+			kind="danger"
+			on:click={removeSelectedRow}
+			icon={TrashCan}
+			iconDescription="Remove selected row"
+			disabled={!selectedRow ||
+				(!!broker.selectedTopic?.id &&
+					broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+		/>
+		<Button kind="danger" on:click={cleanAllRows} icon={Clean} iconDescription="Clean all rows" />
 	</div>
 
-	<div style="flex: 1">
-		<Button
-			disabled={!pipelineName}
-			icon={Save}
-			iconDescription="Save current pipeline"
-			size="field"
-			on:click={save_pipeline}
-		/>
+	<div style="display: flex">
+		<div style="flex: 10">
+			<TextInput bind:value={pipelineName} placeholder="Save pipeline as..." />
+		</div>
+
+		<div style="flex: 1">
+			<Button
+				disabled={!pipelineName}
+				icon={Save}
+				iconDescription="Save current pipeline"
+				size="field"
+				on:click={save_pipeline}
+			/>
+		</div>
 	</div>
 </div>
+
+<style>
+	.overflow-auto {
+		height: calc(100vh - 5em);
+		overflow: auto;
+	}
+</style>
