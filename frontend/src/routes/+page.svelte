@@ -57,13 +57,13 @@ THE SOFTWARE.
 	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
 	import { requestMqttBrokerConnection } from '$lib/socket';
 	import { selectedTheme, availableThemes } from '../store';
+	import { goto } from '$app/navigation';
+	import { json } from '@sveltejs/kit';
 
 	let socket: WebSocket;
 	let app = new AppState();
 
 	const decoder = new TextDecoder('utf-8');
-
-	let selectedTab = 0;
 
 	let socketConnected = false;
 	function initializeWebSocket() {
@@ -85,6 +85,15 @@ THE SOFTWARE.
 					break;
 				case 'mqtt_brokers':
 					app.brokerRepository = processBrokers(json.params, decoder, app.brokerRepository);
+					const params = new URLSearchParams(window.location.search);
+					const broker = params.get('broker');
+					if (broker) {
+						app.selectedBroker = broker;
+					}
+					const tab = params.get('tab');
+					if (tab && !isNaN(Number(tab))) {
+						selectedTab = Number(tab);
+					}
 					break;
 				case 'mqtt_message':
 					app = processMQTTMessage(json.params, decoder, app);
@@ -110,8 +119,6 @@ THE SOFTWARE.
 		};
 	}
 
-	onMount(initializeWebSocket);
-
 	let isSideNavOpen = false;
 	let addMqttBrokerModalOpen = false;
 	let removeMqttBrokerModalOpen = false;
@@ -132,6 +139,24 @@ THE SOFTWARE.
 		}
 		selectedTheme.set(newTheme);
 	}
+
+	let selectedTab = 0;
+	$: {
+		const params = new URLSearchParams($page.url.search);
+		if (app.selectedBroker) {
+			params.set('broker', app.selectedBroker);
+		}
+		if (selectedTab !== 0) {
+			params.set('tab', selectedTab.toString());
+		}
+		const url = `${$page.url.pathname}?${params.toString()}`;
+		const current = `${$page.url.pathname}${$page.url.search}`;
+		if (url !== current) {
+			goto(url);
+		}
+	}
+
+	onMount(initializeWebSocket);
 </script>
 
 <Theme bind:theme />

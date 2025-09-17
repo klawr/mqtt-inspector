@@ -86,6 +86,6 @@ THE SOFTWARE.
 <style>
 	.overflow-auto {
 		overflow: auto;
-		height: calc(100vh - 9rem);
+		height: calc(100vh - 9.35rem);
 	}
 </style>
