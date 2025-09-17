@@ -58,7 +58,6 @@ THE SOFTWARE.
 	import { requestMqttBrokerConnection } from '$lib/socket';
 	import { selectedTheme, availableThemes } from '../store';
 	import { goto } from '$app/navigation';
-	import { json } from '@sveltejs/kit';
 
 	let socket: WebSocket;
 	let app = new AppState();
@@ -83,7 +82,7 @@ THE SOFTWARE.
 				case 'mqtt_connection_status':
 					app = processConnectionStatus(json.params, app);
 					break;
-				case 'mqtt_brokers':
+				case 'mqtt_brokers': {
 					app.brokerRepository = processBrokers(json.params, decoder, app.brokerRepository);
 					const params = new URLSearchParams(window.location.search);
 					const broker = params.get('broker');
@@ -95,6 +94,7 @@ THE SOFTWARE.
 						selectedTab = Number(tab);
 					}
 					break;
+				}
 				case 'mqtt_message':
 					app = processMQTTMessage(json.params, decoder, app);
 					break;
