@@ -37,10 +37,17 @@ THE SOFTWARE.
 
 	let compareMessage = false;
 	let lockedIndex = false;
+	let lockedIndexCompare = false;
 	let selectedIndex = 0;
 	let selectedMessage = selectedTopic?.messages[selectedIndex];
 
-	let selectedIndexCompare = 0;
+	$: if (selectedTopic) {
+		if (!lockedIndex) {
+			selectedMessage = selectedTopic.messages[selectedIndex];
+		}
+	}
+
+	let selectedIndexCompare = 1;
 	let selectedMessageCompare = selectedTopic?.messages[selectedIndexCompare];
 
 	function selectMessage(index: number) {
@@ -55,6 +62,7 @@ THE SOFTWARE.
 	}
 
 	function selectMessageCompare(index: number) {
+		lockedIndexCompare = true;
 		selectedIndexCompare = index;
 		selectedMessageCompare = selectedTopic?.messages[index];
 	}
@@ -84,9 +92,14 @@ THE SOFTWARE.
 	{#if selectedTopic?.messages.length}
 		<Tile light style="height: calc(100vh - 11em)">
 			{#if selectedMessage}
-				<h5>
-					Selected message: {curateDate(selectedMessage.timestamp)}
-				</h5>
+				<div style="display: flex; justify-content: space-between; align-items: center;">
+					<h5>
+						Selected message: {curateDate(selectedMessage.timestamp)}
+					</h5>
+					<p>
+						Cached Messages: {selectedTopic?.messages.length || 0}
+					</p>
+				</div>
 				<div style="height: calc(100% - 9em">
 					{#if compareMessage && selectedMessageCompare}
 						<MonacoDiff
@@ -103,19 +116,23 @@ THE SOFTWARE.
 				<div style="align-self: center; margin-right: 1em;">
 					<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
 				</div>
-				<div style="align-self: center; margin-right: 1em;">
-					<Checkbox labelText="Compare message" bind:checked={compareMessage} />
-				</div>
+
 				<div style="align-self: center; scale: 0.75; margin: -0.25em">
 					<Button
 						kind="secondary"
 						iconDescription="First Message"
+						tooltipPosition="top"
 						icon={PageFirst}
-						on:click={() => selectMessage(0)}
+						on:click={() => {
+							selectMessage(0);
+							lockedIndex = false;
+							lockedIndexCompare = false;
+						}}
 					/>
 					<Button
 						kind="secondary"
 						iconDescription="Next Message"
+						tooltipPosition="top"
 						icon={ChevronLeft}
 						on:click={() => {
 							console.log(selectedIndex);
@@ -125,13 +142,21 @@ THE SOFTWARE.
 					<Button
 						kind="secondary"
 						iconDescription="Previous Message"
+						tooltipPosition="top"
 						icon={ChevronRight}
 						on:click={() => selectMessage(selectedIndex + 1)}
 					/>
 				</div>
-				<div style="align-self: center;">
-					Cached Messages: {selectedTopic?.messages.length || 0}
+
+				<div style="align-self: center; margin-right: 1em;">
+					<Checkbox labelText="Compare message" bind:checked={compareMessage} />
 				</div>
+
+				{#if compareMessage}
+					<div style="align-self: center; margin-right: 1em;">
+						<Checkbox labelText="Lock" bind:checked={lockedIndexCompare} />
+					</div>
+				{/if}
 			</div>
 
 			<div
@@ -157,9 +182,11 @@ THE SOFTWARE.
 					<div style="height: 1em" />
 					<ProgressIndicator
 						class="red-indicator"
-						currentIndex={selectedTopic?.messages.findIndex(
-							(e) => e.timestamp == selectedMessageCompare?.timestamp
-						)}
+						currentIndex={lockedIndexCompare
+							? selectedTopic?.messages.findIndex(
+									(e) => e.timestamp == selectedMessageCompare?.timestamp
+								)
+							: selectedIndexCompare}
 					>
 						{#each selectedTopic?.messages as compareMessage, compareIndex}
 							<ProgressStep
