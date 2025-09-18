@@ -22,6 +22,7 @@ THE SOFTWARE.
 <script lang="ts">
 	import type { Treebranch } from '$lib/state';
 	import {
+		Button,
 		Checkbox,
 		CodeSnippet,
 		ProgressIndicator,
@@ -30,19 +31,12 @@ THE SOFTWARE.
 	} from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 	import MonacoDiff from './monaco_diff.svelte';
+	import { ChevronLeft, ChevronRight, PageFirst } from 'carbon-icons-svelte';
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
 	let compareMessage = false;
 	let lockedIndex = false;
-	$: if (selectedTopic) {
-		if (!lockedIndex) {
-			selectedMessage = selectedTopic.messages[selectedIndex];
-		} else {
-			selectedIndex = 0;
-		}
-	}
-
 	let selectedIndex = 0;
 	let selectedMessage = selectedTopic?.messages[selectedIndex];
 
@@ -50,6 +44,11 @@ THE SOFTWARE.
 	let selectedMessageCompare = selectedTopic?.messages[selectedIndexCompare];
 
 	function selectMessage(index: number) {
+		if (index < 0) {
+			index = 0;
+		} else if (index >= (selectedTopic?.messages.length || 0)) {
+			index = (selectedTopic?.messages.length || 1) - 1;
+		}
 		lockedIndex = true;
 		selectedIndex = index;
 		selectedMessage = selectedTopic?.messages[index];
@@ -101,11 +100,34 @@ THE SOFTWARE.
 			{/if}
 
 			<div style="display: flex;">
-				<div style="margin-right: 1em;">
+				<div style="align-self: center; margin-right: 1em;">
 					<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
 				</div>
-				<div style="margin-right: 1em;">
+				<div style="align-self: center; margin-right: 1em;">
 					<Checkbox labelText="Compare message" bind:checked={compareMessage} />
+				</div>
+				<div style="align-self: center; scale: 0.75; margin: -0.25em">
+					<Button
+						kind="secondary"
+						iconDescription="First Message"
+						icon={PageFirst}
+						on:click={() => selectMessage(0)}
+					/>
+					<Button
+						kind="secondary"
+						iconDescription="Next Message"
+						icon={ChevronLeft}
+						on:click={() => {
+							console.log(selectedIndex);
+							selectMessage(selectedIndex - 1);
+						}}
+					/>
+					<Button
+						kind="secondary"
+						iconDescription="Previous Message"
+						icon={ChevronRight}
+						on:click={() => selectMessage(selectedIndex + 1)}
+					/>
 				</div>
 				<div style="align-self: center;">
 					Cached Messages: {selectedTopic?.messages.length || 0}

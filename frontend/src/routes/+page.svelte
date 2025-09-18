@@ -140,7 +140,7 @@ THE SOFTWARE.
 		selectedTheme.set(newTheme);
 	}
 
-	let selectedTab = 0;
+	let selectedTab = 1;
 	$: {
 		const params = new URLSearchParams($page.url.search);
 		if (app.selectedBroker) {
