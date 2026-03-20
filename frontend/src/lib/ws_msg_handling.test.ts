@@ -6,7 +6,11 @@ import {
 	type MqttConnectionStatus,
 	processBrokerRemoval,
 	type BrokerParam,
-	processBrokers
+	processBrokers,
+	processMQTTMessage,
+	type MQTTMessageParam,
+	processSettings,
+	processSyncComplete
 } from './ws_msg_handling';
 import { AppState, type BrokerRepository } from './state';
 
@@ -44,38 +48,60 @@ test('processConfigs processes a single command correctly', () => {
 	expect(result).toEqual([{ id: '0', text: 'Command1', topic: 'topic1', payload: 'payload1' }]);
 });
 
-test('processBrokerRemoval marks broker for deletion in AppState', () => {
+test('processBrokerRemoval deletes broker from AppState', () => {
 	const appState = new AppState();
 	appState.brokerRepository = {
 		broker1: {
-			markedForDeletion: false,
 			topics: [],
 			selectedTopic: null,
 			pipeline: [],
-			connected: false
+			connected: false,
+			totalBytes: 0,
+			backendTotalBytes: 0
 		}
 	};
 
 	const result = processBrokerRemoval('broker1', appState);
 
-	expect(result.brokerRepository['broker1'].markedForDeletion).toBe(true);
+	expect(result.brokerRepository['broker1']).toBeUndefined();
+});
+
+test('processBrokerRemoval clears selectedBroker when deleting the selected one', () => {
+	const appState = new AppState();
+	appState.selectedBroker = 'broker1';
+	appState.brokerRepository = {
+		broker1: {
+			topics: [],
+			selectedTopic: null,
+			pipeline: [],
+			connected: false,
+			totalBytes: 0,
+			backendTotalBytes: 0
+		}
+	};
+
+	const result = processBrokerRemoval('broker1', appState);
+
+	expect(result.selectedBroker).toBe('');
+	expect(result.selectedTopic).toBeNull();
 });
 
 test('processBrokerRemoval handles non-existing broker correctly', () => {
 	const appState = new AppState();
 	appState.brokerRepository = {
 		broker1: {
-			markedForDeletion: false,
 			topics: [],
 			selectedTopic: null,
 			pipeline: [],
-			connected: false
+			connected: false,
+			totalBytes: 0,
+			backendTotalBytes: 0
 		}
 	};
 
 	const result = processBrokerRemoval('nonexistentBroker', appState);
 
-	expect(result.brokerRepository['broker1'].markedForDeletion).toBeFalsy();
+	expect(result.brokerRepository['broker1']).toBeDefined();
 });
 
 test('processConnectionStatus updates connection status in AppState', () => {
@@ -83,10 +109,11 @@ test('processConnectionStatus updates connection status in AppState', () => {
 	appState.brokerRepository = {
 		broker1: {
 			connected: false,
-			markedForDeletion: false,
 			topics: [],
 			selectedTopic: null,
-			pipeline: []
+			pipeline: [],
+			totalBytes: 0,
+			backendTotalBytes: 0
 		}
 	};
 
@@ -94,7 +121,6 @@ test('processConnectionStatus updates connection status in AppState', () => {
 	const result = processConnectionStatus(connectionStatus, appState);
 
 	expect(result.brokerRepository['broker1'].connected).toBe(true);
-	expect(result.brokerRepository['broker1'].markedForDeletion).toBe(false);
 });
 
 test('processConnectionStatus handles non-existing broker correctly', () => {
@@ -102,10 +128,11 @@ test('processConnectionStatus handles non-existing broker correctly', () => {
 	appState.brokerRepository = {
 		broker1: {
 			connected: false,
-			markedForDeletion: false,
 			topics: [],
 			selectedTopic: null,
-			pipeline: []
+			pipeline: [],
+			totalBytes: 0,
+			backendTotalBytes: 0
 		}
 	};
 
@@ -113,7 +140,6 @@ test('processConnectionStatus handles non-existing broker correctly', () => {
 	const result = processConnectionStatus(connectionStatus, appState);
 
 	expect(result.brokerRepository['broker1'].connected).toBe(false);
-	expect(result.brokerRepository['broker1'].markedForDeletion).toBe(false);
 });
 
 test('AppState class initializes correctly', () => {
@@ -203,14 +229,16 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			selectedTopic: null,
 			pipeline: [],
 			connected: true,
-			markedForDeletion: false
+			totalBytes: 10,
+			backendTotalBytes: 0
 		},
 		broker2: {
 			topics: expectedBroker2Topics,
 			selectedTopic: null,
 			pipeline: [],
 			connected: false,
-			markedForDeletion: false
+			totalBytes: 6,
+			backendTotalBytes: 0
 		}
 	});
 });
@@ -224,4 +252,51 @@ test('processBrokers handles empty params correctly', () => {
 	const result = processBrokers(params, decoder as unknown as TextDecoder, brokerRepository);
 
 	expect(result).toEqual({});
+});
+
+test('processMQTTMessage evicts oldest messages when byte budget exceeded', () => {
+	const decoder = new MockTextDecoder();
+	const app = new AppState();
+
+	// Send many messages to push past the 64 MB byte budget
+	// Each message payload is 1 MB of text
+	const oneMB = 'x'.repeat(1024 * 1024);
+	for (let i = 0; i < 70; i++) {
+		const timestamp = new Date(2022, 0, 1, 0, 0, i).toISOString();
+		const message: MQTTMessageParam = {
+			source: 'broker1',
+			topic: `topic${i % 3}`,
+			payload: new TextEncoder().encode(oneMB),
+			timestamp
+		};
+		processMQTTMessage(message, decoder as unknown as TextDecoder, app);
+	}
+
+	// totalBytes should be at or under 64 MB
+	expect(app.brokerRepository['broker1'].totalBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+
+	// Should have evicted some messages — fewer than 70 total
+	let totalMessages = 0;
+	function countMessages(branches: typeof app.brokerRepository['broker1']['topics']) {
+		for (const branch of branches) {
+			totalMessages += branch.messages.length;
+			if (branch.children) countMessages(branch.children);
+		}
+	}
+	countMessages(app.brokerRepository['broker1'].topics);
+	expect(totalMessages).toBeLessThan(70);
+	expect(totalMessages).toBeGreaterThan(0);
+});
+
+test('processSettings updates maxBrokerBytes on AppState', () => {
+	const app = new AppState();
+	const result = processSettings({ max_broker_bytes: 256 * 1024 * 1024, max_message_size: 2 * 1024 * 1024 }, app);
+	expect(result.maxBrokerBytes).toBe(256 * 1024 * 1024);
+});
+
+test('processSyncComplete sets syncComplete flag', () => {
+	const app = new AppState();
+	expect(app.syncComplete).toBe(false);
+	const result = processSyncComplete(app);
+	expect(result.syncComplete).toBe(true);
 });

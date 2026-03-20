@@ -44,10 +44,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v2
 
+      - name: Check formatting
+        run: |
+          cd backend
+          cargo fmt -- --check
+
       - name: Check code quality
         run: |
           cd backend
-          cargo clippy
+          cargo clippy -- -D warnings
 
       - name: Run tests
         run: |

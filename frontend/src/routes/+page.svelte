@@ -20,13 +20,12 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import TopicTree from '../components/topic_tree.svelte';
 	import {
 		Button,
 		Content,
 		Header,
-		InlineNotification,
 		RadioButton,
 		RadioButtonGroup,
 		SideNav,
@@ -52,10 +51,11 @@ THE SOFTWARE.
 		processConfigs,
 		processConnectionStatus,
 		processMQTTMessage,
-		processPipelines
+		processPipelines,
+		processSettings,
+		processSyncComplete
 	} from '$lib/ws_msg_handling';
 	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
-	import { requestMqttBrokerConnection } from '$lib/socket';
 	import { selectedTheme, availableThemes } from '../store';
 	import { goto } from '$app/navigation';
 
@@ -66,6 +66,9 @@ THE SOFTWARE.
 
 	let socketConnected = false;
 	function initializeWebSocket() {
+		if (socket && socket.readyState !== WebSocket.CLOSED) {
+			socket.close();
+		}
 		socket = new WebSocket(`ws://${$page.url.host}/ws`);
 
 		socket.onopen = () => {
@@ -104,6 +107,12 @@ THE SOFTWARE.
 				case 'pipelines':
 					app.pipelines = processPipelines(json.params);
 					break;
+				case 'settings':
+					app = processSettings(json.params, app);
+					break;
+				case 'sync_complete':
+					app = processSyncComplete(app);
+					break;
 				default:
 					break;
 			}
@@ -123,10 +132,14 @@ THE SOFTWARE.
 	let addMqttBrokerModalOpen = false;
 	let removeMqttBrokerModalOpen = false;
 
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return bytes + ' B';
+		if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+		return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+	}
+
 	let theme: CarbonTheme;
-	selectedTheme.subscribe((t) => {
-		theme = t.id;
-	});
+	$: theme = $selectedTheme.id as CarbonTheme;
 
 	function themeChanged(e: Event): void {
 		const newId = e?.target as unknown as { value: string };
@@ -157,6 +170,11 @@ THE SOFTWARE.
 	}
 
 	onMount(initializeWebSocket);
+	onDestroy(() => {
+		if (socket && socket.readyState !== WebSocket.CLOSED) {
+			socket.close();
+		}
+	});
 </script>
 
 <Theme bind:theme />
@@ -235,9 +253,7 @@ THE SOFTWARE.
 	<SideNavItems>
 		{#each Object.keys(app.brokerRepository) as broker}
 			<SideNavLink
-				icon={app.brokerRepository[broker].markedForDeletion
-					? TrashCan
-					: app.brokerRepository[broker].connected && socketConnected
+				icon={app.brokerRepository[broker].connected && socketConnected
 						? CircleSolid
 						: CircleDash}
 				text={broker}
@@ -257,6 +273,21 @@ THE SOFTWARE.
 			/>
 		</div>
 		<div style="flex: 1" />
+		{#if app.brokerRepository[app.selectedBroker]}
+			{@const entry = app.brokerRepository[app.selectedBroker]}
+			<SideNavDivider />
+			<div style="padding: 0.5em 1em; font-size: 0.75rem; opacity: 0.7">
+				{#if entry.backendTotalBytes !== entry.totalBytes}
+					Backend: {formatBytes(entry.backendTotalBytes)}<br />
+					Local: {formatBytes(entry.totalBytes)}
+					{#if !app.syncComplete}
+						<br /><em>syncing...</em>
+					{/if}
+				{:else}
+					Stored: {formatBytes(entry.totalBytes)}
+				{/if}
+			</div>
+		{/if}
 		<SideNavDivider />
 		<SideNavMenu text="Theme">
 			<div style="margin: auto 1em 0px 1em">
@@ -271,24 +302,6 @@ THE SOFTWARE.
 </SideNav>
 
 <Content style="padding: 1em">
-	{#if app.brokerRepository[app.selectedBroker]?.markedForDeletion}
-		<div style="margin-left: 1em; margin-top: 3em; display: flex">
-			<div style="flex: 0"></div>
-			<InlineNotification
-				hideCloseButton
-				title="Marked for deletion"
-				subtitle="This connection is marked for deletion. It is not connected anymore and will disappear on refresh."
-			/>
-			<div style="display: flex; height: 4em; margin-top: 1.2em; margin-left: 1em">
-				<Button
-					on:click={() => requestMqttBrokerConnection(app.selectedBroker, socket)}
-					kind="tertiary"
-					size="field">Reconnect!</Button
-				>
-			</div>
-		</div>
-	{/if}
-
 	{#if app.brokerRepository[app.selectedBroker]}
 		{#if selectedTab === 1}
 			<div class="treeview-flex">

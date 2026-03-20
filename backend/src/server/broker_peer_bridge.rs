@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Kai Lawrence
+ * Copyright (c) 2024-2026 Kai Lawrence
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -44,7 +44,7 @@ fn loop_forever(
         }
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
-                let payload = if p.payload.len() > 1000000 {
+                let payload = if p.payload.len() > mqtt::max_message_size() {
                     bytes::Bytes::from(std::format!(
                         "Payload size limit exceeded: {}.\nThe message is probably fine, but is is too large to be displayed.",
                         p.payload.len()
@@ -54,31 +54,51 @@ fn loop_forever(
                 };
                 mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
                     broker.connected = true;
-                    if broker.topics.contains_key(&p.topic) {
-                        let topic_vec = broker.topics.get_mut(&p.topic).unwrap();
-                        topic_vec.push(mqtt::MqttMessage {
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            payload: payload.to_vec(),
-                        });
-                        while topic_vec.len() > 100 {
-                            topic_vec.pop();
-                        }
+                    let msg_bytes = payload.len();
+                    let new_msg = mqtt::MqttMessage {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        payload: payload.to_vec(),
+                    };
+                    if let Some(topic_vec) = broker.topics.get_mut(&p.topic) {
+                        topic_vec.push(new_msg);
                     } else {
-                        broker.topics.insert(
-                            p.topic.clone(),
-                            vec![mqtt::MqttMessage {
-                                timestamp: chrono::Utc::now().to_rfc3339(),
-                                payload: payload.to_vec(),
-                            }],
-                        );
+                        broker.topics.insert(p.topic.clone(), vec![new_msg]);
+                    }
+                    broker.total_bytes += msg_bytes;
+
+                    // Evict oldest messages across all topics until under the byte cap
+                    while broker.total_bytes > mqtt::max_broker_bytes() {
+                        // Find the topic with the oldest first message
+                        let oldest_topic = broker
+                            .topics
+                            .iter()
+                            .filter(|(_, msgs)| !msgs.is_empty())
+                            .min_by_key(|(_, msgs)| msgs[0].timestamp.clone())
+                            .map(|(k, _)| k.clone());
+
+                        match oldest_topic {
+                            Some(key) => {
+                                if let Some(topic_vec) = broker.topics.get_mut(&key) {
+                                    let removed = topic_vec.remove(0);
+                                    broker.total_bytes =
+                                        broker.total_bytes.saturating_sub(removed.payload.len());
+                                    if topic_vec.is_empty() {
+                                        broker.topics.remove(&key);
+                                    }
+                                }
+                            }
+                            None => break,
+                        }
                     }
                 });
+                drop(mqtt_lock);
                 websocket::send_message_to_peers(peer_map, &hostname, &p.topic, &payload);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
                 mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
                     broker.connected = true;
                 });
+                drop(mqtt_lock);
                 // Small update for the peers already connected
                 websocket::send_broker_status_to_peers(peer_map, &hostname, true);
                 println!("Connection event: {:?} for {:?}", a.code, hostname);
@@ -92,6 +112,7 @@ fn loop_forever(
             Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
+                drop(mqtt_lock);
                 let payload =
                     bytes::Bytes::from(std::format!("Payload size limit exceeded: {}.", p));
                 println!("Payload size limit exceeded: {}", p);
@@ -109,9 +130,9 @@ fn loop_forever(
                 mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
                     broker.connected = false;
                 });
+                drop(mqtt_lock);
                 // Small update for the peers already connected
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
-                drop(mqtt_lock);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
         }
@@ -235,6 +256,7 @@ fn connect_to_mqtt_client_and_loop_forever(
             broker: mqtt_host.to_string(),
             connected: false,
             topics: HashMap::new(),
+            total_bytes: 0,
         };
 
         mqtt_lock.insert(mqtt_host.to_string(), broker);
@@ -248,10 +270,10 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
     let mut mqtt_lock = mqtt_map.lock().unwrap();
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
-    if mqtt_client.is_some() {
+    if let Some((_key, broker)) = mqtt_client {
         println!("Removing MQTT-Client for {}", mqtt_host);
 
-        if let Err(err) = mqtt_client.unwrap().1.client.clone().disconnect() {
+        if let Err(err) = broker.client.clone().disconnect() {
             println!("Error disconnecting MQTT client: {:?}", err);
         }
 
@@ -276,5 +298,308 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
         });
     } else {
         println!("No MQTT-Client for {} found.", mqtt_host);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_channel::mpsc::unbounded;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Mutex;
+
+    fn make_peer_map() -> websocket::PeerMap {
+        websocket::PeerMap::new(Mutex::new(HashMap::new()))
+    }
+
+    fn make_mqtt_map() -> mqtt::BrokerMap {
+        mqtt::BrokerMap::new(Mutex::new(HashMap::new()))
+    }
+
+    fn make_addr(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port)
+    }
+
+    fn insert_peer(
+        peer_map: &websocket::PeerMap,
+        port: u16,
+    ) -> (
+        SocketAddr,
+        futures_channel::mpsc::UnboundedReceiver<warp::filters::ws::Message>,
+    ) {
+        let addr = make_addr(port);
+        let (tx, rx) = unbounded();
+        peer_map.lock().unwrap().insert(addr, tx);
+        (addr, rx)
+    }
+
+    // --- deserialize_json_rpc_and_process ---
+
+    #[test]
+    fn test_process_invalid_json() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        // Should not panic
+        deserialize_json_rpc_and_process("not json", &peer_map, &mqtt_map, "/tmp");
+    }
+
+    #[test]
+    fn test_process_unknown_method() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let json = r#"{"jsonrpc":"2.0","method":"unknown_method","params":{}}"#;
+        // Should not panic
+        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, "/tmp");
+    }
+
+    #[test]
+    fn test_process_publish() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let json = r#"{"jsonrpc":"2.0","method":"publish","params":{"host":"nonexistent:1883","topic":"test","payload":"hello"}}"#;
+        // Should not panic (broker doesn't exist, but it's handled gracefully)
+        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, "/tmp");
+    }
+
+    #[test]
+    fn test_process_connect_spawns_thread() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        std::fs::create_dir_all(&config_path).ok();
+        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19999"}}"#;
+
+        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
+
+        // Give the spawned thread a moment to take the lock
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // The broker should appear in the mqtt_map
+        let map = mqtt_map.lock().unwrap();
+        assert!(map.contains_key("127.0.0.1:19999"));
+        drop(map);
+
+        // Cleanup
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_process_connect_duplicate_broker() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        std::fs::create_dir_all(&config_path).ok();
+
+        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19998"}}"#;
+        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Connect again — should not duplicate
+        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        assert_eq!(mqtt_map.lock().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_process_remove_nonexistent_broker() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        std::fs::create_dir_all(&config_path).ok();
+
+        let json = r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"nonexistent:1883"}}"#;
+        // Should not panic
+        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_process_save_and_remove_command() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        let commands_path = format!("{}/commands", config_path);
+        std::fs::create_dir_all(&commands_path).ok();
+
+        // Save a command
+        let save_json = r#"{"jsonrpc":"2.0","method":"save_command","params":{"name":"test_cmd","topic":"t","payload":"p"}}"#;
+        deserialize_json_rpc_and_process(save_json, &peer_map, &mqtt_map, &config_path);
+
+        let cmd_file = format!("{}/test_cmd.json", commands_path);
+        assert!(std::path::Path::new(&cmd_file).exists());
+
+        // Remove the command
+        let remove_json = r#"{"jsonrpc":"2.0","method":"remove_command","params":{"name":"test_cmd"}}"#;
+        deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path);
+
+        assert!(!std::path::Path::new(&cmd_file).exists());
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_process_save_and_remove_pipeline() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        let pipelines_path = format!("{}/pipelines", config_path);
+        std::fs::create_dir_all(&pipelines_path).ok();
+
+        let save_json = r#"{"jsonrpc":"2.0","method":"save_pipeline","params":{"name":"test_pipe","pipeline":[{"topic":"t1"}]}}"#;
+        deserialize_json_rpc_and_process(save_json, &peer_map, &mqtt_map, &config_path);
+
+        let pipe_file = format!("{}/test_pipe.json", pipelines_path);
+        assert!(std::path::Path::new(&pipe_file).exists());
+
+        let remove_json = r#"{"jsonrpc":"2.0","method":"remove_pipeline","params":{"name":"test_pipe"}}"#;
+        deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path);
+
+        assert!(!std::path::Path::new(&pipe_file).exists());
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_connect_broadcasts_brokers_to_peers() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        std::fs::create_dir_all(&config_path).ok();
+
+        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19997"}}"#;
+        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
+
+        // Should have received a broadcast_brokers message
+        let msg = rx.try_next().unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
+        assert_eq!(parsed["method"], "mqtt_brokers");
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_remove_broker_sends_removal_notification() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        std::fs::create_dir_all(&config_path).ok();
+
+        // First connect
+        let connect_json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19996"}}"#;
+        deserialize_json_rpc_and_process(connect_json, &peer_map, &mqtt_map, &config_path);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Drain the connect broadcast
+        while rx.try_next().is_ok() {}
+
+        // Now remove
+        let remove_json = r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"127.0.0.1:19996"}}"#;
+        deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path);
+
+        // Should receive broker_removal and broadcast_brokers messages
+        let mut methods = Vec::new();
+        while let Ok(Some(msg)) = rx.try_next() {
+            if let Ok(text) = msg.to_str() {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
+                    if let Some(method) = parsed["method"].as_str() {
+                        methods.push(method.to_string());
+                    }
+                }
+            }
+        }
+        assert!(methods.contains(&"broker_removal".to_string()));
+
+        assert!(!mqtt_map.lock().unwrap().contains_key("127.0.0.1:19996"));
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    // --- connect_to_known_brokers ---
+
+    #[test]
+    fn test_connect_to_known_brokers_empty_file() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        // Nonexistent file should result in 0 brokers being connected
+        connect_to_known_brokers("/nonexistent/brokers.json", &peer_map, &mqtt_map);
+        // Give threads a moment
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(mqtt_map.lock().unwrap().len(), 0);
+    }
+
+    // --- Concurrency stress test ---
+
+    #[test]
+    fn test_concurrent_process_commands_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!(
+            "/tmp/mqtt_test_{}",
+            uuid::Uuid::new_v4()
+        );
+        let commands_path = format!("{}/commands", config_path);
+        std::fs::create_dir_all(&commands_path).ok();
+
+        // Insert some peers to receive broadcasts
+        let mut _receivers = Vec::new();
+        for port in 9001..9004 {
+            let (_addr, rx) = insert_peer(&peer_map, port);
+            _receivers.push(rx);
+        }
+
+        let pm = Arc::clone(&peer_map);
+        let mm = Arc::clone(&mqtt_map);
+        let cp = config_path.clone();
+
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                let pm = Arc::clone(&pm);
+                let mm = Arc::clone(&mm);
+                let cp = cp.clone();
+                thread::spawn(move || {
+                    let json = format!(
+                        r#"{{"jsonrpc":"2.0","method":"save_command","params":{{"name":"cmd_{}","topic":"t","payload":"p"}}}}"#,
+                        i
+                    );
+                    deserialize_json_rpc_and_process(&json, &pm, &mm, &cp);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        std::fs::remove_dir_all(&config_path).ok();
     }
 }

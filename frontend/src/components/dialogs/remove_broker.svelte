@@ -47,15 +47,8 @@ THE SOFTWARE.
 	on:close
 	on:submit={submit}
 >
-	{#if app.brokerRepository[app.selectedBroker]?.markedForDeletion}
-		<h5>
-			Are you sure you want to remove the broker: {app.selectedBroker}?
-		</h5>
-		<h5>It is already disconnected, but this will still remove all messages in this webpage.</h5>
-	{:else}
-		<h5>
-			Are you sure you want to remove the broker: {app.selectedBroker}?
-		</h5>
-		<h5>This will remove it from all peers connected to this MQTT-Inspector instance.</h5>
-	{/if}
+	<h5>
+		Are you sure you want to remove the broker: {app.selectedBroker}?
+	</h5>
+	<h5>This will remove it from all peers connected to this MQTT-Inspector instance.</h5>
 </Modal>

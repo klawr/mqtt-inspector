@@ -26,6 +26,8 @@ export class AppState {
 	brokerRepository: BrokerRepository = {};
 	pipelines: SavedPipeline[] = [];
 	commands: Command[] = [];
+	maxBrokerBytes: number = 64 * 1024 * 1024;
+	syncComplete: boolean = false;
 }
 
 type Message = {
@@ -60,11 +62,12 @@ export type Command = {
 };
 
 export type BrokerRepositoryEntry = {
-	markedForDeletion?: boolean;
 	topics: Treebranch[];
 	selectedTopic: Treebranch | null;
 	pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
 	connected: boolean;
+	totalBytes: number;
+	backendTotalBytes: number;
 };
 
 export type BrokerRepository = {

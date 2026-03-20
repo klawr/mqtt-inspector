@@ -21,7 +21,44 @@
  */
 
 import { findbranchwithid } from './helper';
-import type { AppState, BrokerRepository, Treebranch } from './state';
+import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
+
+let maxBrokerBytes = 64 * 1024 * 1024; // default, overridden by settings from backend
+
+function findOldestMessageLeaf(branches: Treebranch[]): Treebranch | null {
+	let oldest: Treebranch | null = null;
+	let oldestTime = '';
+
+	for (const branch of branches) {
+		if (branch.messages.length > 0) {
+			const lastMsg = branch.messages[branch.messages.length - 1];
+			if (!oldest || lastMsg.timestamp < oldestTime) {
+				oldest = branch;
+				oldestTime = lastMsg.timestamp;
+			}
+		}
+		if (branch.children) {
+			const childOldest = findOldestMessageLeaf(branch.children);
+			if (childOldest && childOldest.messages.length > 0) {
+				const childTime = childOldest.messages[childOldest.messages.length - 1].timestamp;
+				if (!oldest || childTime < oldestTime) {
+					oldest = childOldest;
+					oldestTime = childTime;
+				}
+			}
+		}
+	}
+	return oldest;
+}
+
+function evictUntilUnderBudget(entry: BrokerRepositoryEntry) {
+	while (entry.totalBytes > maxBrokerBytes) {
+		const leaf = findOldestMessageLeaf(entry.topics);
+		if (!leaf || leaf.messages.length === 0) break;
+		const removed = leaf.messages.pop()!;
+		entry.totalBytes -= removed.text.length;
+	}
+}
 
 export type Command = { id: string; text: string; topic: string; payload: string };
 
@@ -32,6 +69,7 @@ export type BrokerParam = {
 	topics: {
 		[key: string]: { payload: ArrayBuffer; timestamp: string }[];
 	};
+	total_bytes?: number;
 }[];
 export type MqttConnectionStatus = { source: string; connected: boolean };
 type PipelineParamEntry = { topic: string };
@@ -54,7 +92,11 @@ export function processConfigs(commands: CommandParam[]) {
 
 export function processBrokerRemoval(params: string, app: AppState) {
 	if (app.brokerRepository[params]) {
-		app.brokerRepository[params].markedForDeletion = true;
+		if (app.selectedBroker === params) {
+			app.selectedBroker = '';
+			app.selectedTopic = null;
+		}
+		delete app.brokerRepository[params];
 	}
 
 	return app;
@@ -65,9 +107,6 @@ export function processConnectionStatus(params: MqttConnectionStatus, app: AppSt
 		return app;
 	}
 	app.brokerRepository[params.source].connected = params.connected;
-	if (params.connected) {
-		app.brokerRepository[params.source].markedForDeletion = false;
-	}
 
 	return app;
 }
@@ -83,24 +122,29 @@ export function processBrokers(
 				topics: [],
 				selectedTopic: null,
 				pipeline: [],
-				connected: param.connected
+				connected: param.connected,
+				totalBytes: 0,
+				backendTotalBytes: param.total_bytes ?? 0
 			};
 		} else {
 			brokerRepository[param.broker].connected = param.connected;
+			brokerRepository[param.broker].backendTotalBytes = param.total_bytes ?? brokerRepository[param.broker].backendTotalBytes;
 		}
 
 		for (const topic of Object.keys(param.topics)) {
 			for (const message of param.topics[topic]) {
+				const decoded = decoder.decode(new Uint8Array(message.payload));
 				brokerRepository[param.broker].topics = addToTopicTree(
 					topic,
 					brokerRepository[param.broker].topics,
-					decoder.decode(new Uint8Array(message.payload)),
+					decoded,
 					message.timestamp
 				);
+				brokerRepository[param.broker].totalBytes += decoded.length;
 			}
 		}
 
-		brokerRepository[param.broker].markedForDeletion = false;
+		evictUntilUnderBudget(brokerRepository[param.broker]);
 	});
 
 	return brokerRepository;
@@ -201,9 +245,6 @@ function addToTopicBranch(
 		new_entry.delta_t = 0;
 
 		ff?.messages.unshift(new_entry);
-		while (ff.messages.length > 100) {
-			ff.messages.pop();
-		}
 	}
 	found.text = createTreeBranchEntryText(found);
 
@@ -227,7 +268,9 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 			topics: [],
 			selectedTopic: null,
 			pipeline: [],
-			connected: true
+			connected: true,
+			totalBytes: 0,
+			backendTotalBytes: 0
 		};
 	}
 	app.brokerRepository[message.source].connected = true;
@@ -253,6 +296,9 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 
 	addToPipeline(message.source, message.topic, message.timestamp, app.brokerRepository);
 
+	app.brokerRepository[message.source].totalBytes += payload.length;
+	evictUntilUnderBudget(app.brokerRepository[message.source]);
+
 	return app;
 }
 
@@ -262,4 +308,17 @@ export function processPipelines(params: PipelineParam[]) {
 		text: e.name,
 		pipeline: e.pipeline
 	}));
+}
+
+export type SettingsParam = { max_broker_bytes: number; max_message_size: number };
+
+export function processSettings(params: SettingsParam, app: AppState) {
+	app.maxBrokerBytes = params.max_broker_bytes;
+	maxBrokerBytes = params.max_broker_bytes;
+	return app;
+}
+
+export function processSyncComplete(app: AppState) {
+	app.syncComplete = true;
+	return app;
 }
