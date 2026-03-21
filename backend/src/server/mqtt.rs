@@ -96,12 +96,7 @@ pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: &Broker
 
     match client {
         Some(mut client) => {
-            match client.publish(
-                topic,
-                rumqttc::QoS::AtLeastOnce,
-                false,
-                payload.as_bytes(),
-            ) {
+            match client.publish(topic, rumqttc::QoS::AtLeastOnce, false, payload.as_bytes()) {
                 Ok(_) => {
                     // Successfully published
                 }
@@ -230,12 +225,7 @@ mod tests {
         let mm1 = Arc::clone(&mqtt_map);
         let h1 = thread::spawn(move || {
             for i in 0..50 {
-                publish_message(
-                    &format!("host{}:1883", i),
-                    "topic",
-                    "payload",
-                    &mm1,
-                );
+                publish_message(&format!("host{}:1883", i), "topic", "payload", &mm1);
             }
         });
 

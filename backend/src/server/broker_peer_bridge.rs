@@ -70,7 +70,9 @@ fn loop_forever(
                         broker.topics.insert(p.topic.clone(), vd);
                     }
                     broker.total_bytes += msg_bytes;
-                    broker.eviction_order.push_back((p.topic.clone(), msg_bytes));
+                    broker
+                        .eviction_order
+                        .push_back((p.topic.clone(), msg_bytes));
 
                     // Evict oldest messages using the O(1) eviction queue
                     while broker.total_bytes > mqtt::max_broker_bytes() {
@@ -92,7 +94,14 @@ fn loop_forever(
                     }
                     broker.total_bytes
                 }; // mqtt_lock dropped here
-                websocket::send_message_to_peers(peer_map, &hostname, &p.topic, &payload, total_bytes, &timestamp);
+                websocket::send_message_to_peers(
+                    peer_map,
+                    &hostname,
+                    &p.topic,
+                    &payload,
+                    total_bytes,
+                    &timestamp,
+                );
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
                 {
@@ -117,7 +126,14 @@ fn loop_forever(
                 let payload =
                     bytes::Bytes::from(std::format!("Payload size limit exceeded: {}.", p));
                 println!("Payload size limit exceeded: {}", p);
-                websocket::send_message_to_peers(peer_map, &hostname, "$ERROR", &payload, 0, &chrono::Utc::now().to_rfc3339())
+                websocket::send_message_to_peers(
+                    peer_map,
+                    &hostname,
+                    "$ERROR",
+                    &payload,
+                    0,
+                    &chrono::Utc::now().to_rfc3339(),
+                )
             }
             Err(rumqttc::ConnectionError::MqttState(err)) => {
                 {
@@ -126,10 +142,7 @@ fn loop_forever(
                         broker.connected = false;
                     }
                 }
-                println!(
-                    "MqttState error for {:?}: {}. Will retry.",
-                    hostname, err
-                );
+                println!("MqttState error for {:?}: {}. Will retry.", hostname, err);
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
@@ -300,7 +313,9 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
             if let Ok(serialized) = serde_json::to_string(&message) {
                 match tx.try_send(warp::filters::ws::Message::text(serialized)) {
                     Ok(_) => { /* Implement Logging */ }
-                    Err(err) if err.is_disconnected() => println!("Error sending message: {:?}", err),
+                    Err(err) if err.is_disconnected() => {
+                        println!("Error sending message: {:?}", err)
+                    }
                     Err(_) => { /* channel full, drop */ }
                 }
             } else {
@@ -316,9 +331,9 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
 mod tests {
     use super::*;
     use futures_channel::mpsc::channel;
-    use websocket::PEER_CHANNEL_CAPACITY;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Mutex;
+    use websocket::PEER_CHANNEL_CAPACITY;
 
     fn make_peer_map() -> websocket::PeerMap {
         websocket::PeerMap::new(Mutex::new(HashMap::new()))
@@ -377,12 +392,10 @@ mod tests {
     fn test_process_connect_spawns_thread() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         std::fs::create_dir_all(&config_path).ok();
-        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19999"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19999"}}"#;
 
         deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
 
@@ -402,13 +415,11 @@ mod tests {
     fn test_process_connect_duplicate_broker() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         std::fs::create_dir_all(&config_path).ok();
 
-        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19998"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19998"}}"#;
         deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -425,13 +436,11 @@ mod tests {
     fn test_process_remove_nonexistent_broker() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         std::fs::create_dir_all(&config_path).ok();
 
-        let json = r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"nonexistent:1883"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"nonexistent:1883"}}"#;
         // Should not panic
         deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
 
@@ -442,10 +451,7 @@ mod tests {
     fn test_process_save_and_remove_command() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         let commands_path = format!("{}/commands", config_path);
         std::fs::create_dir_all(&commands_path).ok();
 
@@ -457,7 +463,8 @@ mod tests {
         assert!(std::path::Path::new(&cmd_file).exists());
 
         // Remove the command
-        let remove_json = r#"{"jsonrpc":"2.0","method":"remove_command","params":{"name":"test_cmd"}}"#;
+        let remove_json =
+            r#"{"jsonrpc":"2.0","method":"remove_command","params":{"name":"test_cmd"}}"#;
         deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path);
 
         assert!(!std::path::Path::new(&cmd_file).exists());
@@ -469,10 +476,7 @@ mod tests {
     fn test_process_save_and_remove_pipeline() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         let pipelines_path = format!("{}/pipelines", config_path);
         std::fs::create_dir_all(&pipelines_path).ok();
 
@@ -482,7 +486,8 @@ mod tests {
         let pipe_file = format!("{}/test_pipe.json", pipelines_path);
         assert!(std::path::Path::new(&pipe_file).exists());
 
-        let remove_json = r#"{"jsonrpc":"2.0","method":"remove_pipeline","params":{"name":"test_pipe"}}"#;
+        let remove_json =
+            r#"{"jsonrpc":"2.0","method":"remove_pipeline","params":{"name":"test_pipe"}}"#;
         deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path);
 
         assert!(!std::path::Path::new(&pipe_file).exists());
@@ -495,13 +500,11 @@ mod tests {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         let (_addr, mut rx) = insert_peer(&peer_map, 9001);
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         std::fs::create_dir_all(&config_path).ok();
 
-        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19997"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19997"}}"#;
         deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
 
         // Should have received a broadcast_brokers message
@@ -517,14 +520,12 @@ mod tests {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         let (_addr, mut rx) = insert_peer(&peer_map, 9001);
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         std::fs::create_dir_all(&config_path).ok();
 
         // First connect
-        let connect_json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19996"}}"#;
+        let connect_json =
+            r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19996"}}"#;
         deserialize_json_rpc_and_process(connect_json, &peer_map, &mqtt_map, &config_path);
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -532,7 +533,8 @@ mod tests {
         while rx.try_next().is_ok() {}
 
         // Now remove
-        let remove_json = r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"127.0.0.1:19996"}}"#;
+        let remove_json =
+            r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"127.0.0.1:19996"}}"#;
         deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path);
 
         // Should receive broker_removal and broadcast_brokers messages
@@ -575,10 +577,7 @@ mod tests {
 
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
-        let config_path = format!(
-            "/tmp/mqtt_test_{}",
-            uuid::Uuid::new_v4()
-        );
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
         let commands_path = format!("{}/commands", config_path);
         std::fs::create_dir_all(&commands_path).ok();
 

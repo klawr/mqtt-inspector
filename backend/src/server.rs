@@ -93,7 +93,6 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
         });
 
     let routes = warp::get().and(ws.or(warp::fs::dir(static_files)));
-    
 
     tokio::spawn(async move {
         warp::serve(routes).run(server_addr).await;

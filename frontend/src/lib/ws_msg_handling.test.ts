@@ -277,7 +277,7 @@ test('processMQTTMessage evicts oldest messages when byte budget exceeded', () =
 
 	// Should have evicted some messages — fewer than 70 total
 	let totalMessages = 0;
-	function countMessages(branches: typeof app.brokerRepository['broker1']['topics']) {
+	function countMessages(branches: (typeof app.brokerRepository)['broker1']['topics']) {
 		for (const branch of branches) {
 			totalMessages += branch.messages.length;
 			if (branch.children) countMessages(branch.children);
@@ -290,7 +290,10 @@ test('processMQTTMessage evicts oldest messages when byte budget exceeded', () =
 
 test('processSettings updates maxBrokerBytes on AppState', () => {
 	const app = new AppState();
-	const result = processSettings({ max_broker_bytes: 256 * 1024 * 1024, max_message_size: 2 * 1024 * 1024 }, app);
+	const result = processSettings(
+		{ max_broker_bytes: 256 * 1024 * 1024, max_message_size: 2 * 1024 * 1024 },
+		app
+	);
 	expect(result.maxBrokerBytes).toBe(256 * 1024 * 1024);
 });
 

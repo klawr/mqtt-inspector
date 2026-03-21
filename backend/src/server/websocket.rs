@@ -134,10 +134,7 @@ pub fn send_configs(sender: &mut Sender<warp::filters::ws::Message>, config_path
     send_pipelines(sender, &format!("{}/pipelines", config_path));
 }
 
-pub fn send_commands(
-    sender: &mut Sender<warp::filters::ws::Message>,
-    commands_path: &String,
-) {
+pub fn send_commands(sender: &mut Sender<warp::filters::ws::Message>, commands_path: &String) {
     if let Ok(commands) = std::fs::read_dir(commands_path) {
         let commands: Vec<CommandMessage> = commands
             .filter_map(|dir_entry| {
@@ -169,10 +166,7 @@ pub fn send_commands(
     }
 }
 
-pub fn send_pipelines(
-    sender: &mut Sender<warp::filters::ws::Message>,
-    pipelines_path: &String,
-) {
+pub fn send_pipelines(sender: &mut Sender<warp::filters::ws::Message>, pipelines_path: &String) {
     if let Ok(pipelines) = std::fs::read_dir(pipelines_path) {
         let pipelines: Vec<PipelineMessage> = pipelines
             .filter_map(|dir_entry| {
@@ -299,7 +293,10 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
             }),
         };
         if let Ok(serialized) = serde_json::to_string(&notification) {
-            if tx.try_send(warp::filters::ws::Message::text(serialized)).is_err() {
+            if tx
+                .try_send(warp::filters::ws::Message::text(serialized))
+                .is_err()
+            {
                 break; // peer disconnected or buffer full
             }
         }
@@ -384,7 +381,14 @@ mod tests {
         let peer_map = make_peer_map();
         let payload = bytes::Bytes::from("hello");
         // Should not panic with an empty peer map
-        send_message_to_peers(&peer_map, "broker:1883", "test/topic", &payload, 0, "2024-01-01T00:00:00Z");
+        send_message_to_peers(
+            &peer_map,
+            "broker:1883",
+            "test/topic",
+            &payload,
+            0,
+            "2024-01-01T00:00:00Z",
+        );
         assert_eq!(peer_map.lock().unwrap().len(), 0);
     }
 
@@ -394,7 +398,14 @@ mod tests {
         let (_addr, mut rx) = insert_peer(&peer_map, 9001);
         let payload = bytes::Bytes::from("hello");
 
-        send_message_to_peers(&peer_map, "broker:1883", "test/topic", &payload, 0, "2024-01-01T00:00:00Z");
+        send_message_to_peers(
+            &peer_map,
+            "broker:1883",
+            "test/topic",
+            &payload,
+            0,
+            "2024-01-01T00:00:00Z",
+        );
 
         let msg = rx.try_next().unwrap().unwrap();
         let text = msg.to_str().unwrap();
@@ -412,7 +423,14 @@ mod tests {
         let (_addr3, mut rx3) = insert_peer(&peer_map, 9003);
 
         let payload = bytes::Bytes::from("data");
-        send_message_to_peers(&peer_map, "host:1883", "topic", &payload, 0, "2024-01-01T00:00:00Z");
+        send_message_to_peers(
+            &peer_map,
+            "host:1883",
+            "topic",
+            &payload,
+            0,
+            "2024-01-01T00:00:00Z",
+        );
 
         for rx in [&mut rx1, &mut rx2, &mut rx3] {
             let msg = rx.try_next().unwrap().unwrap();
@@ -431,7 +449,14 @@ mod tests {
         drop(rx_closed);
 
         let payload = bytes::Bytes::from("test");
-        send_message_to_peers(&peer_map, "broker:1883", "topic", &payload, 0, "2024-01-01T00:00:00Z");
+        send_message_to_peers(
+            &peer_map,
+            "broker:1883",
+            "topic",
+            &payload,
+            0,
+            "2024-01-01T00:00:00Z",
+        );
 
         // Closed peer should be removed
         let peers = peer_map.lock().unwrap();
@@ -614,7 +639,14 @@ mod tests {
         let handle1 = thread::spawn(move || {
             for _ in 0..100 {
                 let payload = bytes::Bytes::from("test");
-                send_message_to_peers(&peer_map_clone, "broker:1883", "topic", &payload, 0, "2024-01-01T00:00:00Z");
+                send_message_to_peers(
+                    &peer_map_clone,
+                    "broker:1883",
+                    "topic",
+                    &payload,
+                    0,
+                    "2024-01-01T00:00:00Z",
+                );
             }
         });
 
@@ -656,7 +688,14 @@ mod tests {
         let handle2 = thread::spawn(move || {
             for _ in 0..100 {
                 let payload = bytes::Bytes::from("data");
-                send_message_to_peers(&pm2, "broker:1883", "t", &payload, 0, "2024-01-01T00:00:00Z");
+                send_message_to_peers(
+                    &pm2,
+                    "broker:1883",
+                    "t",
+                    &payload,
+                    0,
+                    "2024-01-01T00:00:00Z",
+                );
             }
         });
 

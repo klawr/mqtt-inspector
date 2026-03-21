@@ -129,7 +129,8 @@ export function processBrokers(
 			};
 		} else {
 			brokerRepository[param.broker].connected = param.connected;
-			brokerRepository[param.broker].backendTotalBytes = param.total_bytes ?? brokerRepository[param.broker].backendTotalBytes;
+			brokerRepository[param.broker].backendTotalBytes =
+				param.total_bytes ?? brokerRepository[param.broker].backendTotalBytes;
 		}
 
 		for (const topic of Object.keys(param.topics)) {

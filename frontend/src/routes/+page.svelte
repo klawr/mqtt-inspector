@@ -39,7 +39,17 @@ THE SOFTWARE.
 	import 'carbon-components-svelte/css/all.css';
 	import Messages from '../components/messages.svelte';
 	import AddBroker from '../components/dialogs/add_broker.svelte';
-	import { Add, CheckmarkFilled, CircleDash, CircleSolid, Connect, InformationFilled, LogoGithub, Renew, TrashCan } from 'carbon-icons-svelte';
+	import {
+		Add,
+		CheckmarkFilled,
+		CircleDash,
+		CircleSolid,
+		Connect,
+		InformationFilled,
+		LogoGithub,
+		Renew,
+		TrashCan
+	} from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
@@ -123,7 +133,10 @@ THE SOFTWARE.
 				case 'sync_complete':
 					app = processSyncComplete(app);
 					if (pendingTopic && app.selectedBroker && app.brokerRepository[app.selectedBroker]) {
-						const found = findbranchwithid(pendingTopic, app.brokerRepository[app.selectedBroker].topics);
+						const found = findbranchwithid(
+							pendingTopic,
+							app.brokerRepository[app.selectedBroker].topics
+						);
 						if (found) {
 							app.brokerRepository[app.selectedBroker].selectedTopic = found;
 						}
@@ -179,7 +192,8 @@ THE SOFTWARE.
 		if (selectedTab !== 0) {
 			params.set('tab', selectedTab.toString());
 		}
-		const currentTopic = app.selectedBroker && app.brokerRepository[app.selectedBroker]?.selectedTopic?.id;
+		const currentTopic =
+			app.selectedBroker && app.brokerRepository[app.selectedBroker]?.selectedTopic?.id;
 		if (currentTopic) {
 			params.set('topic', currentTopic);
 		} else if (pendingTopic) {
@@ -236,13 +250,24 @@ THE SOFTWARE.
 
 	{#if app.brokerRepository[app.selectedBroker]}
 		{@const entry = app.brokerRepository[app.selectedBroker]}
-		<div style="font-size: 0.75rem; opacity: 0.7; padding: 0 1em; white-space: nowrap; display: flex; align-items: center; gap: 0.4em;">
+		<div
+			style="font-size: 0.75rem; opacity: 0.7; padding: 0 1em; white-space: nowrap; display: flex; align-items: center; gap: 0.4em;"
+		>
 			{#if app.syncComplete}
 				{formatBytes(entry.totalBytes)}
 				{#if entry.backendTotalBytes >= app.maxBrokerBytes}
-					<InformationFilled size={16} title="Storage at maximum ({formatBytes(app.maxBrokerBytes)}) — oldest messages are being evicted" />
+					<InformationFilled
+						size={16}
+						title="Storage at maximum ({formatBytes(
+							app.maxBrokerBytes
+						)}) — oldest messages are being evicted"
+					/>
 				{:else}
-					<CheckmarkFilled size={16} title="Synced" style="color: var(--cds-support-success, #24a148)" />
+					<CheckmarkFilled
+						size={16}
+						title="Synced"
+						style="color: var(--cds-support-success, #24a148)"
+					/>
 				{/if}
 			{:else}
 				{formatBytes(entry.totalBytes)} | {formatBytes(entry.backendTotalBytes)}
@@ -295,9 +320,7 @@ THE SOFTWARE.
 	<SideNavItems>
 		{#each Object.keys(app.brokerRepository) as broker}
 			<SideNavLink
-				icon={app.brokerRepository[broker].connected && socketConnected
-						? CircleSolid
-						: CircleDash}
+				icon={app.brokerRepository[broker].connected && socketConnected ? CircleSolid : CircleDash}
 				text={broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {
