@@ -367,7 +367,10 @@ test('processRateHistorySample creates new array reference', () => {
 
 	const oldRef = app.brokerRepository['broker1:1883'].rateHistory;
 	processRateHistorySample(
-		{ source: 'broker1:1883', sample: { timestamp: Date.now(), bytes_per_second: 100, total_bytes: 0 } },
+		{
+			source: 'broker1:1883',
+			sample: { timestamp: Date.now(), bytes_per_second: 100, total_bytes: 0 }
+		},
 		app
 	);
 	const newRef = app.brokerRepository['broker1:1883'].rateHistory;
@@ -382,7 +385,10 @@ test('processRateHistorySample ignores unknown broker', () => {
 	app.brokerRepository = {};
 
 	const result = processRateHistorySample(
-		{ source: 'unknown:1883', sample: { timestamp: Date.now(), bytes_per_second: 100, total_bytes: 0 } },
+		{
+			source: 'unknown:1883',
+			sample: { timestamp: Date.now(), bytes_per_second: 100, total_bytes: 0 }
+		},
 		app
 	);
 

@@ -29,10 +29,7 @@ let maxBrokerBytes = 64 * 1024 * 1024; // default, overridden by settings from b
 const rateWindows: Record<string, { t: number; b: number }[]> = {};
 const RATE_WINDOW_MS = 3000;
 
-function updateBytesPerSecond(
-	broker: string,
-	bytesReceived: number
-): number {
+function updateBytesPerSecond(broker: string, bytesReceived: number): number {
 	const now = Date.now();
 	if (!rateWindows[broker]) rateWindows[broker] = [];
 	rateWindows[broker].push({ t: now, b: bytesReceived });

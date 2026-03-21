@@ -103,7 +103,13 @@ THE SOFTWARE.
 					app = processConnectionStatus(json.params, app);
 					break;
 				case 'mqtt_brokers': {
-					console.log('mqtt_brokers received, rate_history:', json.params?.map?.((p: {broker: string, rate_history?: unknown[]}) => ({ broker: p.broker, rate_history_len: p.rate_history?.length ?? 0 })));
+					console.log(
+						'mqtt_brokers received, rate_history:',
+						json.params?.map?.((p: { broker: string; rate_history?: unknown[] }) => ({
+							broker: p.broker,
+							rate_history_len: p.rate_history?.length ?? 0
+						}))
+					);
 					app.brokerRepository = processBrokers(json.params, decoder, app.brokerRepository);
 					const params = new URLSearchParams(window.location.search);
 					const broker = params.get('broker');
@@ -125,7 +131,12 @@ THE SOFTWARE.
 					app = processMQTTMessage(json.params, decoder, app);
 					break;
 				case 'rate_history_sample':
-					console.log('rate_history_sample received:', json.params.source, 'history len:', json.params.sample);
+					console.log(
+						'rate_history_sample received:',
+						json.params.source,
+						'history len:',
+						json.params.sample
+					);
 					processRateHistorySample(json.params, app);
 					// Explicit brokerRepository reassignment to ensure Svelte reactivity
 					app.brokerRepository = app.brokerRepository;

@@ -99,8 +99,7 @@ fn loop_forever(
                     let elapsed_ms = now_ms - broker.rate_last_sample_ms;
                     let new_sample = if elapsed_ms >= 10_000 {
                         let elapsed_secs = elapsed_ms as f64 / 1000.0;
-                        let bytes_per_second =
-                            broker.rate_bytes_accumulator as f64 / elapsed_secs;
+                        let bytes_per_second = broker.rate_bytes_accumulator as f64 / elapsed_secs;
                         let sample = mqtt::RateHistoryEntry {
                             timestamp: now_ms,
                             bytes_per_second,
@@ -129,11 +128,7 @@ fn loop_forever(
                             lock.get(&hostname).map_or(0, |b| b.rate_history.len())
                         }
                     );
-                    websocket::send_rate_sample_to_peers(
-                        peer_map,
-                        &hostname,
-                        sample,
-                    );
+                    websocket::send_rate_sample_to_peers(peer_map, &hostname, sample);
                 }
                 websocket::send_message_to_peers(
                     peer_map,
