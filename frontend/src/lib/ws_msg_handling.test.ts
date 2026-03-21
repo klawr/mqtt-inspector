@@ -8,6 +8,8 @@ import {
 	type BrokerParam,
 	processBrokers,
 	processMQTTMessage,
+	processMQTTMessages,
+	parseMqttWebSocketMessage,
 	type MQTTMessageParam,
 	processSettings,
 	processSyncComplete,
@@ -181,16 +183,16 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			broker: 'broker1',
 			connected: true,
 			topics: {
-				topic1: [{ payload: new Uint8Array([72, 101, 108, 108, 111]), timestamp: '2022-01-01' }],
-				topic2: [{ payload: new Uint8Array([87, 111, 114, 108, 100]), timestamp: '2022-01-02' }]
+				topic1: [{ payload: new Uint8Array([72, 101, 108, 108, 111]).buffer, timestamp: '2022-01-01' }],
+				topic2: [{ payload: new Uint8Array([87, 111, 114, 108, 100]).buffer, timestamp: '2022-01-02' }]
 			}
 		},
 		{
 			broker: 'broker2',
 			connected: false,
 			topics: {
-				topic3: [{ payload: new Uint8Array([72, 105]), timestamp: '2022-01-03' }],
-				topic4: [{ payload: new Uint8Array([70, 114, 111, 109]), timestamp: '2022-01-04' }]
+				topic3: [{ payload: new Uint8Array([72, 105]).buffer, timestamp: '2022-01-03' }],
+				topic4: [{ payload: new Uint8Array([70, 114, 111, 109]).buffer, timestamp: '2022-01-04' }]
 			}
 		}
 	];
@@ -270,6 +272,77 @@ test('processBrokers handles empty params correctly', () => {
 	expect(result).toEqual({});
 });
 
+test('parseMqttWebSocketMessage parses binary mqtt frame', () => {
+	const header = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'mqtt_message',
+		params: {
+			source: 'broker1',
+			topic: 'topic1',
+			timestamp: '2022-01-01T00:00:00.000Z',
+			total_bytes: 5
+		}
+	});
+	const headerBytes = new TextEncoder().encode(header);
+	const payload = new TextEncoder().encode('Hello');
+	const buffer = new Uint8Array(4 + headerBytes.length + payload.length);
+	new DataView(buffer.buffer).setUint32(0, headerBytes.length, false);
+	buffer.set(headerBytes, 4);
+	buffer.set(payload, 4 + headerBytes.length);
+
+	const parsed = parseMqttWebSocketMessage(buffer.buffer);
+
+	expect(parsed?.method).toBe('mqtt_message');
+	expect(parsed?.params.source).toBe('broker1');
+	expect(new TextDecoder().decode(new Uint8Array(parsed?.params.payload))).toBe('Hello');
+});
+
+test('processMQTTMessage handles payload from parsed binary frame', () => {
+	const decoder = new MockTextDecoder();
+	const app = new AppState();
+	const message: MQTTMessageParam = {
+		source: 'broker1',
+		topic: 'topic1',
+		payload: new TextEncoder().encode('Hello from binary').buffer,
+		timestamp: '2022-01-01T00:00:00.000Z',
+		total_bytes: 17
+	};
+
+	processMQTTMessage(message, decoder as unknown as TextDecoder, app);
+
+	expect(app.brokerRepository['broker1'].topics[0].messages[0].text).toBe('Hello from binary');
+	expect(app.brokerRepository['broker1'].backendTotalBytes).toBe(17);
+});
+
+test('processMQTTMessages applies batched messages in order', () => {
+	const decoder = new MockTextDecoder();
+	const app = new AppState();
+	const messages: MQTTMessageParam[] = [
+		{
+			source: 'broker1',
+			topic: 'topic1',
+			payload: new TextEncoder().encode('first').buffer,
+			timestamp: '2022-01-01T00:00:00.000Z',
+			total_bytes: 5
+		},
+		{
+			source: 'broker1',
+			topic: 'topic1',
+			payload: new TextEncoder().encode('second').buffer,
+			timestamp: '2022-01-01T00:00:01.000Z',
+			total_bytes: 11
+		}
+	];
+
+	processMQTTMessages(messages, decoder as unknown as TextDecoder, app);
+
+	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual([
+		'second',
+		'first'
+	]);
+	expect(app.brokerRepository['broker1'].backendTotalBytes).toBe(11);
+});
+
 test('processMQTTMessage evicts oldest messages when byte budget exceeded', () => {
 	const decoder = new MockTextDecoder();
 	const app = new AppState();
@@ -282,7 +355,7 @@ test('processMQTTMessage evicts oldest messages when byte budget exceeded', () =
 		const message: MQTTMessageParam = {
 			source: 'broker1',
 			topic: `topic${i % 3}`,
-			payload: new TextEncoder().encode(oneMB),
+			payload: new TextEncoder().encode(oneMB).buffer,
 			timestamp
 		};
 		processMQTTMessage(message, decoder as unknown as TextDecoder, app);

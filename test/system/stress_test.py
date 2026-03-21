@@ -160,13 +160,13 @@ def build_backend():
 
 
 def _find_backend_binary() -> Path:
-    """Return the path to the backend binary, preferring release over debug."""
+    """Return the path to the backend binary, preferring the freshly built debug binary."""
     release = BACKEND_DIR / "target" / "release" / "backend"
     debug = BACKEND_DIR / "target" / "debug" / "backend"
-    if release.exists():
-        return release
     if debug.exists():
         return debug
+    if release.exists():
+        return release
     raise FileNotFoundError(
         "No backend binary found. Run 'cargo build' in the backend directory first."
     )
@@ -191,8 +191,8 @@ def start_backend(
     proc = subprocess.Popen(
         [str(binary), str(wwwroot), str(config_dir)],
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     wait_for_port("127.0.0.1", http_port)
     print(f"[backend] Running on 127.0.0.1:{http_port}  (PID {proc.pid})")
@@ -265,7 +265,8 @@ def ws_client_thread(client_id: int, url: str, counter: dict, errors: list):
             try:
                 data = ws.recv()
                 if data:
-                    counter["ws_recv"] += 1
+                    if isinstance(data, bytes):
+                        counter["ws_recv"] += 1
             except websocket.WebSocketTimeoutException:
                 continue
             except websocket.WebSocketConnectionClosedException:
@@ -352,7 +353,10 @@ def main():
     broker_proc = None
     backend_proc = None
     threads = []
-    counter = {"sent": 0, "ws_recv": 0}
+    counter = {
+        "sent": 0,
+        "ws_recv": 0,
+    }
     rss_samples: list[float] = []
     errors: list[str] = []
 

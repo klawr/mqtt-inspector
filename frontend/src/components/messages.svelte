@@ -136,7 +136,6 @@ THE SOFTWARE.
 						tooltipPosition="top"
 						icon={ChevronLeft}
 						on:click={() => {
-							console.log(selectedIndex);
 							selectMessage(selectedIndex - 1);
 						}}
 					/>

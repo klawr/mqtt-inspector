@@ -61,8 +61,9 @@ THE SOFTWARE.
 		processBrokers,
 		processConfigs,
 		processConnectionStatus,
-		processMQTTMessage,
+		processMQTTMessages,
 		processPipelines,
+		parseMqttWebSocketMessage,
 		processRateHistorySample,
 		processSettings,
 		processSyncComplete
@@ -74,6 +75,13 @@ THE SOFTWARE.
 
 	let socket: WebSocket;
 	let app = new AppState();
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let mqttFlushTimer: ReturnType<typeof setTimeout> | null = null;
+	let reconnectAttempts = 0;
+	let shouldReconnect = true;
+	let pendingMqttMessages: import('$lib/ws_msg_handling').MQTTMessageParam[] = [];
+
+	const MQTT_BATCH_FLUSH_MS = 16;
 
 	const decoder = new TextDecoder('utf-8');
 
@@ -82,19 +90,80 @@ THE SOFTWARE.
 	let pendingTopic: string | null = initialParams.get('topic');
 
 	let socketConnected = false;
+
+	function scheduleReconnect() {
+		if (!shouldReconnect || reconnectTimer) {
+			return;
+		}
+		const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = null;
+			initializeWebSocket();
+		}, delay);
+		reconnectAttempts += 1;
+	}
+
+	function flushPendingMqttMessages() {
+		if (mqttFlushTimer) {
+			clearTimeout(mqttFlushTimer);
+			mqttFlushTimer = null;
+		}
+		if (pendingMqttMessages.length === 0) {
+			return;
+		}
+		const batch = pendingMqttMessages;
+		pendingMqttMessages = [];
+		app = processMQTTMessages(batch, decoder, app);
+	}
+
+	function scheduleMqttFlush() {
+		if (mqttFlushTimer) {
+			return;
+		}
+		mqttFlushTimer = setTimeout(() => {
+			mqttFlushTimer = null;
+			flushPendingMqttMessages();
+		}, MQTT_BATCH_FLUSH_MS);
+	}
+
 	function initializeWebSocket() {
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+		flushPendingMqttMessages();
 		if (socket && socket.readyState !== WebSocket.CLOSED) {
+			socket.onclose = null;
 			socket.close();
 		}
-		socket = new WebSocket(`ws://${$page.url.host}/ws`);
+		pendingMqttMessages = [];
+		app = new AppState();
+		socketConnected = false;
+		const currentSocket = new WebSocket(`ws://${$page.url.host}/ws`);
+		currentSocket.binaryType = 'arraybuffer';
+		socket = currentSocket;
 
-		socket.onopen = () => {
+		currentSocket.onopen = () => {
+			if (socket !== currentSocket) {
+				return;
+			}
 			socketConnected = true;
+			reconnectAttempts = 0;
 		};
 
-		socket.onmessage = (event) => {
+		currentSocket.onmessage = (event) => {
+			if (socket !== currentSocket) {
+				return;
+			}
 			const message = event.data;
-			const json = JSON.parse(message);
+			const json =
+				typeof message === 'string' ? JSON.parse(message) : parseMqttWebSocketMessage(message);
+			if (!json) {
+				return;
+			}
+			if (json.method !== 'mqtt_message') {
+				flushPendingMqttMessages();
+			}
 			switch (json.method) {
 				case 'broker_removal':
 					app = processBrokerRemoval(json.params, app);
@@ -103,13 +172,6 @@ THE SOFTWARE.
 					app = processConnectionStatus(json.params, app);
 					break;
 				case 'mqtt_brokers': {
-					console.log(
-						'mqtt_brokers received, rate_history:',
-						json.params?.map?.((p: { broker: string; rate_history?: unknown[] }) => ({
-							broker: p.broker,
-							rate_history_len: p.rate_history?.length ?? 0
-						}))
-					);
 					app.brokerRepository = processBrokers(json.params, decoder, app.brokerRepository);
 					const params = new URLSearchParams(window.location.search);
 					const broker = params.get('broker');
@@ -128,15 +190,10 @@ THE SOFTWARE.
 					break;
 				}
 				case 'mqtt_message':
-					app = processMQTTMessage(json.params, decoder, app);
+					pendingMqttMessages.push(json.params);
+					scheduleMqttFlush();
 					break;
 				case 'rate_history_sample':
-					console.log(
-						'rate_history_sample received:',
-						json.params.source,
-						'history len:',
-						json.params.sample
-					);
 					processRateHistorySample(json.params, app);
 					// Explicit brokerRepository reassignment to ensure Svelte reactivity
 					app.brokerRepository = app.brokerRepository;
@@ -168,12 +225,19 @@ THE SOFTWARE.
 			}
 		};
 
-		socket.onclose = () => {
+		currentSocket.onclose = () => {
+			if (socket !== currentSocket) {
+				return;
+			}
 			socketConnected = false;
 			console.log('WebSocket connection closed.');
+			scheduleReconnect();
 		};
 
-		socket.onerror = (event) => {
+		currentSocket.onerror = (event) => {
+			if (socket !== currentSocket) {
+				return;
+			}
 			console.error('WebSocket error:', event);
 		};
 	}
@@ -253,7 +317,18 @@ THE SOFTWARE.
 
 	onMount(initializeWebSocket);
 	onDestroy(() => {
+		shouldReconnect = false;
+		flushPendingMqttMessages();
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+		if (mqttFlushTimer) {
+			clearTimeout(mqttFlushTimer);
+			mqttFlushTimer = null;
+		}
 		if (socket && socket.readyState !== WebSocket.CLOSED) {
+			socket.onclose = null;
 			socket.close();
 		}
 	});

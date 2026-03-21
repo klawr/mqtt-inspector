@@ -60,7 +60,6 @@ THE SOFTWARE.
 			if (isUpdatingFromCode) return;
 			isUpdatingFromEditor = true;
 			const value = editor.getValue();
-			console.log(code);
 			if (value !== code) {
 				code = value;
 			}

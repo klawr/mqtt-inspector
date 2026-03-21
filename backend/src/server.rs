@@ -62,7 +62,10 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
                     websocket::send_brokers(&mut tx, &mqtt_map);
                     websocket::send_configs(&mut tx, &config_path);
 
-                    peer_map.lock().unwrap().insert(addr, tx);
+                    peer_map
+                        .lock()
+                        .unwrap()
+                        .insert(addr, websocket::PeerConnection::new(tx));
                 }
                 let incoming = rx.map(Ok).forward(ws_tx);
 

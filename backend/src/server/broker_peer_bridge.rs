@@ -339,7 +339,7 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
         mqtt_lock.remove(mqtt_host);
         drop(mqtt_lock);
         // TODO put this into websocket
-        peer_map.lock().unwrap().iter_mut().for_each(|(_addr, tx)| {
+        peer_map.lock().unwrap().iter_mut().for_each(|(_addr, peer)| {
             let message = jsonrpc::JsonRpcNotification {
                 jsonrpc: "2.0",
                 method: "broker_removal",
@@ -347,7 +347,7 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
             };
 
             if let Ok(serialized) = serde_json::to_string(&message) {
-                match tx.try_send(warp::filters::ws::Message::text(serialized)) {
+                match peer.tx.try_send(warp::filters::ws::Message::text(serialized)) {
                     Ok(_) => { /* Implement Logging */ }
                     Err(err) if err.is_disconnected() => {
                         println!("Error sending message: {err:?}")
@@ -392,7 +392,10 @@ mod tests {
     ) {
         let addr = make_addr(port);
         let (tx, rx) = channel(PEER_CHANNEL_CAPACITY);
-        peer_map.lock().unwrap().insert(addr, tx);
+        peer_map
+            .lock()
+            .unwrap()
+            .insert(addr, websocket::PeerConnection::new(tx));
         (addr, rx)
     }
 
@@ -543,10 +546,16 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19997"}}"#;
         deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path);
 
-        // Should have received a broadcast_brokers message
-        let msg = rx.try_next().unwrap().unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
-        assert_eq!(parsed["method"], "mqtt_brokers");
+        // Should have received a broadcast_brokers message, even if a status
+        // notification arrived first.
+        let mut methods = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
+            if let Some(method) = parsed["method"].as_str() {
+                methods.push(method.to_string());
+            }
+        }
+        assert!(methods.contains(&"mqtt_brokers".to_string()));
 
         std::fs::remove_dir_all(&config_path).ok();
     }
@@ -566,7 +575,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Drain the connect broadcast
-        while rx.try_next().is_ok() {}
+        while rx.try_recv().is_ok() {}
 
         // Now remove
         let remove_json =
@@ -575,7 +584,7 @@ mod tests {
 
         // Should receive broker_removal and broadcast_brokers messages
         let mut methods = Vec::new();
-        while let Ok(Some(msg)) = rx.try_next() {
+        while let Ok(msg) = rx.try_recv() {
             if let Ok(text) = msg.to_str() {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
                     if let Some(method) = parsed["method"].as_str() {

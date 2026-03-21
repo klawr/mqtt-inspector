@@ -100,6 +100,37 @@ export type MQTTMessageParam = {
 	total_bytes?: number;
 };
 
+function decodePayloadBytes(message: { payload: ArrayBuffer }): Uint8Array {
+	return new Uint8Array(message.payload);
+}
+
+export function parseMqttWebSocketMessage(buffer: ArrayBuffer) {
+	const bytes = new Uint8Array(buffer);
+	if (bytes.length < 4) {
+		return null;
+	}
+	const view = new DataView(buffer);
+	const headerLength = view.getUint32(0, false);
+	const headerStart = 4;
+	const headerEnd = headerStart + headerLength;
+	if (headerEnd > bytes.length) {
+		return null;
+	}
+	const headerJson = new TextDecoder().decode(bytes.slice(headerStart, headerEnd));
+	const header = JSON.parse(headerJson);
+	if (header.method !== 'mqtt_message') {
+		return null;
+	}
+	return {
+		jsonrpc: header.jsonrpc,
+		method: header.method,
+		params: {
+			...header.params,
+			payload: bytes.slice(headerEnd).buffer
+		}
+	};
+}
+
 export function processConfigs(commands: CommandParam[]) {
 	return commands.map((e, id: number) => ({
 		id: `${id}`,
@@ -168,7 +199,7 @@ export function processBrokers(
 
 		for (const topic of Object.keys(param.topics)) {
 			for (const message of param.topics[topic]) {
-				const decoded = decoder.decode(new Uint8Array(message.payload));
+				const decoded = decoder.decode(decodePayloadBytes(message));
 				brokerRepository[param.broker].topics = addToTopicTree(
 					topic,
 					brokerRepository[param.broker].topics,
@@ -316,7 +347,7 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 		app.selectedBroker = message.source;
 	}
 
-	const payload = decoder.decode(new Uint8Array(message.payload));
+	const payload = decoder.decode(decodePayloadBytes(message));
 	app.brokerRepository[message.source].topics = addToTopicTree(
 		message.topic,
 		app.brokerRepository[message.source].topics,
@@ -342,6 +373,18 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 		payload.length
 	);
 	evictUntilUnderBudget(app.brokerRepository[message.source]);
+
+	return app;
+}
+
+export function processMQTTMessages(
+	messages: MQTTMessageParam[],
+	decoder: TextDecoder,
+	app: AppState
+) {
+	for (const message of messages) {
+		processMQTTMessage(message, decoder, app);
+	}
 
 	return app;
 }
