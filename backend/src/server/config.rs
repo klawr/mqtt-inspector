@@ -53,14 +53,14 @@ pub fn add_to_brokers(brokers_path: &str, broker: &str) {
     let mut brokers: Vec<String> = if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
         serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
     } else {
-        eprintln!("Failed to read file {}", brokers_path);
+        eprintln!("Failed to read file {brokers_path}");
         Vec::new()
     };
 
     brokers.push(broker.to_string());
     if let Ok(content) = serde_json::to_string(&brokers) {
         if std::fs::write(brokers_path, content).is_err() {
-            eprintln!("Failed to save new brokers file to {}", brokers_path);
+            eprintln!("Failed to save new brokers file to {brokers_path}");
         }
     } else {
         eprintln!("Failed to serialize updated saved brokers.");
@@ -71,7 +71,7 @@ pub fn remove_from_brokers(brokers_path: &str, broker: &str) {
     let mut brokers: Vec<String> = if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
         serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
     } else {
-        eprintln!("Failed to read file {}", brokers_path);
+        eprintln!("Failed to read file {brokers_path}");
         Vec::new()
     };
 
@@ -79,25 +79,25 @@ pub fn remove_from_brokers(brokers_path: &str, broker: &str) {
         brokers.remove(index);
         if let Ok(content) = serde_json::to_string(&brokers) {
             if std::fs::write(brokers_path, content).is_err() {
-                eprintln!("Failed to save new brokers file to {}", brokers_path);
+                eprintln!("Failed to save new brokers file to {brokers_path}");
             }
         } else {
             eprintln!("Failed to serialize updated saved brokers.");
         }
     } else {
-        eprintln!("Broker {} not found in {}", broker, brokers_path);
+        eprintln!("Broker {broker} not found in {brokers_path}");
     }
 }
 
 pub fn add_to_commands(commands_path: &str, params: serde_json::Value) {
     if let Ok(new_command) = serde_json::from_value::<CommandMessage>(params) {
-        let new_command_path = std::format!("{}/{}.json", commands_path, new_command.name);
+        let new_command_path = std::format!("{commands_path}/{}.json", new_command.name);
         if let Some(parent_dir) = std::path::Path::new(&new_command_path).parent() {
             std::fs::create_dir_all(parent_dir).expect("Failed to create directory path");
         }
         if let Ok(content) = serde_json::to_string(&new_command) {
             if std::fs::write(&new_command_path, content).is_err() {
-                eprintln!("Failed to save new commands file to {}", new_command_path);
+                eprintln!("Failed to save new commands file to {new_command_path}");
             }
         } else {
             eprintln!("Failed to serialize updated saved commands.");
@@ -109,21 +109,21 @@ pub fn add_to_commands(commands_path: &str, params: serde_json::Value) {
 
 pub fn remove_from_commands(commands_path: &String, params: serde_json::Value) {
     let command = params["name"].as_str().unwrap();
-    let command_path = std::format!("{}/{}.json", commands_path, command);
+    let command_path = std::format!("{commands_path}/{command}.json");
     if std::fs::remove_file(&command_path).is_err() {
-        eprintln!("Failed to remove command file from {}", command_path);
+        eprintln!("Failed to remove command file from {command_path}");
     }
 }
 
 pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
     if let Ok(new_pipeline) = serde_json::from_value::<PipelineMessage>(params) {
-        let new_pipeline_path = std::format!("{}/{}.json", pipelines_path, new_pipeline.name);
+        let new_pipeline_path = std::format!("{pipelines_path}/{}.json", new_pipeline.name);
         if let Some(parent_dir) = std::path::Path::new(&new_pipeline_path).parent() {
             std::fs::create_dir_all(parent_dir).expect("Failed to create directory path");
         }
         if let Ok(content) = serde_json::to_string(&new_pipeline) {
             if std::fs::write(&new_pipeline_path, content).is_err() {
-                eprintln!("Failed to save new commands file to {}", new_pipeline_path);
+                eprintln!("Failed to save new commands file to {new_pipeline_path}");
             }
         } else {
             eprintln!("Failed to serialize updated saved commands.");
@@ -135,9 +135,9 @@ pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
 
 pub fn remove_from_pipelines(pipelines_path: &String, params: serde_json::Value) {
     let pipeline = params["name"].as_str().unwrap();
-    let pipeline_path = std::format!("{}/{}.json", pipelines_path, pipeline);
+    let pipeline_path = std::format!("{pipelines_path}/{pipeline}.json");
     if std::fs::remove_file(&pipeline_path).is_err() {
-        eprintln!("Failed to remove pipeline file from {}", pipeline_path);
+        eprintln!("Failed to remove pipeline file from {pipeline_path}");
     }
 }
 

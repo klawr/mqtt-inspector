@@ -72,7 +72,7 @@ pub fn send_message_to_peers(
                 Ok(_) => {}
                 Err(err) => {
                     if err.is_disconnected() {
-                        println!("Peer {} is closed. Removing from peer map.", addr);
+                        println!("Peer {addr} is closed. Removing from peer map.");
                         to_remove.push(*addr);
                     }
                     // If err.is_full() the client is slow — drop the message silently
@@ -113,7 +113,7 @@ pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: boo
                 Ok(_) => {}
                 Err(err) => {
                     if err.is_disconnected() {
-                        println!("Peer {} is closed. Removing from peer map.", addr);
+                        println!("Peer {addr} is closed. Removing from peer map.");
                         to_remove.push(*addr);
                     }
                 }
@@ -130,8 +130,8 @@ pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: boo
 }
 
 pub fn send_configs(sender: &mut Sender<warp::filters::ws::Message>, config_path: &str) {
-    send_commands(sender, &format!("{}/commands", config_path));
-    send_pipelines(sender, &format!("{}/pipelines", config_path));
+    send_commands(sender, &format!("{config_path}/commands"));
+    send_pipelines(sender, &format!("{config_path}/pipelines"));
 }
 
 pub fn send_commands(sender: &mut Sender<warp::filters::ws::Message>, commands_path: &String) {
@@ -156,13 +156,13 @@ pub fn send_commands(sender: &mut Sender<warp::filters::ws::Message>, commands_p
         if let Ok(serialized) = serde_json::to_string(&jsonrpc) {
             match sender.try_send(warp::filters::ws::Message::text(serialized)) {
                 Ok(_) => { /* Implement Logging */ }
-                Err(err) => println!("Error sending message: {:?}", err),
+                Err(err) => println!("Error sending message: {err:?}"),
             }
         } else {
             eprintln!("Failed to serialize commands jsonjpc")
         }
     } else {
-        eprintln!("Failed to read commands file from {}", commands_path);
+        eprintln!("Failed to read commands file from {commands_path}");
     }
 }
 
@@ -188,7 +188,7 @@ pub fn send_pipelines(sender: &mut Sender<warp::filters::ws::Message>, pipelines
         if let Ok(serialized) = serde_json::to_string(&jsonrpc) {
             match sender.try_send(warp::filters::ws::Message::text(serialized)) {
                 Ok(_) => { /* Implement Logging */ }
-                Err(err) => println!("Error sending message: {:?}", err),
+                Err(err) => println!("Error sending message: {err:?}"),
             }
         } else {
             eprintln!("Failed to serialize commands jsonjpc")
@@ -332,7 +332,7 @@ pub fn broadcast_pipelines(peer_map: &PeerMap, config_path: &str) {
         .lock()
         .unwrap()
         .iter_mut()
-        .for_each(|(_addr, tx)| send_pipelines(tx, &format!("{}/pipelines", config_path)));
+        .for_each(|(_addr, tx)| send_pipelines(tx, &format!("{config_path}/pipelines")));
 }
 
 pub fn broadcast_commands(peer_map: &PeerMap, config_path: &str) {
@@ -340,7 +340,7 @@ pub fn broadcast_commands(peer_map: &PeerMap, config_path: &str) {
         .lock()
         .unwrap()
         .iter_mut()
-        .for_each(|(_addr, tx)| send_commands(tx, &format!("{}/commands", config_path)));
+        .for_each(|(_addr, tx)| send_commands(tx, &format!("{config_path}/commands")));
 }
 
 #[cfg(test)]

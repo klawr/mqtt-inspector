@@ -46,10 +46,7 @@ async fn main() {
     match std::fs::create_dir_all(&config_dir) {
         Ok(_) => {}
         Err(err) => {
-            eprintln!(
-                "Failed to create config directory: {}. Changes will not persist.",
-                err
-            );
+            eprintln!("Failed to create config directory: {err}. Changes will not persist.");
         }
     }
 

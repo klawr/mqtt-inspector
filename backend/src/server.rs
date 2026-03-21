@@ -41,12 +41,9 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
     let peer_map = websocket::PeerMap::new(Mutex::new(HashMap::new()));
 
-    let broker_path = &std::format!("{}/brokers.json", config_path);
+    let broker_path = &std::format!("{config_path}/brokers.json");
     broker_peer_bridge::connect_to_known_brokers(broker_path, &peer_map, &mqtt_map);
-    println!(
-        "Listening for connections on {} using static files from {} and config {}",
-        server_addr, static_files, config_path
-    );
+    println!("Listening for connections on {server_addr} using static files from {static_files} and config {config_path}");
 
     let ws = warp::path("ws")
         .and(warp::ws())
@@ -61,7 +58,7 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
                 let (mut tx, rx) = channel(websocket::PEER_CHANNEL_CAPACITY);
 
                 if let Some(addr) = addr {
-                    println!("Received new WebSocket connection from {}", addr);
+                    println!("Received new WebSocket connection from {addr}");
                     websocket::send_brokers(&mut tx, &mqtt_map);
                     websocket::send_configs(&mut tx, &config_path);
 
@@ -86,7 +83,7 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
                 futures_util::future::select(incoming, handler).await;
 
                 if let Some(addr) = addr {
-                    println!("{} disconnected", addr);
+                    println!("{addr} disconnected");
                     peer_map.lock().unwrap().remove(&addr);
                 }
             })

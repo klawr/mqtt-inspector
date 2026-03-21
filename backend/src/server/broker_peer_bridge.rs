@@ -33,7 +33,7 @@ fn loop_forever(
     mqtt_map: &mqtt::BrokerMap,
 ) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
-    let hostname = format!("{}:{}", ip, port);
+    let hostname = format!("{ip}:{port}");
 
     for notification in connection.iter() {
         match notification {
@@ -52,7 +52,7 @@ fn loop_forever(
                     let broker = match mqtt_lock.get_mut(&hostname) {
                         Some(b) => b,
                         None => {
-                            println!("Broker {} not found in map. Exiting loop.", hostname);
+                            println!("Broker {hostname} not found in map. Exiting loop.");
                             break;
                         }
                     };
@@ -115,7 +115,7 @@ fn loop_forever(
                 println!("Connection event: {:?} for {:?}", a.code, hostname);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Disconnect)) => {
-                println!("Disconnect event for {:?}", hostname);
+                println!("Disconnect event for {hostname:?}");
             }
             Ok(_) => {
                 // PingReq, PingResp, SubAck, etc. — no lock needed
@@ -124,8 +124,8 @@ fn loop_forever(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
                 let payload =
-                    bytes::Bytes::from(std::format!("Payload size limit exceeded: {}.", p));
-                println!("Payload size limit exceeded: {}", p);
+                    bytes::Bytes::from(std::format!("Payload size limit exceeded: {p}."));
+                println!("Payload size limit exceeded: {p}");
                 websocket::send_message_to_peers(
                     peer_map,
                     &hostname,
@@ -142,7 +142,7 @@ fn loop_forever(
                         broker.connected = false;
                     }
                 }
-                println!("MqttState error for {:?}: {}. Will retry.", hostname, err);
+                println!("MqttState error for {hostname:?}: {err}. Will retry.");
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
@@ -221,22 +221,22 @@ pub fn deserialize_json_rpc_and_process(
             mqtt::publish_message(&host, topic, payload, mqtt_map);
         }
         "save_command" => {
-            let command_path: String = std::format!("{}/commands", config_path);
+            let command_path: String = std::format!("{config_path}/commands");
             config::add_to_commands(&command_path, message.params);
             websocket::broadcast_commands(peer_map, config_path);
         }
         "remove_command" => {
-            let command_path: String = std::format!("{}/commands", config_path);
+            let command_path: String = std::format!("{config_path}/commands");
             config::remove_from_commands(&command_path, message.params);
             websocket::broadcast_commands(peer_map, config_path);
         }
         "save_pipeline" => {
-            let pipelines_path = std::format!("{}/pipelines", config_path);
+            let pipelines_path = std::format!("{config_path}/pipelines");
             config::add_to_pipelines(&pipelines_path, message.params);
             websocket::broadcast_pipelines(peer_map, config_path);
         }
         "remove_pipeline" => {
-            let pipelines_path = std::format!("{}/pipelines", config_path);
+            let pipelines_path = std::format!("{config_path}/pipelines");
             config::remove_from_pipelines(&pipelines_path, message.params);
             websocket::broadcast_pipelines(peer_map, config_path);
         }
@@ -266,12 +266,9 @@ fn connect_to_mqtt_client_and_loop_forever(
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
     if mqtt_client.is_some() {
-        println!("MQTT-Client for {} already exists.", mqtt_host);
+        println!("MQTT-Client for {mqtt_host} already exists.");
     } else {
-        println!(
-            "MQTT-Client for {} does not exist. Creating new client.",
-            mqtt_host
-        );
+        println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
         let (client, connection) = mqtt::connect_to_mqtt_host(mqtt_host);
         let broker = mqtt::MqttBroker {
             client,
@@ -294,10 +291,10 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
     if let Some((_key, broker)) = mqtt_client {
-        println!("Removing MQTT-Client for {}", mqtt_host);
+        println!("Removing MQTT-Client for {mqtt_host}");
 
         if let Err(err) = broker.client.clone().disconnect() {
-            println!("Error disconnecting MQTT client: {:?}", err);
+            println!("Error disconnecting MQTT client: {err:?}");
         }
 
         mqtt_lock.remove(mqtt_host);
@@ -314,7 +311,7 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
                 match tx.try_send(warp::filters::ws::Message::text(serialized)) {
                     Ok(_) => { /* Implement Logging */ }
                     Err(err) if err.is_disconnected() => {
-                        println!("Error sending message: {:?}", err)
+                        println!("Error sending message: {err:?}")
                     }
                     Err(_) => { /* channel full, drop */ }
                 }
@@ -323,7 +320,7 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
             }
         });
     } else {
-        println!("No MQTT-Client for {} found.", mqtt_host);
+        println!("No MQTT-Client for {mqtt_host} found.");
     }
 }
 
