@@ -33,6 +33,13 @@ pub struct MqttMessage {
     pub payload: Vec<u8>,
 }
 
+#[derive(serde::Serialize, Clone)]
+pub struct RateHistoryEntry {
+    pub timestamp: i64,
+    pub bytes_per_second: f64,
+    pub total_bytes: usize,
+}
+
 #[derive(serde::Serialize)]
 pub struct MqttBroker {
     #[serde(skip)]
@@ -44,6 +51,14 @@ pub struct MqttBroker {
     /// Tracks insertion order for O(1) eviction: (topic_name, payload_len).
     #[serde(skip)]
     pub eviction_order: VecDeque<(String, usize)>,
+    /// Throughput history samples (timestamp_ms, bytes_per_second, total_bytes).
+    pub rate_history: Vec<RateHistoryEntry>,
+    /// Bytes received since last rate sample.
+    #[serde(skip)]
+    pub rate_bytes_accumulator: usize,
+    /// Timestamp of last rate sample (epoch ms).
+    #[serde(skip)]
+    pub rate_last_sample_ms: i64,
 }
 
 fn env_usize_mb(name: &str, default_mb: usize) -> usize {
@@ -186,6 +201,9 @@ mod tests {
             topics: HashMap::new(),
             total_bytes: 0,
             eviction_order: VecDeque::new(),
+            rate_history: Vec::new(),
+            rate_bytes_accumulator: 0,
+            rate_last_sample_ms: 0,
         };
         mqtt_map
             .lock()
@@ -206,6 +224,9 @@ mod tests {
             topics: HashMap::new(),
             total_bytes: 0,
             eviction_order: VecDeque::new(),
+            rate_history: Vec::new(),
+            rate_bytes_accumulator: 0,
+            rate_last_sample_ms: 0,
         };
         mqtt_map
             .lock()

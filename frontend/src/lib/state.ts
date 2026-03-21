@@ -61,6 +61,12 @@ export type Command = {
 	payload: string;
 };
 
+export type RateHistoryEntry = {
+	timestamp: number;
+	bytesPerSecond: number;
+	totalBytes: number;
+};
+
 export type BrokerRepositoryEntry = {
 	topics: Treebranch[];
 	selectedTopic: Treebranch | null;
@@ -68,6 +74,8 @@ export type BrokerRepositoryEntry = {
 	connected: boolean;
 	totalBytes: number;
 	backendTotalBytes: number;
+	bytesPerSecond: number;
+	rateHistory: RateHistoryEntry[];
 };
 
 export type BrokerRepository = {

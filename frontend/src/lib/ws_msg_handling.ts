@@ -25,6 +25,26 @@ import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } fr
 
 let maxBrokerBytes = 64 * 1024 * 1024; // default, overridden by settings from backend
 
+/** Sliding-window rate tracker: per-broker list of (timestamp_ms, byteCount) samples. */
+const rateWindows: Record<string, { t: number; b: number }[]> = {};
+const RATE_WINDOW_MS = 3000;
+
+function updateBytesPerSecond(
+	broker: string,
+	bytesReceived: number
+): number {
+	const now = Date.now();
+	if (!rateWindows[broker]) rateWindows[broker] = [];
+	rateWindows[broker].push({ t: now, b: bytesReceived });
+	// prune entries older than the window
+	const cutoff = now - RATE_WINDOW_MS;
+	while (rateWindows[broker].length > 0 && rateWindows[broker][0].t < cutoff) {
+		rateWindows[broker].shift();
+	}
+	const totalBytes = rateWindows[broker].reduce((sum, e) => sum + e.b, 0);
+	return totalBytes / (RATE_WINDOW_MS / 1000);
+}
+
 function findOldestMessageLeaf(branches: Treebranch[]): Treebranch | null {
 	let oldest: Treebranch | null = null;
 	let oldestTime = '';
@@ -70,6 +90,7 @@ export type BrokerParam = {
 		[key: string]: { payload: ArrayBuffer; timestamp: string }[];
 	};
 	total_bytes?: number;
+	rate_history?: { timestamp: number; bytes_per_second: number; total_bytes: number }[];
 }[];
 export type MqttConnectionStatus = { source: string; connected: boolean };
 type PipelineParamEntry = { topic: string };
@@ -98,6 +119,7 @@ export function processBrokerRemoval(params: string, app: AppState) {
 			app.selectedTopic = null;
 		}
 		delete app.brokerRepository[params];
+		delete rateWindows[params];
 	}
 
 	return app;
@@ -125,12 +147,26 @@ export function processBrokers(
 				pipeline: [],
 				connected: param.connected,
 				totalBytes: 0,
-				backendTotalBytes: param.total_bytes ?? 0
+				backendTotalBytes: param.total_bytes ?? 0,
+				bytesPerSecond: 0,
+				rateHistory: (param.rate_history ?? []).map((e) => ({
+					timestamp: e.timestamp,
+					bytesPerSecond: e.bytes_per_second,
+					totalBytes: e.total_bytes
+				}))
 			};
 		} else {
 			brokerRepository[param.broker].connected = param.connected;
 			brokerRepository[param.broker].backendTotalBytes =
 				param.total_bytes ?? brokerRepository[param.broker].backendTotalBytes;
+			// Update rate history from backend (authoritative source)
+			if (param.rate_history) {
+				brokerRepository[param.broker].rateHistory = param.rate_history.map((e) => ({
+					timestamp: e.timestamp,
+					bytesPerSecond: e.bytes_per_second,
+					totalBytes: e.total_bytes
+				}));
+			}
 		}
 
 		for (const topic of Object.keys(param.topics)) {
@@ -272,7 +308,9 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 			pipeline: [],
 			connected: true,
 			totalBytes: 0,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		};
 	}
 	app.brokerRepository[message.source].connected = true;
@@ -302,6 +340,10 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 	if (message.total_bytes !== undefined) {
 		app.brokerRepository[message.source].backendTotalBytes = message.total_bytes;
 	}
+	app.brokerRepository[message.source].bytesPerSecond = updateBytesPerSecond(
+		message.source,
+		payload.length
+	);
 	evictUntilUnderBudget(app.brokerRepository[message.source]);
 
 	return app;
@@ -320,6 +362,29 @@ export type SettingsParam = { max_broker_bytes: number; max_message_size: number
 export function processSettings(params: SettingsParam, app: AppState) {
 	app.maxBrokerBytes = params.max_broker_bytes;
 	maxBrokerBytes = params.max_broker_bytes;
+	return app;
+}
+
+export type RateHistorySampleParam = {
+	source: string;
+	sample: { timestamp: number; bytes_per_second: number; total_bytes: number };
+};
+
+/** Maximum age for rate history entries: 7 days in milliseconds. */
+const RATE_HISTORY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function processRateHistorySample(params: RateHistorySampleParam, app: AppState) {
+	const entry = app.brokerRepository[params.source];
+	if (!entry) return app;
+	const newEntry = {
+		timestamp: params.sample.timestamp,
+		bytesPerSecond: params.sample.bytes_per_second,
+		totalBytes: params.sample.total_bytes
+	};
+	entry.bytesPerSecond = params.sample.bytes_per_second;
+	// Prune entries older than 7 days and create a new array for Svelte reactivity
+	const cutoff = Date.now() - RATE_HISTORY_MAX_AGE_MS;
+	entry.rateHistory = [...entry.rateHistory.filter((e) => e.timestamp >= cutoff), newEntry];
 	return app;
 }
 

@@ -51,6 +51,7 @@ THE SOFTWARE.
 		TrashCan
 	} from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
+	import RateHistoryChart from '../components/rate_history_chart.svelte';
 	import type { CarbonTheme } from 'carbon-components-svelte/src/Theme/Theme.svelte';
 	import { page } from '$app/stores';
 	import Pipeline from '../components/pipeline.svelte';
@@ -62,6 +63,7 @@ THE SOFTWARE.
 		processConnectionStatus,
 		processMQTTMessage,
 		processPipelines,
+		processRateHistorySample,
 		processSettings,
 		processSyncComplete
 	} from '$lib/ws_msg_handling';
@@ -101,6 +103,7 @@ THE SOFTWARE.
 					app = processConnectionStatus(json.params, app);
 					break;
 				case 'mqtt_brokers': {
+					console.log('mqtt_brokers received, rate_history:', json.params?.map?.((p: {broker: string, rate_history?: unknown[]}) => ({ broker: p.broker, rate_history_len: p.rate_history?.length ?? 0 })));
 					app.brokerRepository = processBrokers(json.params, decoder, app.brokerRepository);
 					const params = new URLSearchParams(window.location.search);
 					const broker = params.get('broker');
@@ -120,6 +123,12 @@ THE SOFTWARE.
 				}
 				case 'mqtt_message':
 					app = processMQTTMessage(json.params, decoder, app);
+					break;
+				case 'rate_history_sample':
+					console.log('rate_history_sample received:', json.params.source, 'history len:', json.params.sample);
+					processRateHistorySample(json.params, app);
+					// Explicit brokerRepository reassignment to ensure Svelte reactivity
+					app.brokerRepository = app.brokerRepository;
 					break;
 				case 'commands':
 					app.commands = processConfigs(json.params);
@@ -166,6 +175,29 @@ THE SOFTWARE.
 		if (bytes < 1024) return bytes + ' B';
 		if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
 		return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+	}
+
+	function formatRate(bytesPerSecond: number): string {
+		if (bytesPerSecond < 1024) return bytesPerSecond.toFixed(0) + ' B/s';
+		if (bytesPerSecond < 1024 * 1024) return (bytesPerSecond / 1024).toFixed(1) + ' KB/s';
+		return (bytesPerSecond / (1024 * 1024)).toFixed(1) + ' MB/s';
+	}
+
+	function formatDuration(ms: number): string {
+		const seconds = Math.floor(ms / 1000);
+		if (seconds < 60) return `${seconds}s`;
+		const minutes = Math.floor(seconds / 60);
+		if (minutes < 60) return `${minutes}m`;
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) return `${hours}h ${minutes % 60}m`;
+		const days = Math.floor(hours / 24);
+		return `${days}d ${hours % 24}h`;
+	}
+
+	function getHistoryReachMs(entry: import('$lib/state').BrokerRepositoryEntry): number | null {
+		const history = entry.rateHistory;
+		if (history.length === 0) return null;
+		return Date.now() - history[0].timestamp;
 	}
 
 	let theme: CarbonTheme;
@@ -245,6 +277,12 @@ THE SOFTWARE.
 			selectedTab = 3;
 		}}>Publish</Button
 	>
+	<Button
+		kind={selectedTab === 4 ? 'primary' : 'secondary'}
+		on:click={() => {
+			selectedTab = 4;
+		}}>Throughput</Button
+	>
 
 	<div style="flex: 1" />
 
@@ -273,6 +311,8 @@ THE SOFTWARE.
 				{formatBytes(entry.totalBytes)} | {formatBytes(entry.backendTotalBytes)}
 				<Renew size={16} title="Syncing..." class="spin-icon" />
 			{/if}
+			<span style="opacity: 0.8;">| {formatRate(entry.bytesPerSecond || 0)}</span>
+			<span style="opacity: 0.8;">| History: {formatDuration(getHistoryReachMs(entry) || 0)}</span>
 		</div>
 	{/if}
 
@@ -385,6 +425,12 @@ THE SOFTWARE.
 				bind:selectedBroker={app.selectedBroker}
 				bind:socket
 				bind:broker={app.brokerRepository[app.selectedBroker]}
+			/>
+		{:else if selectedTab === 4}
+			<RateHistoryChart
+				rateHistory={app.brokerRepository[app.selectedBroker].rateHistory}
+				brokerName={app.selectedBroker}
+				maxBrokerBytes={app.maxBrokerBytes}
 			/>
 		{/if}
 	{/if}

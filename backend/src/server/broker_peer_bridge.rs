@@ -47,7 +47,7 @@ fn loop_forever(
                     p.payload
                 };
                 let timestamp = chrono::Utc::now().to_rfc3339();
-                let total_bytes = {
+                let (total_bytes, new_sample) = {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
                     let broker = match mqtt_lock.get_mut(&hostname) {
                         Some(b) => b,
@@ -92,8 +92,49 @@ fn loop_forever(
                             None => break,
                         }
                     }
-                    broker.total_bytes
+
+                    // Rate history sampling: accumulate bytes and record every 10s
+                    broker.rate_bytes_accumulator += msg_bytes;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let elapsed_ms = now_ms - broker.rate_last_sample_ms;
+                    let new_sample = if elapsed_ms >= 10_000 {
+                        let elapsed_secs = elapsed_ms as f64 / 1000.0;
+                        let bytes_per_second =
+                            broker.rate_bytes_accumulator as f64 / elapsed_secs;
+                        let sample = mqtt::RateHistoryEntry {
+                            timestamp: now_ms,
+                            bytes_per_second,
+                            total_bytes: broker.total_bytes,
+                        };
+                        broker.rate_history.push(sample.clone());
+                        broker.rate_bytes_accumulator = 0;
+                        broker.rate_last_sample_ms = now_ms;
+                        // Prune entries older than 7 days
+                        let cutoff = now_ms - 7 * 24 * 60 * 60 * 1000;
+                        broker.rate_history.retain(|e| e.timestamp >= cutoff);
+                        Some(sample)
+                    } else {
+                        None
+                    };
+
+                    (broker.total_bytes, new_sample)
                 }; // mqtt_lock dropped here
+                if let Some(ref sample) = new_sample {
+                    println!(
+                        "Rate sample for {hostname}: {:.1} B/s, {} total bytes, history entry #{}",
+                        sample.bytes_per_second,
+                        sample.total_bytes,
+                        {
+                            let lock = mqtt_map.lock().unwrap();
+                            lock.get(&hostname).map_or(0, |b| b.rate_history.len())
+                        }
+                    );
+                    websocket::send_rate_sample_to_peers(
+                        peer_map,
+                        &hostname,
+                        sample,
+                    );
+                }
                 websocket::send_message_to_peers(
                     peer_map,
                     &hostname,
@@ -269,6 +310,7 @@ fn connect_to_mqtt_client_and_loop_forever(
     } else {
         println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
         let (client, connection) = mqtt::connect_to_mqtt_host(mqtt_host);
+        let now_ms = chrono::Utc::now().timestamp_millis();
         let broker = mqtt::MqttBroker {
             client,
             broker: mqtt_host.to_string(),
@@ -276,6 +318,9 @@ fn connect_to_mqtt_client_and_loop_forever(
             topics: HashMap::new(),
             total_bytes: 0,
             eviction_order: std::collections::VecDeque::new(),
+            rate_history: Vec::new(),
+            rate_bytes_accumulator: 0,
+            rate_last_sample_ms: now_ms,
         };
 
         mqtt_lock.insert(mqtt_host.to_string(), broker);

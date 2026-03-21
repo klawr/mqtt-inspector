@@ -89,6 +89,31 @@ pub fn send_message_to_peers(
     }
 }
 
+pub fn send_rate_sample_to_peers(
+    peer_map: &PeerMap,
+    source: &str,
+    sample: &mqtt::RateHistoryEntry,
+) {
+    let message = jsonrpc::JsonRpcNotification {
+        jsonrpc: "2.0",
+        method: "rate_history_sample",
+        params: serde_json::json!({
+            "source": source,
+            "sample": sample,
+        }),
+    };
+
+    let serialized = match serde_json::to_string(&message) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let mut peers = peer_map.lock().unwrap();
+    for (_addr, tx) in peers.iter_mut() {
+        let _ = tx.try_send(warp::filters::ws::Message::text(serialized.clone()));
+    }
+}
+
 pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
     // Serialize once outside the lock
     let message = jsonrpc::JsonRpcNotification {
@@ -208,6 +233,7 @@ pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
                     "connected": broker.connected,
                     "topics": {},
                     "total_bytes": broker.total_bytes,
+                    "rate_history": broker.rate_history,
                 })
             })
             .collect();
@@ -248,6 +274,7 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
                     "connected": broker.connected,
                     "topics": {},
                     "total_bytes": broker.total_bytes,
+                    "rate_history": broker.rate_history,
                 })
             })
             .collect();

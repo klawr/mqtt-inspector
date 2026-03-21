@@ -10,7 +10,9 @@ import {
 	processMQTTMessage,
 	type MQTTMessageParam,
 	processSettings,
-	processSyncComplete
+	processSyncComplete,
+	processRateHistorySample,
+	type RateHistorySampleParam
 } from './ws_msg_handling';
 import { AppState, type BrokerRepository } from './state';
 
@@ -57,7 +59,9 @@ test('processBrokerRemoval deletes broker from AppState', () => {
 			pipeline: [],
 			connected: false,
 			totalBytes: 0,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		}
 	};
 
@@ -76,7 +80,9 @@ test('processBrokerRemoval clears selectedBroker when deleting the selected one'
 			pipeline: [],
 			connected: false,
 			totalBytes: 0,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		}
 	};
 
@@ -95,7 +101,9 @@ test('processBrokerRemoval handles non-existing broker correctly', () => {
 			pipeline: [],
 			connected: false,
 			totalBytes: 0,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		}
 	};
 
@@ -113,7 +121,9 @@ test('processConnectionStatus updates connection status in AppState', () => {
 			selectedTopic: null,
 			pipeline: [],
 			totalBytes: 0,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		}
 	};
 
@@ -132,7 +142,9 @@ test('processConnectionStatus handles non-existing broker correctly', () => {
 			selectedTopic: null,
 			pipeline: [],
 			totalBytes: 0,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		}
 	};
 
@@ -230,7 +242,9 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			pipeline: [],
 			connected: true,
 			totalBytes: 10,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		},
 		broker2: {
 			topics: expectedBroker2Topics,
@@ -238,7 +252,9 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			pipeline: [],
 			connected: false,
 			totalBytes: 6,
-			backendTotalBytes: 0
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
 		}
 	});
 });
@@ -302,4 +318,105 @@ test('processSyncComplete sets syncComplete flag', () => {
 	expect(app.syncComplete).toBe(false);
 	const result = processSyncComplete(app);
 	expect(result.syncComplete).toBe(true);
+});
+
+test('processRateHistorySample appends entry and updates bytesPerSecond', () => {
+	const app = new AppState();
+	app.brokerRepository = {
+		'broker1:1883': {
+			topics: [],
+			selectedTopic: null,
+			pipeline: [],
+			connected: true,
+			totalBytes: 5000,
+			backendTotalBytes: 5000,
+			bytesPerSecond: 0,
+			rateHistory: []
+		}
+	};
+
+	const params: RateHistorySampleParam = {
+		source: 'broker1:1883',
+		sample: { timestamp: 1700000000000, bytes_per_second: 1234.5, total_bytes: 5000 }
+	};
+
+	processRateHistorySample(params, app);
+	const entry = app.brokerRepository['broker1:1883'];
+
+	expect(entry.rateHistory).toHaveLength(1);
+	expect(entry.rateHistory[0].bytesPerSecond).toBe(1234.5);
+	expect(entry.rateHistory[0].totalBytes).toBe(5000);
+	expect(entry.rateHistory[0].timestamp).toBe(1700000000000);
+	expect(entry.bytesPerSecond).toBe(1234.5);
+});
+
+test('processRateHistorySample creates new array reference', () => {
+	const app = new AppState();
+	app.brokerRepository = {
+		'broker1:1883': {
+			topics: [],
+			selectedTopic: null,
+			pipeline: [],
+			connected: true,
+			totalBytes: 0,
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
+		}
+	};
+
+	const oldRef = app.brokerRepository['broker1:1883'].rateHistory;
+	processRateHistorySample(
+		{ source: 'broker1:1883', sample: { timestamp: Date.now(), bytes_per_second: 100, total_bytes: 0 } },
+		app
+	);
+	const newRef = app.brokerRepository['broker1:1883'].rateHistory;
+
+	// Must be a different array reference for Svelte reactivity
+	expect(newRef).not.toBe(oldRef);
+	expect(newRef).toHaveLength(1);
+});
+
+test('processRateHistorySample ignores unknown broker', () => {
+	const app = new AppState();
+	app.brokerRepository = {};
+
+	const result = processRateHistorySample(
+		{ source: 'unknown:1883', sample: { timestamp: Date.now(), bytes_per_second: 100, total_bytes: 0 } },
+		app
+	);
+
+	expect(result).toBe(app);
+});
+
+test('processBrokers populates rateHistory from backend data', () => {
+	const brokerRepository: BrokerRepository = {};
+	const decoder = new MockTextDecoder();
+
+	const params: BrokerParam = [
+		{
+			broker: 'broker1:1883',
+			connected: true,
+			topics: {},
+			total_bytes: 5000,
+			rate_history: [
+				{ timestamp: 1700000000000, bytes_per_second: 100.5, total_bytes: 2000 },
+				{ timestamp: 1700000010000, bytes_per_second: 200.5, total_bytes: 5000 }
+			]
+		}
+	];
+
+	const result = processBrokers(params, decoder as unknown as TextDecoder, brokerRepository);
+
+	expect(result['broker1:1883'].rateHistory).toHaveLength(2);
+	expect(result['broker1:1883'].rateHistory[0]).toEqual({
+		timestamp: 1700000000000,
+		bytesPerSecond: 100.5,
+		totalBytes: 2000
+	});
+	expect(result['broker1:1883'].rateHistory[1]).toEqual({
+		timestamp: 1700000010000,
+		bytesPerSecond: 200.5,
+		totalBytes: 5000
+	});
 });
