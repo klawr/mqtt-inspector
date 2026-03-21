@@ -123,8 +123,7 @@ fn loop_forever(
             Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
-                let payload =
-                    bytes::Bytes::from(std::format!("Payload size limit exceeded: {p}."));
+                let payload = bytes::Bytes::from(std::format!("Payload size limit exceeded: {p}."));
                 println!("Payload size limit exceeded: {p}");
                 websocket::send_message_to_peers(
                     peer_map,
