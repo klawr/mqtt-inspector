@@ -21,6 +21,7 @@ THE SOFTWARE.
 
 <script lang="ts">
 	import type { Treebranch } from '$lib/state';
+	import { formatDuration } from '$lib/helper';
 	import {
 		Button,
 		Checkbox,
@@ -172,7 +173,7 @@ THE SOFTWARE.
 				>
 					{#each selectedTopic?.messages as message, index}
 						<ProgressStep
-							label={`${message.delta_t ? message.delta_t : 0} ms`}
+							label={formatDuration(message.delta_t ? message.delta_t : 0)}
 							on:click={() => selectMessage(index)}
 							title={curateDate(message.timestamp)}
 						/>
@@ -190,7 +191,7 @@ THE SOFTWARE.
 					>
 						{#each selectedTopic?.messages as compareMessage, compareIndex}
 							<ProgressStep
-								label={`${compareMessage.delta_t ? compareMessage.delta_t : 0} ms`}
+								label={formatDuration(compareMessage.delta_t ? compareMessage.delta_t : 0)}
 								on:click={() => selectMessageCompare(compareIndex)}
 								title={curateDate(compareMessage.timestamp)}
 							/>

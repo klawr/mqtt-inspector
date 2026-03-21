@@ -30,41 +30,52 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use futures_channel::mpsc::UnboundedSender;
+use futures_channel::mpsc::Sender;
 
-pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, UnboundedSender<warp::filters::ws::Message>>>>;
+/// Per-peer outbound channel capacity. Messages are dropped (not buffered
+/// indefinitely) when a slow WebSocket client falls this far behind.
+pub const PEER_CHANNEL_CAPACITY: usize = 1024;
+
+pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, Sender<warp::filters::ws::Message>>>>;
 
 pub fn send_message_to_peers(
     peer_map: &PeerMap,
     source: &str,
     topic: &str,
     payload: &bytes::Bytes,
+    total_bytes: usize,
+    timestamp: &str,
 ) {
+    // Serialize once outside the lock
+    let message = jsonrpc::JsonRpcNotification {
+        jsonrpc: "2.0",
+        method: "mqtt_message",
+        params: serde_json::json!({
+            "source": source,
+            "timestamp": timestamp,
+            "topic": topic,
+            "payload": payload.as_ref(),
+            "total_bytes": total_bytes,
+        }),
+    };
+
+    let serialized = match serde_json::to_string(&message) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
     let mut to_remove = Vec::new();
     {
-        let peers = peer_map.lock().unwrap();
-        for (addr, tx) in peers.iter() {
-            let message = jsonrpc::JsonRpcNotification {
-                jsonrpc: "2.0",
-                method: "mqtt_message",
-                params: serde_json::json!({
-                    "source": source,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                    "topic": topic,
-                    "payload": payload.to_vec(), // Convert Bytes to Vec<u8>
-                }),
-            };
-
-            if let Ok(serialized) = serde_json::to_string(&message) {
-                match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
-                    Ok(_) => { /* Implement Logging */ }
-                    Err(err) => {
-                        if tx.is_closed() {
-                            println!("Peer {} is closed. Removing from peer map.", addr);
-                            to_remove.push(*addr);
-                        }
-                        println!("Error sending message to {}: {:?}", addr, err);
+        let mut peers = peer_map.lock().unwrap();
+        for (addr, tx) in peers.iter_mut() {
+            match tx.try_send(warp::filters::ws::Message::text(serialized.clone())) {
+                Ok(_) => {}
+                Err(err) => {
+                    if err.is_disconnected() {
+                        println!("Peer {} is closed. Removing from peer map.", addr);
+                        to_remove.push(*addr);
                     }
+                    // If err.is_full() the client is slow — drop the message silently
                 }
             }
         }
@@ -79,28 +90,31 @@ pub fn send_message_to_peers(
 }
 
 pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
+    // Serialize once outside the lock
+    let message = jsonrpc::JsonRpcNotification {
+        jsonrpc: "2.0",
+        method: "mqtt_connection_status",
+        params: serde_json::json!({
+            "source": source,
+            "connected": status,
+        }),
+    };
+
+    let serialized = match serde_json::to_string(&message) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
     let mut to_remove = Vec::new();
     {
-        let peers = peer_map.lock().unwrap();
-        for (addr, tx) in peers.iter() {
-            let message = jsonrpc::JsonRpcNotification {
-                jsonrpc: "2.0",
-                method: "mqtt_connection_status",
-                params: serde_json::json!({
-                    "source": source,
-                    "connected": status,
-                }),
-            };
-
-            if let Ok(serialized) = serde_json::to_string(&message) {
-                match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
-                    Ok(_) => { /* Implement Logging */ }
-                    Err(err) => {
-                        if tx.is_closed() {
-                            println!("Peer {} is closed. Removing from peer map.", addr);
-                            to_remove.push(*addr);
-                        }
-                        println!("Error sending message to {}: {:?}", addr, err);
+        let mut peers = peer_map.lock().unwrap();
+        for (addr, tx) in peers.iter_mut() {
+            match tx.try_send(warp::filters::ws::Message::text(serialized.clone())) {
+                Ok(_) => {}
+                Err(err) => {
+                    if err.is_disconnected() {
+                        println!("Peer {} is closed. Removing from peer map.", addr);
+                        to_remove.push(*addr);
                     }
                 }
             }
@@ -115,13 +129,13 @@ pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: boo
     }
 }
 
-pub fn send_configs(sender: &UnboundedSender<warp::filters::ws::Message>, config_path: &str) {
+pub fn send_configs(sender: &mut Sender<warp::filters::ws::Message>, config_path: &str) {
     send_commands(sender, &format!("{}/commands", config_path));
     send_pipelines(sender, &format!("{}/pipelines", config_path));
 }
 
 pub fn send_commands(
-    sender: &UnboundedSender<warp::filters::ws::Message>,
+    sender: &mut Sender<warp::filters::ws::Message>,
     commands_path: &String,
 ) {
     if let Ok(commands) = std::fs::read_dir(commands_path) {
@@ -143,7 +157,7 @@ pub fn send_commands(
         };
 
         if let Ok(serialized) = serde_json::to_string(&jsonrpc) {
-            match sender.unbounded_send(warp::filters::ws::Message::text(serialized)) {
+            match sender.try_send(warp::filters::ws::Message::text(serialized)) {
                 Ok(_) => { /* Implement Logging */ }
                 Err(err) => println!("Error sending message: {:?}", err),
             }
@@ -156,7 +170,7 @@ pub fn send_commands(
 }
 
 pub fn send_pipelines(
-    sender: &UnboundedSender<warp::filters::ws::Message>,
+    sender: &mut Sender<warp::filters::ws::Message>,
     pipelines_path: &String,
 ) {
     if let Ok(pipelines) = std::fs::read_dir(pipelines_path) {
@@ -178,7 +192,7 @@ pub fn send_pipelines(
         };
 
         if let Ok(serialized) = serde_json::to_string(&jsonrpc) {
-            match sender.unbounded_send(warp::filters::ws::Message::text(serialized)) {
+            match sender.try_send(warp::filters::ws::Message::text(serialized)) {
                 Ok(_) => { /* Implement Logging */ }
                 Err(err) => println!("Error sending message: {:?}", err),
             }
@@ -189,85 +203,104 @@ pub fn send_pipelines(
 }
 
 pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
+    // Only send broker metadata, not the full message store
     let serialized = {
         let binding = mqtt_map.lock().unwrap();
-        let brokers: Vec<&mqtt::MqttBroker> = binding.iter().map(|broker| broker.1).collect();
+        let summaries: Vec<serde_json::Value> = binding
+            .values()
+            .map(|broker| {
+                serde_json::json!({
+                    "broker": broker.broker,
+                    "connected": broker.connected,
+                    "topics": {},
+                    "total_bytes": broker.total_bytes,
+                })
+            })
+            .collect();
         let message = jsonrpc::JsonRpcNotification {
             jsonrpc: "2.0",
             method: "mqtt_brokers",
-            params: serde_json::json!(brokers),
+            params: serde_json::json!(summaries),
         };
         serde_json::to_string(&message)
     };
 
     match serialized {
         Ok(serialized) => {
-            let peers = peer_map.lock().unwrap();
-            for (_addr, tx) in peers.iter() {
-                match tx.unbounded_send(warp::filters::ws::Message::text(serialized.clone())) {
-                    Ok(_) => { /* Implement Logging */ }
-                    Err(err) => println!("Error sending message: {:?}", err),
-                }
+            let mut peers = peer_map.lock().unwrap();
+            for (_addr, tx) in peers.iter_mut() {
+                let _ = tx.try_send(warp::filters::ws::Message::text(serialized.clone()));
             }
         }
         Err(_) => println!("Failed to serialize brokers."),
     }
 }
 
-pub fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: &mqtt::BrokerMap) {
+pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt::BrokerMap) {
     // First, send settings so the frontend knows the configured limits
     send_settings(tx);
 
-    let binding = mqtt_map.lock().unwrap();
+    // Clone data out of the lock so we don't hold mqtt_map during serialization.
+    // Under heavy load, holding the lock here blocks the MQTT receive loop long
+    // enough to trip the broker's keep-alive timeout.
+    let (broker_summaries, all_messages) = {
+        let binding = mqtt_map.lock().unwrap();
+
+        let summaries: Vec<serde_json::Value> = binding
+            .values()
+            .map(|broker| {
+                serde_json::json!({
+                    "broker": broker.broker,
+                    "connected": broker.connected,
+                    "topics": {},
+                    "total_bytes": broker.total_bytes,
+                })
+            })
+            .collect();
+
+        let mut msgs: Vec<(String, String, String, Vec<u8>)> = Vec::new();
+        for broker in binding.values() {
+            for (topic, messages) in &broker.topics {
+                for msg in messages {
+                    msgs.push((
+                        broker.broker.clone(),
+                        topic.clone(),
+                        msg.timestamp.clone(),
+                        msg.payload.clone(),
+                    ));
+                }
+            }
+        }
+        msgs.sort_by(|a, b| b.2.cmp(&a.2));
+
+        (summaries, msgs)
+    }; // mqtt_map lock released here
 
     // Phase 1: Send broker metadata (without full topic data) so UI renders immediately
-    let broker_summaries: Vec<serde_json::Value> = binding
-        .values()
-        .map(|broker| {
-            serde_json::json!({
-                "broker": broker.broker,
-                "connected": broker.connected,
-                "topics": {},
-                "total_bytes": broker.total_bytes,
-            })
-        })
-        .collect();
-
     let meta_msg = jsonrpc::JsonRpcNotification {
         jsonrpc: "2.0",
         method: "mqtt_brokers",
         params: serde_json::json!(broker_summaries),
     };
     if let Ok(serialized) = serde_json::to_string(&meta_msg) {
-        let _ = tx.unbounded_send(warp::filters::ws::Message::text(serialized));
+        let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
     }
 
     // Phase 2: Stream individual messages newest-first per broker
-    // Collect all (broker, topic, message) tuples and sort by timestamp descending
-    let mut all_messages: Vec<(&str, &str, &mqtt::MqttMessage)> = Vec::new();
-    for broker in binding.values() {
-        for (topic, messages) in &broker.topics {
-            for msg in messages {
-                all_messages.push((&broker.broker, topic, msg));
-            }
-        }
-    }
-    all_messages.sort_by(|a, b| b.2.timestamp.cmp(&a.2.timestamp));
-
-    for (source, topic, msg) in &all_messages {
+    for (source, topic, timestamp, payload) in &all_messages {
         let notification = jsonrpc::JsonRpcNotification {
             jsonrpc: "2.0",
             method: "mqtt_message",
             params: serde_json::json!({
                 "source": source,
-                "timestamp": msg.timestamp,
+                "timestamp": timestamp,
                 "topic": topic,
-                "payload": msg.payload,
+                "payload": payload,
             }),
         };
         if let Ok(serialized) = serde_json::to_string(&notification) {
-            if tx.unbounded_send(warp::filters::ws::Message::text(serialized)).is_err() {
-                break; // peer disconnected
+            if tx.try_send(warp::filters::ws::Message::text(serialized)).is_err() {
+                break; // peer disconnected or buffer full
             }
         }
     }
@@ -279,11 +312,11 @@ pub fn send_brokers(tx: &UnboundedSender<warp::filters::ws::Message>, mqtt_map: 
         params: serde_json::json!({}),
     };
     if let Ok(serialized) = serde_json::to_string(&done) {
-        let _ = tx.unbounded_send(warp::filters::ws::Message::text(serialized));
+        let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
     }
 }
 
-pub fn send_settings(tx: &UnboundedSender<warp::filters::ws::Message>) {
+pub fn send_settings(tx: &mut Sender<warp::filters::ws::Message>) {
     let message = jsonrpc::JsonRpcNotification {
         jsonrpc: "2.0",
         method: "settings",
@@ -293,7 +326,7 @@ pub fn send_settings(tx: &UnboundedSender<warp::filters::ws::Message>) {
         }),
     };
     if let Ok(serialized) = serde_json::to_string(&message) {
-        let _ = tx.unbounded_send(warp::filters::ws::Message::text(serialized));
+        let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
     }
 }
 
@@ -301,7 +334,7 @@ pub fn broadcast_pipelines(peer_map: &PeerMap, config_path: &str) {
     peer_map
         .lock()
         .unwrap()
-        .iter()
+        .iter_mut()
         .for_each(|(_addr, tx)| send_pipelines(tx, &format!("{}/pipelines", config_path)));
 }
 
@@ -309,14 +342,14 @@ pub fn broadcast_commands(peer_map: &PeerMap, config_path: &str) {
     peer_map
         .lock()
         .unwrap()
-        .iter()
+        .iter_mut()
         .for_each(|(_addr, tx)| send_commands(tx, &format!("{}/commands", config_path)));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_channel::mpsc::unbounded;
+    use futures_channel::mpsc::channel;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn make_addr(port: u16) -> SocketAddr {
@@ -336,10 +369,10 @@ mod tests {
         port: u16,
     ) -> (
         SocketAddr,
-        futures_channel::mpsc::UnboundedReceiver<warp::filters::ws::Message>,
+        futures_channel::mpsc::Receiver<warp::filters::ws::Message>,
     ) {
         let addr = make_addr(port);
-        let (tx, rx) = unbounded();
+        let (tx, rx) = channel(PEER_CHANNEL_CAPACITY);
         peer_map.lock().unwrap().insert(addr, tx);
         (addr, rx)
     }
@@ -351,7 +384,7 @@ mod tests {
         let peer_map = make_peer_map();
         let payload = bytes::Bytes::from("hello");
         // Should not panic with an empty peer map
-        send_message_to_peers(&peer_map, "broker:1883", "test/topic", &payload);
+        send_message_to_peers(&peer_map, "broker:1883", "test/topic", &payload, 0, "2024-01-01T00:00:00Z");
         assert_eq!(peer_map.lock().unwrap().len(), 0);
     }
 
@@ -361,7 +394,7 @@ mod tests {
         let (_addr, mut rx) = insert_peer(&peer_map, 9001);
         let payload = bytes::Bytes::from("hello");
 
-        send_message_to_peers(&peer_map, "broker:1883", "test/topic", &payload);
+        send_message_to_peers(&peer_map, "broker:1883", "test/topic", &payload, 0, "2024-01-01T00:00:00Z");
 
         let msg = rx.try_next().unwrap().unwrap();
         let text = msg.to_str().unwrap();
@@ -379,7 +412,7 @@ mod tests {
         let (_addr3, mut rx3) = insert_peer(&peer_map, 9003);
 
         let payload = bytes::Bytes::from("data");
-        send_message_to_peers(&peer_map, "host:1883", "topic", &payload);
+        send_message_to_peers(&peer_map, "host:1883", "topic", &payload, 0, "2024-01-01T00:00:00Z");
 
         for rx in [&mut rx1, &mut rx2, &mut rx3] {
             let msg = rx.try_next().unwrap().unwrap();
@@ -398,7 +431,7 @@ mod tests {
         drop(rx_closed);
 
         let payload = bytes::Bytes::from("test");
-        send_message_to_peers(&peer_map, "broker:1883", "topic", &payload);
+        send_message_to_peers(&peer_map, "broker:1883", "topic", &payload, 0, "2024-01-01T00:00:00Z");
 
         // Closed peer should be removed
         let peers = peer_map.lock().unwrap();
@@ -417,7 +450,7 @@ mod tests {
         let (_addr, mut rx) = insert_peer(&peer_map, 9001);
         let payload = bytes::Bytes::from(vec![0x48, 0x65, 0x6c, 0x6c, 0x6f]); // "Hello"
 
-        send_message_to_peers(&peer_map, "src", "t", &payload);
+        send_message_to_peers(&peer_map, "src", "t", &payload, 0, "2024-01-01T00:00:00Z");
 
         let msg = rx.try_next().unwrap().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
@@ -502,9 +535,9 @@ mod tests {
     #[test]
     fn test_send_brokers_empty_mqtt_map() {
         let mqtt_map = make_mqtt_map();
-        let (tx, mut rx) = unbounded();
+        let (mut tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
 
-        send_brokers(&tx, &mqtt_map);
+        send_brokers(&mut tx, &mqtt_map);
 
         // First message is now "settings"
         let settings_msg = rx.try_next().unwrap().unwrap();
@@ -544,9 +577,9 @@ mod tests {
 
     #[test]
     fn test_send_configs_sends_commands_and_pipelines() {
-        let (tx, mut rx) = unbounded();
+        let (mut tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
         // Use the test config with real command/pipeline files
-        send_configs(&tx, "../test/config_source");
+        send_configs(&mut tx, "../test/config_source");
 
         // Should receive at least 2 messages (commands + pipelines)
         let msg1 = rx.try_next().unwrap().unwrap();
@@ -581,7 +614,7 @@ mod tests {
         let handle1 = thread::spawn(move || {
             for _ in 0..100 {
                 let payload = bytes::Bytes::from("test");
-                send_message_to_peers(&peer_map_clone, "broker:1883", "topic", &payload);
+                send_message_to_peers(&peer_map_clone, "broker:1883", "topic", &payload, 0, "2024-01-01T00:00:00Z");
             }
         });
 
@@ -623,7 +656,7 @@ mod tests {
         let handle2 = thread::spawn(move || {
             for _ in 0..100 {
                 let payload = bytes::Bytes::from("data");
-                send_message_to_peers(&pm2, "broker:1883", "t", &payload);
+                send_message_to_peers(&pm2, "broker:1883", "t", &payload, 0, "2024-01-01T00:00:00Z");
             }
         });
 
@@ -642,7 +675,7 @@ mod tests {
         let handle1 = thread::spawn(move || {
             for port in 10000..10050 {
                 let addr = make_addr(port);
-                let (tx, _rx) = unbounded();
+                let (tx, _rx) = channel(PEER_CHANNEL_CAPACITY);
                 pm1.lock().unwrap().insert(addr, tx);
             }
         });

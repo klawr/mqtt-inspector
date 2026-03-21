@@ -29,6 +29,12 @@ THE SOFTWARE.
 	let activeId = broker.selectedTopic?.id || '';
 	let selectedIds: string[] = [];
 
+	// Keep activeId in sync and expand tree when selectedTopic changes externally (e.g. URL restore)
+	$: if (broker.selectedTopic?.id && broker.selectedTopic.id !== activeId) {
+		activeId = broker.selectedTopic.id;
+		treeview?.showNode(activeId);
+	}
+
 	function select(
 		detail: TreeNode & {
 			expanded: boolean;

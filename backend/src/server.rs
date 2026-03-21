@@ -32,7 +32,7 @@ use std::{
     sync::Mutex,
 };
 
-use futures_channel::mpsc::unbounded;
+use futures_channel::mpsc::channel;
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use warp::Filter;
 
@@ -58,12 +58,12 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
             let config_path = config_path.clone();
             ws.on_upgrade(move |socket| async move {
                 let (ws_tx, ws_rx) = socket.split();
-                let (tx, rx) = unbounded();
+                let (mut tx, rx) = channel(websocket::PEER_CHANNEL_CAPACITY);
 
                 if let Some(addr) = addr {
                     println!("Received new WebSocket connection from {}", addr);
-                    websocket::send_brokers(&tx, &mqtt_map);
-                    websocket::send_configs(&tx, &config_path);
+                    websocket::send_brokers(&mut tx, &mqtt_map);
+                    websocket::send_configs(&mut tx, &config_path);
 
                     peer_map.lock().unwrap().insert(addr, tx);
                 }

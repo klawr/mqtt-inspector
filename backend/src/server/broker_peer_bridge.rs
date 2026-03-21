@@ -36,12 +36,6 @@ fn loop_forever(
     let hostname = format!("{}:{}", ip, port);
 
     for notification in connection.iter() {
-        let mut mqtt_lock = mqtt_map.lock().unwrap();
-        // Check if broker is still in map:
-        if !mqtt_lock.contains_key(&hostname) {
-            println!("Broker {} not found in map. Exiting loop.", hostname);
-            break;
-        }
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
                 let payload = if p.payload.len() > mqtt::max_message_size() {
@@ -52,53 +46,61 @@ fn loop_forever(
                 } else {
                     p.payload
                 };
-                mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                let total_bytes = {
+                    let mut mqtt_lock = mqtt_map.lock().unwrap();
+                    let broker = match mqtt_lock.get_mut(&hostname) {
+                        Some(b) => b,
+                        None => {
+                            println!("Broker {} not found in map. Exiting loop.", hostname);
+                            break;
+                        }
+                    };
                     broker.connected = true;
                     let msg_bytes = payload.len();
                     let new_msg = mqtt::MqttMessage {
-                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        timestamp: timestamp.clone(),
                         payload: payload.to_vec(),
                     };
                     if let Some(topic_vec) = broker.topics.get_mut(&p.topic) {
-                        topic_vec.push(new_msg);
+                        topic_vec.push_back(new_msg);
                     } else {
-                        broker.topics.insert(p.topic.clone(), vec![new_msg]);
+                        let mut vd = std::collections::VecDeque::new();
+                        vd.push_back(new_msg);
+                        broker.topics.insert(p.topic.clone(), vd);
                     }
                     broker.total_bytes += msg_bytes;
+                    broker.eviction_order.push_back((p.topic.clone(), msg_bytes));
 
-                    // Evict oldest messages across all topics until under the byte cap
+                    // Evict oldest messages using the O(1) eviction queue
                     while broker.total_bytes > mqtt::max_broker_bytes() {
-                        // Find the topic with the oldest first message
-                        let oldest_topic = broker
-                            .topics
-                            .iter()
-                            .filter(|(_, msgs)| !msgs.is_empty())
-                            .min_by_key(|(_, msgs)| msgs[0].timestamp.clone())
-                            .map(|(k, _)| k.clone());
-
-                        match oldest_topic {
-                            Some(key) => {
-                                if let Some(topic_vec) = broker.topics.get_mut(&key) {
-                                    let removed = topic_vec.remove(0);
-                                    broker.total_bytes =
-                                        broker.total_bytes.saturating_sub(removed.payload.len());
-                                    if topic_vec.is_empty() {
-                                        broker.topics.remove(&key);
+                        match broker.eviction_order.pop_front() {
+                            Some((topic_key, payload_len)) => {
+                                if let Some(topic_vec) = broker.topics.get_mut(&topic_key) {
+                                    if !topic_vec.is_empty() {
+                                        topic_vec.pop_front();
+                                        broker.total_bytes =
+                                            broker.total_bytes.saturating_sub(payload_len);
+                                        if topic_vec.is_empty() {
+                                            broker.topics.remove(&topic_key);
+                                        }
                                     }
                                 }
                             }
                             None => break,
                         }
                     }
-                });
-                drop(mqtt_lock);
-                websocket::send_message_to_peers(peer_map, &hostname, &p.topic, &payload);
+                    broker.total_bytes
+                }; // mqtt_lock dropped here
+                websocket::send_message_to_peers(peer_map, &hostname, &p.topic, &payload, total_bytes, &timestamp);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
-                mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
-                    broker.connected = true;
-                });
-                drop(mqtt_lock);
+                {
+                    let mut mqtt_lock = mqtt_map.lock().unwrap();
+                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
+                        broker.connected = true;
+                    }
+                }
                 // Small update for the peers already connected
                 websocket::send_broker_status_to_peers(peer_map, &hostname, true);
                 println!("Connection event: {:?} for {:?}", a.code, hostname);
@@ -107,30 +109,37 @@ fn loop_forever(
                 println!("Disconnect event for {:?}", hostname);
             }
             Ok(_) => {
-                // maybe handle other events
+                // PingReq, PingResp, SubAck, etc. — no lock needed
             }
             Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
-                drop(mqtt_lock);
                 let payload =
                     bytes::Bytes::from(std::format!("Payload size limit exceeded: {}.", p));
                 println!("Payload size limit exceeded: {}", p);
-                websocket::send_message_to_peers(peer_map, &hostname, "$ERROR", &payload)
+                websocket::send_message_to_peers(peer_map, &hostname, "$ERROR", &payload, 0, &chrono::Utc::now().to_rfc3339())
             }
             Err(rumqttc::ConnectionError::MqttState(err)) => {
+                {
+                    let mut mqtt_lock = mqtt_map.lock().unwrap();
+                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
+                        broker.connected = false;
+                    }
+                }
                 println!(
-                    "Got ConnectionAborted event for {:?}. Error: {}. Stopping loop",
+                    "MqttState error for {:?}: {}. Will retry.",
                     hostname, err
                 );
-                break;
+                websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+                std::thread::sleep(std::time::Duration::from_secs(5));
             }
             Err(_err) => {
-                // Update the connection status of the broker
-                mqtt_lock.entry(hostname.clone()).and_modify(|broker| {
-                    broker.connected = false;
-                });
-                drop(mqtt_lock);
+                {
+                    let mut mqtt_lock = mqtt_map.lock().unwrap();
+                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
+                        broker.connected = false;
+                    }
+                }
                 // Small update for the peers already connected
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                 std::thread::sleep(std::time::Duration::from_secs(5));
@@ -257,6 +266,7 @@ fn connect_to_mqtt_client_and_loop_forever(
             connected: false,
             topics: HashMap::new(),
             total_bytes: 0,
+            eviction_order: std::collections::VecDeque::new(),
         };
 
         mqtt_lock.insert(mqtt_host.to_string(), broker);
@@ -280,7 +290,7 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
         mqtt_lock.remove(mqtt_host);
         drop(mqtt_lock);
         // TODO put this into websocket
-        peer_map.lock().unwrap().iter().for_each(|(_addr, tx)| {
+        peer_map.lock().unwrap().iter_mut().for_each(|(_addr, tx)| {
             let message = jsonrpc::JsonRpcNotification {
                 jsonrpc: "2.0",
                 method: "broker_removal",
@@ -288,9 +298,10 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
             };
 
             if let Ok(serialized) = serde_json::to_string(&message) {
-                match tx.unbounded_send(warp::filters::ws::Message::text(serialized)) {
+                match tx.try_send(warp::filters::ws::Message::text(serialized)) {
                     Ok(_) => { /* Implement Logging */ }
-                    Err(err) => println!("Error sending message: {:?}", err),
+                    Err(err) if err.is_disconnected() => println!("Error sending message: {:?}", err),
+                    Err(_) => { /* channel full, drop */ }
                 }
             } else {
                 println!("Failed to serialize brokers.");
@@ -304,7 +315,8 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_channel::mpsc::unbounded;
+    use futures_channel::mpsc::channel;
+    use websocket::PEER_CHANNEL_CAPACITY;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Mutex;
 
@@ -325,10 +337,10 @@ mod tests {
         port: u16,
     ) -> (
         SocketAddr,
-        futures_channel::mpsc::UnboundedReceiver<warp::filters::ws::Message>,
+        futures_channel::mpsc::Receiver<warp::filters::ws::Message>,
     ) {
         let addr = make_addr(port);
-        let (tx, rx) = unbounded();
+        let (tx, rx) = channel(PEER_CHANNEL_CAPACITY);
         peer_map.lock().unwrap().insert(addr, tx);
         (addr, rx)
     }

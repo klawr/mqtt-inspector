@@ -41,7 +41,7 @@ THE SOFTWARE.
 		TrashCan
 	} from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
-	import { findbranchwithid, getAllTopics, shouldFilterItem } from '$lib/helper';
+	import { findbranchwithid, formatDuration, getAllTopics, shouldFilterItem } from '$lib/helper';
 	import RemovePipeline from './dialogs/remove_pipeline.svelte';
 	import OverwritePipeline from './dialogs/overwrite_pipeline.svelte';
 	import CleanPipelineRows from './cleanPipelineRows.svelte';
@@ -204,7 +204,7 @@ THE SOFTWARE.
 						<StructuredListCell>{item.topic}</StructuredListCell>
 						<StructuredListCell>
 							<div style="text-align: end;">
-								{item.delta_t !== undefined ? `${item.delta_t} ms` : ' - '}
+								{item.delta_t !== undefined ? formatDuration(item.delta_t) : ' - '}
 							</div>
 						</StructuredListCell>
 						<StructuredListCell>
@@ -226,7 +226,7 @@ THE SOFTWARE.
 				<StructuredListCell head>Total:</StructuredListCell>
 				<StructuredListCell head>
 					<div style="text-align: end;">
-						{broker.pipeline.reduce((pre, cur) => pre + (cur.delta_t || 0), 0)} ms
+						{formatDuration(broker.pipeline.reduce((pre, cur) => pre + (cur.delta_t || 0), 0))}
 					</div>
 				</StructuredListCell>
 				<StructuredListCell head />

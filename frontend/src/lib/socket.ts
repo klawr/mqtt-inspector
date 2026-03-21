@@ -52,33 +52,30 @@ export function requestPipelineAddition(
 }
 
 export function requestMqttBrokerRemoval(hostname: string, socket: WebSocket) {
-	socket.send(`{
-        "jsonrpc": "2.0",
-        "method": "remove",
-        "params": {
-            "hostname": "${hostname}"
-        }
-    }`);
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'remove',
+		params: { hostname }
+	});
+	socket.send(message);
 }
 
 export function requestPipelineRemoval(pipeline: string, socket: WebSocket) {
-	socket.send(`{
-        "jsonrpc": "2.0",
-        "method": "remove_pipeline",
-        "params": {
-            "name": "${pipeline}"
-        }
-    }`);
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'remove_pipeline',
+		params: { name: pipeline }
+	});
+	socket.send(message);
 }
 
 export function requestMqttBrokerConnection(hostname: string, socket: WebSocket) {
-	socket.send(`{
-        "jsonrpc": "2.0",
-        "method": "connect",
-        "params": {
-            "hostname": "${hostname}"
-        }
-    }`);
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'connect',
+		params: { hostname }
+	});
+	socket.send(message);
 }
 
 export function requestPublishMqttMessage(
@@ -87,25 +84,11 @@ export function requestPublishMqttMessage(
 	payload: string,
 	socket: WebSocket
 ) {
-	// Hey if you find a better way, feel free to help me out
-	const sanitized_payload = payload
-		.replace(/\\/g, '\\\\')
-		.replace(/\//g, '\\/')
-		.replace(/"/g, '\\"')
-		.replace(/\n/g, '\\n')
-		.replace(/\r/g, '\\r')
-		.replace(/\t/g, '\\t')
-		.replace(/\f/g, '\\f');
-
-	const message = `{
-        "jsonrpc": "2.0",
-        "method": "publish",
-        "params": {
-            "host": "${host}",
-            "topic": "${topic}",
-            "payload": "${sanitized_payload}"
-        }
-    }`;
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'publish',
+		params: { host, topic, payload }
+	});
 
 	socket.send(message);
 }

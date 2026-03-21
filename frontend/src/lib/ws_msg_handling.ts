@@ -79,6 +79,7 @@ export type MQTTMessageParam = {
 	topic: string;
 	payload: ArrayBuffer;
 	timestamp: string;
+	total_bytes?: number;
 };
 
 export function processConfigs(commands: CommandParam[]) {
@@ -275,7 +276,7 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 	}
 	app.brokerRepository[message.source].connected = true;
 
-	if (app.selectedBroker === undefined) {
+	if (!app.selectedBroker) {
 		app.selectedBroker = message.source;
 	}
 
@@ -297,6 +298,9 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 	addToPipeline(message.source, message.topic, message.timestamp, app.brokerRepository);
 
 	app.brokerRepository[message.source].totalBytes += payload.length;
+	if (message.total_bytes !== undefined) {
+		app.brokerRepository[message.source].backendTotalBytes = message.total_bytes;
+	}
 	evictUntilUnderBudget(app.brokerRepository[message.source]);
 
 	return app;

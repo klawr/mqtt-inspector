@@ -21,7 +21,7 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -39,8 +39,11 @@ pub struct MqttBroker {
     pub client: rumqttc::Client,
     pub broker: String,
     pub connected: bool,
-    pub topics: HashMap<String, Vec<MqttMessage>>,
+    pub topics: HashMap<String, VecDeque<MqttMessage>>,
     pub total_bytes: usize,
+    /// Tracks insertion order for O(1) eviction: (topic_name, payload_len).
+    #[serde(skip)]
+    pub eviction_order: VecDeque<(String, usize)>,
 }
 
 fn env_usize_mb(name: &str, default_mb: usize) -> usize {
@@ -76,10 +79,10 @@ pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection
     let hostname = hostname_ip[0];
     let port = hostname_ip[1].parse::<u16>().unwrap();
     let mut mqttoptions = MqttOptions::new(id, hostname, port);
-    mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
+    mqttoptions.set_keep_alive(std::time::Duration::from_secs(30));
     mqttoptions.set_max_packet_size(1000000 * 1024, 1000000 * 1024);
 
-    let (mut client, connection) = rumqttc::Client::new(mqttoptions, 10);
+    let (mut client, connection) = rumqttc::Client::new(mqttoptions, 1000);
     client.subscribe("#", QoS::AtMostOnce).unwrap();
 
     (client, connection)
@@ -187,6 +190,7 @@ mod tests {
             connected: false,
             topics: HashMap::new(),
             total_bytes: 0,
+            eviction_order: VecDeque::new(),
         };
         mqtt_map
             .lock()
@@ -206,6 +210,7 @@ mod tests {
             connected: false,
             topics: HashMap::new(),
             total_bytes: 0,
+            eviction_order: VecDeque::new(),
         };
         mqtt_map
             .lock()

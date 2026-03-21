@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { findbranchwithid } from './helper';
+import { findbranchwithid, formatDuration } from './helper';
 import { type Treebranch } from './state';
 
 const tree: Treebranch[] = [
@@ -56,4 +56,31 @@ test('findbranchwithid finds branch with messages', () => {
 	expect(result?.id).toBe('1');
 	expect(result?.messages).toBeDefined();
 	expect(result?.messages.length).toBeGreaterThan(0);
+});
+
+test('formatDuration shows milliseconds up to 9999', () => {
+	expect(formatDuration(0)).toBe('0 ms');
+	expect(formatDuration(500)).toBe('500 ms');
+	expect(formatDuration(9999)).toBe('9999 ms');
+});
+
+test('formatDuration shows seconds from 10000ms up to 599s', () => {
+	expect(formatDuration(10000)).toBe('10.0 s');
+	expect(formatDuration(30000)).toBe('30.0 s');
+	expect(formatDuration(599000)).toBe('599.0 s');
+});
+
+test('formatDuration shows minutes from 600s up to 720min', () => {
+	expect(formatDuration(600 * 1000)).toBe('10.0 min');
+	expect(formatDuration(720 * 60 * 1000)).toBe('720.0 min');
+});
+
+test('formatDuration shows hours from 720min up to 48h', () => {
+	expect(formatDuration(721 * 60 * 1000)).toBe('12.0 h');
+	expect(formatDuration(48 * 60 * 60 * 1000)).toBe('48.0 h');
+});
+
+test('formatDuration shows days beyond 48h', () => {
+	expect(formatDuration(49 * 60 * 60 * 1000)).toBe('2.0 d');
+	expect(formatDuration(7 * 24 * 60 * 60 * 1000)).toBe('7.0 d');
 });

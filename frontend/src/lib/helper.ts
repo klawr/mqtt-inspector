@@ -57,3 +57,15 @@ export function shouldFilterItem(item: { text: string }, value: string) {
 	const text = item.text.toLowerCase();
 	return text.toLowerCase().includes(value);
 }
+
+export function formatDuration(ms: number): string {
+	if (ms < 10000) return `${ms} ms`;
+	const seconds = ms / 1000;
+	if (seconds < 600) return `${seconds.toFixed(1)} s`;
+	const minutes = seconds / 60;
+	if (minutes <= 720) return `${minutes.toFixed(1)} min`;
+	const hours = minutes / 60;
+	if (hours <= 48) return `${hours.toFixed(1)} h`;
+	const days = hours / 24;
+	return `${days.toFixed(1)} d`;
+}
