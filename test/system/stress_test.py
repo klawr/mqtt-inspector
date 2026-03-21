@@ -173,13 +173,13 @@ def _find_backend_binary() -> Path:
 
 
 def start_backend(
-    mqtt_port: int, max_broker_mb: int, http_port: int
+    mqtt_host: str, mqtt_port: int, max_broker_mb: int, http_port: int
 ) -> subprocess.Popen:
     config_dir = REPO_ROOT / "test" / "system" / "_config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     brokers_file = config_dir / "brokers.json"
-    brokers_file.write_text(json.dumps([f"127.0.0.1:{mqtt_port}"]))
+    brokers_file.write_text(json.dumps([f"{mqtt_host}:{mqtt_port}"]))
 
     binary = _find_backend_binary()
     wwwroot = REPO_ROOT / "wwwroot"
@@ -324,6 +324,10 @@ def parse_args():
     p.add_argument("--max-broker-mb", type=int, default=int(os.environ.get("STRESS_MAX_BROKER_MB", "128")))
     p.add_argument("--backend-rss-limit", type=int, default=int(os.environ.get("STRESS_RSS_LIMIT", "512")))
     p.add_argument("--skip-build", action="store_true", help="Skip cargo build")
+    p.add_argument("--mqtt-host", default=None,
+                   help="Use an existing MQTT broker instead of starting one via Docker")
+    p.add_argument("--mqtt-port", type=int, default=1883,
+                   help="Port of the external MQTT broker (default: 1883)")
     return p.parse_args()
 
 
@@ -353,12 +357,18 @@ def main():
     errors: list[str] = []
 
     try:
-        broker_proc = start_mosquitto(mqtt_port)
+        if args.mqtt_host:
+            mqtt_host = args.mqtt_host
+            mqtt_port = args.mqtt_port
+            print(f"[broker] Using external MQTT broker at {mqtt_host}:{mqtt_port}")
+        else:
+            broker_proc = start_mosquitto(mqtt_port)
+            mqtt_host = "127.0.0.1"
 
         if not args.skip_build:
             build_backend()
 
-        backend_proc = start_backend(mqtt_port, args.max_broker_mb, http_port)
+        backend_proc = start_backend(mqtt_host, mqtt_port, args.max_broker_mb, http_port)
 
         # ---- Start WebSocket clients ----
         ws_url = f"ws://127.0.0.1:{http_port}/ws"
@@ -384,7 +394,7 @@ def main():
         for i in range(args.publishers):
             t = threading.Thread(
                 target=publisher_thread,
-                args=(i, "127.0.0.1", mqtt_port, args.rate, args.msg_size, counter, errors),
+                args=(i, mqtt_host, mqtt_port, args.rate, args.msg_size, counter, errors),
                 daemon=True,
             )
             t.start()
