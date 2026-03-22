@@ -269,10 +269,31 @@ THE SOFTWARE.
 		return `${days}d ${hours % 24}h`;
 	}
 
-	function getHistoryReachMs(entry: import('$lib/state').BrokerRepositoryEntry): number | null {
-		const history = entry.rateHistory;
-		if (history.length === 0) return null;
-		return Date.now() - history[0].timestamp;
+	function getHistoryReachMs(entry: import('$lib/state').BrokerRepositoryEntry): number {
+		const rateHistory = entry.rateHistory;
+		if (rateHistory.length === 0) {
+			return 0;
+		}
+		const maxBrokerBytes = app.maxBrokerBytes;
+		let oldestAvailableDate: Date = new Date(rateHistory[0].timestamp);
+		if (rateHistory.length > 1) {
+			let cumulated = 0;
+			let thresholdIndex = -1;
+			for (let i = rateHistory.length - 1; i > 0; i--) {
+				const dt = (rateHistory[i].timestamp - rateHistory[i - 1].timestamp) / 1000;
+				const bytes = rateHistory[i].bytesPerSecond * dt;
+				cumulated += bytes;
+				if (cumulated >= maxBrokerBytes) {
+					thresholdIndex = i - 1;
+					break;
+				}
+			}
+			if (thresholdIndex !== -1) {
+				oldestAvailableDate = new Date(rateHistory[thresholdIndex].timestamp);
+			}
+		}
+
+		return Date.now() - oldestAvailableDate.getTime();
 	}
 
 	let theme: CarbonTheme;
