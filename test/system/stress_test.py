@@ -226,13 +226,20 @@ def publisher_thread(
         return
 
     interval = 1.0 / rate if rate > 0 else 1.0
-    payload = os.urandom(msg_size)
     topic_base = f"stress/pub{thread_id}"
     seq = 0
 
     try:
         while not _stop_event.is_set():
             topic = f"{topic_base}/{seq % 50}"  # rotate across 50 subtopics
+            # Variant: prefix with seq, fill rest with random bytes
+            # Randomize size around msg_size (±50%)
+            size_variation = int(msg_size * 0.5)
+            this_size = msg_size + random.randint(-size_variation, size_variation)
+            this_size = max(len(str(seq)) + 1, this_size)  # ensure room for seq
+            seq_bytes = str(seq).encode("utf-8")
+            rand_len = max(0, this_size - len(seq_bytes) - 1)
+            payload = seq_bytes + b":" + os.urandom(rand_len)
             client.publish(topic, payload, qos=0)
             seq += 1
             counter["sent"] += 1
