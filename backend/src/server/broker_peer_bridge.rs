@@ -339,25 +339,32 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
         mqtt_lock.remove(mqtt_host);
         drop(mqtt_lock);
         // TODO put this into websocket
-        peer_map.lock().unwrap().iter_mut().for_each(|(_addr, peer)| {
-            let message = jsonrpc::JsonRpcNotification {
-                jsonrpc: "2.0",
-                method: "broker_removal",
-                params: serde_json::json!(mqtt_host),
-            };
+        peer_map
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .for_each(|(_addr, peer)| {
+                let message = jsonrpc::JsonRpcNotification {
+                    jsonrpc: "2.0",
+                    method: "broker_removal",
+                    params: serde_json::json!(mqtt_host),
+                };
 
-            if let Ok(serialized) = serde_json::to_string(&message) {
-                match peer.tx.try_send(warp::filters::ws::Message::text(serialized)) {
-                    Ok(_) => { /* Implement Logging */ }
-                    Err(err) if err.is_disconnected() => {
-                        println!("Error sending message: {err:?}")
+                if let Ok(serialized) = serde_json::to_string(&message) {
+                    match peer
+                        .tx
+                        .try_send(warp::filters::ws::Message::text(serialized))
+                    {
+                        Ok(_) => { /* Implement Logging */ }
+                        Err(err) if err.is_disconnected() => {
+                            println!("Error sending message: {err:?}")
+                        }
+                        Err(_) => { /* channel full, drop */ }
                     }
-                    Err(_) => { /* channel full, drop */ }
+                } else {
+                    println!("Failed to serialize brokers.");
                 }
-            } else {
-                println!("Failed to serialize brokers.");
-            }
-        });
+            });
     } else {
         println!("No MQTT-Client for {mqtt_host} found.");
     }
