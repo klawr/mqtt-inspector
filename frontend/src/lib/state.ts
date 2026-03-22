@@ -76,6 +76,8 @@ export type BrokerRepositoryEntry = {
 	backendTotalBytes: number;
 	bytesPerSecond: number;
 	rateHistory: RateHistoryEntry[];
+	evictionOrder: { topic: string; payloadLen: number }[];
+	evictionHead: number;
 };
 
 export type BrokerRepository = {
