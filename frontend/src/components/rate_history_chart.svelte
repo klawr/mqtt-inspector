@@ -53,8 +53,24 @@
 			);
 			const storedUnit = getUnit(maxStoredVal);
 
-			const maxReachedEntry = rateHistory.find((e) => e.totalBytes >= maxBrokerBytes);
-			const maxReachedDate = maxReachedEntry ? new Date(maxReachedEntry.timestamp) : null;
+			// Calculate indicator using bytesPerSecond and timestamps if totalBytes is capped
+			let oldestAvailableDate: Date | null = null;
+			if (rateHistory.length > 1) {
+				let cumulated = 0;
+				let thresholdIndex = -1;
+				for (let i = rateHistory.length - 1; i > 0; i--) {
+					const dt = (rateHistory[i].timestamp - rateHistory[i - 1].timestamp) / 1000;
+					const bytes = rateHistory[i].bytesPerSecond * dt;
+					cumulated += bytes;
+					if (cumulated >= maxBrokerBytes) {
+						thresholdIndex = i - 1;
+						break;
+					}
+				}
+				if (thresholdIndex !== -1) {
+					oldestAvailableDate = new Date(rateHistory[thresholdIndex].timestamp);
+				}
+			}
 
 			rateChartData = rateHistory.map((entry) => ({
 				group: brokerName,
@@ -71,7 +87,21 @@
 			rateOptions = {
 				title: `Throughput (${rateUnit.label}/s)`,
 				axes: {
-					bottom: { mapsTo: 'date', scaleType: ScaleTypes.TIME },
+					bottom: {
+						mapsTo: 'date',
+						scaleType: ScaleTypes.TIME,
+						...(oldestAvailableDate
+							? {
+									thresholds: [
+										{
+											value: oldestAvailableDate,
+											label: 'Oldest available message',
+											fillColor: '#da1e28'
+										}
+									]
+								}
+							: {})
+					},
 					left: {
 						mapsTo: 'value',
 						title: `${rateUnit.label}/s`,
@@ -93,12 +123,12 @@
 					bottom: {
 						mapsTo: 'date',
 						scaleType: ScaleTypes.TIME,
-						...(maxReachedDate
+						...(oldestAvailableDate
 							? {
 									thresholds: [
 										{
-											value: maxReachedDate,
-											label: 'Max storage reached',
+											value: oldestAvailableDate,
+											label: 'Oldest available message',
 											fillColor: '#da1e28'
 										}
 									]
