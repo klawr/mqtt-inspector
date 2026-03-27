@@ -5,7 +5,8 @@ import {
 	requestMqttBrokerRemoval,
 	requestPipelineAddition,
 	requestPipelineRemoval,
-	requestPublishMqttMessage
+	requestPublishMqttMessage,
+	requestTopicSelection
 } from './socket';
 
 class MockWebSocket {
@@ -118,4 +119,49 @@ test('requestMqttBrokerConnection sends correct message to WebSocket', () => {
 
 	expect(socket.messages.length).toBe(1);
 	expect(socket.messages[0].replace(/\s/g, '')).toBe(expectedMessage.replace(/\s/g, ''));
+});
+
+test('requestTopicSelection sends broker and topic', () => {
+	const socket = new MockWebSocket();
+	requestTopicSelection('broker:1883', 'test/topic', socket as unknown as WebSocket);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.jsonrpc).toBe('2.0');
+	expect(parsed.method).toBe('select_topic');
+	expect(parsed.params.broker).toBe('broker:1883');
+	expect(parsed.params.topic).toBe('test/topic');
+});
+
+test('requestTopicSelection sends nulls to deselect', () => {
+	const socket = new MockWebSocket();
+	requestTopicSelection(null, null, socket as unknown as WebSocket);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.params.broker).toBeNull();
+	expect(parsed.params.topic).toBeNull();
+});
+
+test('requestTopicSelection with broker but null topic', () => {
+	const socket = new MockWebSocket();
+	requestTopicSelection('broker:1883', null, socket as unknown as WebSocket);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.params.broker).toBe('broker:1883');
+	expect(parsed.params.topic).toBeNull();
+});
+
+test('requestPublishMqttMessage handles special characters in payload', () => {
+	const socket = new MockWebSocket();
+	requestPublishMqttMessage('host', 'topic', '{"key":"value"}', socket as unknown as WebSocket);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.params.payload).toBe('{"key":"value"}');
+});
+
+test('requestMqttBrokerConnection with port number in hostname', () => {
+	const socket = new MockWebSocket();
+	requestMqttBrokerConnection('mqtt.example.com:8883', socket as unknown as WebSocket);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.params.hostname).toBe('mqtt.example.com:8883');
 });

@@ -867,4 +867,191 @@ mod tests {
 
         std::fs::remove_dir_all(&config_path).ok();
     }
+
+    // --- Missing/invalid params edge cases ---
+
+    #[test]
+    fn test_process_connect_missing_hostname() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        // "hostname" key is absent
+        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
+        // Should not panic, no broker added
+        assert_eq!(mqtt_map.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_process_connect_hostname_not_string() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let json = r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname": 42}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
+        assert_eq!(mqtt_map.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_process_remove_missing_hostname() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let json = r#"{"jsonrpc":"2.0","method":"remove","params":{}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
+        // No panic
+    }
+
+    #[test]
+    fn test_process_publish_missing_host() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let json = r#"{"jsonrpc":"2.0","method":"publish","params":{"topic":"t","payload":"p"}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
+    }
+
+    #[test]
+    fn test_process_publish_missing_topic() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let json =
+            r#"{"jsonrpc":"2.0","method":"publish","params":{"host":"h:1883","payload":"p"}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
+    }
+
+    #[test]
+    fn test_process_publish_missing_payload() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let json = r#"{"jsonrpc":"2.0","method":"publish","params":{"host":"h:1883","topic":"t"}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
+    }
+
+    #[test]
+    fn test_process_remove_command_missing_name() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        let commands_path = format!("{}/commands", config_path);
+        std::fs::create_dir_all(&commands_path).ok();
+
+        let json = r#"{"jsonrpc":"2.0","method":"remove_command","params":{}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
+        // Should not panic
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_process_remove_pipeline_missing_name() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        let pipelines_path = format!("{}/pipelines", config_path);
+        std::fs::create_dir_all(&pipelines_path).ok();
+
+        let json = r#"{"jsonrpc":"2.0","method":"remove_pipeline","params":{}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_process_select_topic_updates_peer() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        let json = r#"{"jsonrpc":"2.0","method":"select_topic","params":{"broker":"b:1883","topic":"t/1"}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            Some(addr),
+            &make_notification_buf(),
+        );
+
+        // Should receive topic_messages_clear + topic_sync_complete
+        let msg1 = rx.try_recv().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg1.to_str().unwrap()).unwrap();
+        assert_eq!(parsed["method"], "topic_messages_clear");
+
+        // Peer should have selection set
+        let peers = peer_map.lock().unwrap();
+        let peer = peers.get(&addr).unwrap();
+        assert_eq!(peer.selected_broker.as_deref(), Some("b:1883"));
+        assert_eq!(peer.selected_topic.as_deref(), Some("t/1"));
+    }
+
+    #[test]
+    fn test_process_select_topic_without_addr_is_noop() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+
+        // addr = None → should skip select_topic entirely
+        let json = r#"{"jsonrpc":"2.0","method":"select_topic","params":{"broker":"b:1883","topic":"t/1"}}"#;
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
+        // No panic, no state change
+    }
 }

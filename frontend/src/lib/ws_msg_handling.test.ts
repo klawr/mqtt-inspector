@@ -14,9 +14,20 @@ import {
 	processSettings,
 	processSyncComplete,
 	processRateHistorySample,
-	type RateHistorySampleParam
+	type RateHistorySampleParam,
+	processTopicSummaries,
+	type TopicSummariesParam,
+	processMQTTMessageMeta,
+	type MQTTMessageMetaParam,
+	processMessagesEvicted,
+	type MessagesEvictedParam,
+	processMQTTMessageMetaBatch,
+	processMessagesEvictedBatch,
+	processTopicMessagesClear,
+	processPipelines,
+	type PipelineParam
 } from './ws_msg_handling';
-import { AppState, type BrokerRepository } from './state';
+import { AppState, type BrokerRepository, type Treebranch } from './state';
 
 test('processConfigs processes commands correctly', () => {
 	const commands: CommandParam[] = [
@@ -446,4 +457,598 @@ test('processBrokers populates rateHistory from backend data', () => {
 		bytesPerSecond: 200.5,
 		totalBytes: 5000
 	});
+});
+
+// ─── parseMqttWebSocketMessage edge cases ────────────────────────────
+
+test('parseMqttWebSocketMessage returns null for buffer < 4 bytes', () => {
+	const buffer = new Uint8Array([1, 2]).buffer;
+	expect(parseMqttWebSocketMessage(buffer)).toBeNull();
+});
+
+test('parseMqttWebSocketMessage returns null for empty buffer', () => {
+	const buffer = new ArrayBuffer(0);
+	expect(parseMqttWebSocketMessage(buffer)).toBeNull();
+});
+
+test('parseMqttWebSocketMessage returns null when headerLength exceeds buffer', () => {
+	const buffer = new Uint8Array(8);
+	// Set header length to 9999 (way bigger than remaining bytes)
+	new DataView(buffer.buffer).setUint32(0, 9999, false);
+	expect(parseMqttWebSocketMessage(buffer.buffer)).toBeNull();
+});
+
+test('parseMqttWebSocketMessage returns null for non-mqtt_message method', () => {
+	const header = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'other_method',
+		params: { source: 'b' }
+	});
+	const headerBytes = new TextEncoder().encode(header);
+	const buffer = new Uint8Array(4 + headerBytes.length);
+	new DataView(buffer.buffer).setUint32(0, headerBytes.length, false);
+	buffer.set(headerBytes, 4);
+
+	expect(parseMqttWebSocketMessage(buffer.buffer)).toBeNull();
+});
+
+test('parseMqttWebSocketMessage handles empty payload (header only)', () => {
+	const header = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'mqtt_message',
+		params: { source: 'b', topic: 't', timestamp: 'ts' }
+	});
+	const headerBytes = new TextEncoder().encode(header);
+	const buffer = new Uint8Array(4 + headerBytes.length);
+	new DataView(buffer.buffer).setUint32(0, headerBytes.length, false);
+	buffer.set(headerBytes, 4);
+
+	const parsed = parseMqttWebSocketMessage(buffer.buffer);
+	expect(parsed).not.toBeNull();
+	expect(parsed?.params.source).toBe('b');
+	expect(new Uint8Array(parsed?.params.payload).length).toBe(0);
+});
+
+test('parseMqttWebSocketMessage handles large payload', () => {
+	const header = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'mqtt_message',
+		params: { source: 'b', topic: 't', timestamp: 'ts' }
+	});
+	const headerBytes = new TextEncoder().encode(header);
+	const payload = new Uint8Array(10000).fill(0xAB);
+	const buffer = new Uint8Array(4 + headerBytes.length + payload.length);
+	new DataView(buffer.buffer).setUint32(0, headerBytes.length, false);
+	buffer.set(headerBytes, 4);
+	buffer.set(payload, 4 + headerBytes.length);
+
+	const parsed = parseMqttWebSocketMessage(buffer.buffer);
+	expect(parsed).not.toBeNull();
+	const resultPayload = new Uint8Array(parsed?.params.payload);
+	expect(resultPayload.length).toBe(10000);
+	expect(resultPayload[0]).toBe(0xAB);
+});
+
+// ─── processTopicSummaries ───────────────────────────────────────────
+
+test('processTopicSummaries builds topic tree with correct counts', () => {
+	const br: BrokerRepository = {};
+	const params: TopicSummariesParam = {
+		source: 'broker:1883',
+		topics: {
+			'a/b': { count: 5, latest_timestamp: 'ts1' },
+			'a/c': { count: 3, latest_timestamp: 'ts2' }
+		}
+	};
+
+	const result = processTopicSummaries(params, br);
+	const entry = result['broker:1883'];
+	expect(entry).toBeDefined();
+	// Root node "a" should have 8 messages total (5 + 3)
+	expect(entry.topics[0].original_text).toBe('a');
+	expect(entry.topics[0].number_of_messages).toBe(8);
+	// Two children: "b" with 5, "c" with 3
+	expect(entry.topics[0].children).toHaveLength(2);
+	const childB = entry.topics[0].children!.find((c) => c.original_text === 'b');
+	const childC = entry.topics[0].children!.find((c) => c.original_text === 'c');
+	expect(childB?.number_of_messages).toBe(5);
+	expect(childC?.number_of_messages).toBe(3);
+});
+
+test('processTopicSummaries handles single topic with count 1', () => {
+	const br: BrokerRepository = {};
+	const params: TopicSummariesParam = {
+		source: 'b:1883',
+		topics: { 'test': { count: 1, latest_timestamp: 'ts' } }
+	};
+
+	const result = processTopicSummaries(params, br);
+	expect(result['b:1883'].topics[0].number_of_messages).toBe(1);
+	expect(result['b:1883'].topics[0].original_text).toBe('test');
+});
+
+test('processTopicSummaries handles deep topic path', () => {
+	const br: BrokerRepository = {};
+	const params: TopicSummariesParam = {
+		source: 'b:1883',
+		topics: { 'a/b/c/d/e': { count: 10, latest_timestamp: 'ts' } }
+	};
+
+	const result = processTopicSummaries(params, br);
+	// Walk down the tree
+	let branch = result['b:1883'].topics[0];
+	expect(branch.original_text).toBe('a');
+	expect(branch.number_of_messages).toBe(10);
+	branch = branch.children![0];
+	expect(branch.original_text).toBe('b');
+	branch = branch.children![0];
+	expect(branch.original_text).toBe('c');
+	branch = branch.children![0];
+	expect(branch.original_text).toBe('d');
+	branch = branch.children![0];
+	expect(branch.original_text).toBe('e');
+	expect(branch.number_of_messages).toBe(10);
+	expect(branch.children).toBeUndefined();
+});
+
+test('processTopicSummaries with empty topics is noop', () => {
+	const br: BrokerRepository = {};
+	const params: TopicSummariesParam = {
+		source: 'b:1883',
+		topics: {}
+	};
+
+	const result = processTopicSummaries(params, br);
+	expect(result['b:1883'].topics).toHaveLength(0);
+});
+
+test('processTopicSummaries creates broker entry if missing', () => {
+	const br: BrokerRepository = {};
+	const params: TopicSummariesParam = {
+		source: 'new:1883',
+		topics: { 'x': { count: 1, latest_timestamp: 'ts' } }
+	};
+
+	const result = processTopicSummaries(params, br);
+	expect(result['new:1883']).toBeDefined();
+	expect(result['new:1883'].connected).toBe(true);
+});
+
+// ─── processMQTTMessageMeta ──────────────────────────────────────────
+
+test('processMQTTMessageMeta creates broker entry and updates tree', () => {
+	const app = new AppState();
+	const meta: MQTTMessageMetaParam = {
+		source: 'new_broker:1883',
+		topic: 'test/topic',
+		timestamp: '2024-01-01T00:00:00Z',
+		payload_size: 100,
+		total_bytes: 100,
+		topic_message_count: 1
+	};
+
+	const result = processMQTTMessageMeta(meta, app);
+
+	expect(result.brokerRepository['new_broker:1883']).toBeDefined();
+	expect(result.selectedBroker).toBe('new_broker:1883');
+	const topics = result.brokerRepository['new_broker:1883'].topics;
+	expect(topics[0].original_text).toBe('test');
+	expect(topics[0].number_of_messages).toBe(1);
+});
+
+test('processMQTTMessageMeta increments existing topic count', () => {
+	const app = new AppState();
+	app.brokerRepository['b:1883'] = {
+		topics: [],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 0,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
+
+	const meta: MQTTMessageMetaParam = {
+		source: 'b:1883',
+		topic: 'test',
+		timestamp: '2024-01-01T00:00:00Z',
+		payload_size: 50,
+		total_bytes: 50,
+		topic_message_count: 1
+	};
+
+	processMQTTMessageMeta(meta, app);
+	processMQTTMessageMeta({ ...meta, total_bytes: 100, topic_message_count: 2 }, app);
+
+	expect(app.brokerRepository['b:1883'].topics[0].number_of_messages).toBe(2);
+});
+
+test('processMQTTMessageMeta does not overwrite selectedBroker', () => {
+	const app = new AppState();
+	app.selectedBroker = 'existing:1883';
+	app.brokerRepository['existing:1883'] = {
+		topics: [],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 0,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
+
+	const meta: MQTTMessageMetaParam = {
+		source: 'other:1883',
+		topic: 'test',
+		timestamp: 'ts',
+		payload_size: 10,
+		total_bytes: 10,
+		topic_message_count: 1
+	};
+
+	processMQTTMessageMeta(meta, app);
+	expect(app.selectedBroker).toBe('existing:1883');
+});
+
+test('processMQTTMessageMeta updates backendTotalBytes', () => {
+	const app = new AppState();
+	const meta: MQTTMessageMetaParam = {
+		source: 'b:1883',
+		topic: 't',
+		timestamp: 'ts',
+		payload_size: 500,
+		total_bytes: 12345,
+		topic_message_count: 1
+	};
+
+	processMQTTMessageMeta(meta, app);
+	expect(app.brokerRepository['b:1883'].backendTotalBytes).toBe(12345);
+});
+
+// ─── processMessagesEvicted ──────────────────────────────────────────
+
+function makeBrokerWithTopicTree(): AppState {
+	const app = new AppState();
+	app.brokerRepository['b:1883'] = {
+		topics: [
+			{
+				id: 'a',
+				text: 'a (10 messages, 1 subtopic with 5 messages)',
+				original_text: 'a',
+				number_of_messages: 10,
+				messages: [],
+				children: [
+					{
+						id: 'a/b',
+						text: 'b (5 messages)',
+						original_text: 'b',
+						number_of_messages: 5,
+						messages: [
+							{ timestamp: 'ts1', text: 'msg1' },
+							{ timestamp: 'ts2', text: 'msg2' },
+							{ timestamp: 'ts3', text: 'msg3' },
+							{ timestamp: 'ts4', text: 'msg4' },
+							{ timestamp: 'ts5', text: 'msg5' }
+						]
+					}
+				]
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 1000,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
+	return app;
+}
+
+test('processMessagesEvicted decrements topic tree counts', () => {
+	const app = makeBrokerWithTopicTree();
+	const params: MessagesEvictedParam = {
+		source: 'b:1883',
+		topic: 'a/b',
+		count: 2,
+		topic_message_count: 3
+	};
+
+	processMessagesEvicted(params, app);
+
+	const root = app.brokerRepository['b:1883'].topics[0];
+	expect(root.number_of_messages).toBe(8); // 10 - 2
+	const child = root.children![0];
+	expect(child.number_of_messages).toBe(3); // 5 - 2
+});
+
+test('processMessagesEvicted removes oldest messages from selected topic', () => {
+	const app = makeBrokerWithTopicTree();
+	const childBranch = app.brokerRepository['b:1883'].topics[0].children![0];
+	app.brokerRepository['b:1883'].selectedTopic = childBranch;
+
+	const params: MessagesEvictedParam = {
+		source: 'b:1883',
+		topic: 'a/b',
+		count: 2,
+		topic_message_count: 3
+	};
+
+	processMessagesEvicted(params, app);
+
+	// Should remove 2 oldest (from the end since they're newest-first)
+	expect(childBranch.messages).toHaveLength(3);
+	expect(childBranch.messages[0].text).toBe('msg1');
+	expect(childBranch.messages[2].text).toBe('msg3');
+});
+
+test('processMessagesEvicted handles non-existing broker', () => {
+	const app = new AppState();
+	const params: MessagesEvictedParam = {
+		source: 'missing:1883',
+		topic: 'a/b',
+		count: 5,
+		topic_message_count: 0
+	};
+
+	// Should not throw
+	const result = processMessagesEvicted(params, app);
+	expect(result).toBe(app);
+});
+
+test('processMessagesEvicted handles non-existing topic in tree', () => {
+	const app = makeBrokerWithTopicTree();
+	const params: MessagesEvictedParam = {
+		source: 'b:1883',
+		topic: 'nonexistent/topic',
+		count: 3,
+		topic_message_count: 0
+	};
+
+	// Should not throw, tree unchanged
+	processMessagesEvicted(params, app);
+	expect(app.brokerRepository['b:1883'].topics[0].number_of_messages).toBe(10);
+});
+
+test('processMessagesEvicted removes leaf node when count reaches 0', () => {
+	const app = makeBrokerWithTopicTree();
+	const params: MessagesEvictedParam = {
+		source: 'b:1883',
+		topic: 'a/b',
+		count: 5,
+		topic_message_count: 0
+	};
+
+	processMessagesEvicted(params, app);
+
+	const root = app.brokerRepository['b:1883'].topics[0];
+	expect(root.number_of_messages).toBe(5); // 10 - 5
+	// "b" had 5 messages, all evicted → should be removed
+	expect(root.children).toHaveLength(0);
+});
+
+// ─── processMQTTMessageMetaBatch / processMessagesEvictedBatch ───────
+
+test('processMQTTMessageMetaBatch processes all items', () => {
+	const app = new AppState();
+	const metas: MQTTMessageMetaParam[] = [
+		{ source: 'b:1883', topic: 't1', timestamp: 'ts1', payload_size: 10, total_bytes: 10, topic_message_count: 1 },
+		{ source: 'b:1883', topic: 't2', timestamp: 'ts2', payload_size: 20, total_bytes: 30, topic_message_count: 1 },
+		{ source: 'b:1883', topic: 't3', timestamp: 'ts3', payload_size: 30, total_bytes: 60, topic_message_count: 1 }
+	];
+
+	processMQTTMessageMetaBatch(metas, app);
+
+	expect(app.brokerRepository['b:1883'].topics).toHaveLength(3);
+	expect(app.brokerRepository['b:1883'].backendTotalBytes).toBe(60);
+});
+
+test('processMessagesEvictedBatch processes all items', () => {
+	const app = makeBrokerWithTopicTree();
+	const items: MessagesEvictedParam[] = [
+		{ source: 'b:1883', topic: 'a/b', count: 1, topic_message_count: 4 },
+		{ source: 'b:1883', topic: 'a/b', count: 1, topic_message_count: 3 }
+	];
+
+	processMessagesEvictedBatch(items, app);
+
+	const root = app.brokerRepository['b:1883'].topics[0];
+	expect(root.number_of_messages).toBe(8); // 10 - 1 - 1
+});
+
+// ─── processTopicMessagesClear ───────────────────────────────────────
+
+test('processTopicMessagesClear clears messages from selected topic', () => {
+	const app = makeBrokerWithTopicTree();
+	app.selectedBroker = 'b:1883';
+	const childBranch = app.brokerRepository['b:1883'].topics[0].children![0];
+	app.brokerRepository['b:1883'].selectedTopic = childBranch;
+
+	processTopicMessagesClear(app);
+
+	expect(childBranch.messages).toHaveLength(0);
+});
+
+test('processTopicMessagesClear is noop without selected broker', () => {
+	const app = new AppState();
+	// Should not throw
+	processTopicMessagesClear(app);
+});
+
+test('processTopicMessagesClear is noop without selected topic', () => {
+	const app = new AppState();
+	app.selectedBroker = 'b:1883';
+	app.brokerRepository['b:1883'] = {
+		topics: [],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 0,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
+
+	processTopicMessagesClear(app);
+	// No throw
+});
+
+// ─── processPipelines ────────────────────────────────────────────────
+
+test('processPipelines transforms pipeline params', () => {
+	const params: PipelineParam[] = [
+		{ id: '1', name: 'pipe1', pipeline: [{ topic: 't1' }, { topic: 't2' }] },
+		{ id: '2', name: 'pipe2', pipeline: [{ topic: 't3' }] }
+	];
+
+	const result = processPipelines(params);
+
+	expect(result).toHaveLength(2);
+	expect(result[0].text).toBe('pipe1');
+	expect(result[0].pipeline).toHaveLength(2);
+	expect(result[1].text).toBe('pipe2');
+});
+
+test('processPipelines handles empty array', () => {
+	const result = processPipelines([]);
+	expect(result).toEqual([]);
+});
+
+// ─── processMQTTMessage edge cases ───────────────────────────────────
+
+test('processMQTTMessage does nothing for non-existing broker', () => {
+	const app = new AppState();
+	const decoder = new MockTextDecoder();
+	const message: MQTTMessageParam = {
+		source: 'missing:1883',
+		topic: 'test',
+		payload: new TextEncoder().encode('data').buffer,
+		timestamp: 'ts'
+	};
+
+	const result = processMQTTMessage(message, decoder as unknown as TextDecoder, app);
+	expect(result).toBe(app);
+});
+
+test('processMQTTMessage does nothing for non-existing topic in tree', () => {
+	const app = new AppState();
+	const decoder = new MockTextDecoder();
+	app.brokerRepository['b:1883'] = {
+		topics: [
+			{
+				id: 'other',
+				text: 'other',
+				original_text: 'other',
+				number_of_messages: 1,
+				messages: [],
+				children: undefined
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 0,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
+
+	const message: MQTTMessageParam = {
+		source: 'b:1883',
+		topic: 'nonexistent',
+		payload: new TextEncoder().encode('data').buffer,
+		timestamp: 'ts'
+	};
+
+	processMQTTMessage(message, decoder as unknown as TextDecoder, app);
+	// "other" topic should be untouched
+	expect(app.brokerRepository['b:1883'].topics[0].messages).toHaveLength(0);
+});
+
+test('processMQTTMessage calculates delta_t between messages', () => {
+	const app = new AppState();
+	const decoder = new MockTextDecoder();
+	app.brokerRepository['b:1883'] = {
+		topics: [
+			{
+				id: 'test',
+				text: 'test (2 messages)',
+				original_text: 'test',
+				number_of_messages: 2,
+				messages: [],
+				children: undefined
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 0,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
+
+	const msg1: MQTTMessageParam = {
+		source: 'b:1883',
+		topic: 'test',
+		payload: new TextEncoder().encode('first').buffer,
+		timestamp: '2024-01-01T00:00:00.000Z'
+	};
+	const msg2: MQTTMessageParam = {
+		source: 'b:1883',
+		topic: 'test',
+		payload: new TextEncoder().encode('second').buffer,
+		timestamp: '2024-01-01T00:00:05.000Z'
+	};
+
+	processMQTTMessage(msg1, decoder as unknown as TextDecoder, app);
+	processMQTTMessage(msg2, decoder as unknown as TextDecoder, app);
+
+	const messages = app.brokerRepository['b:1883'].topics[0].messages;
+	expect(messages).toHaveLength(2);
+	// Newest first
+	expect(messages[0].text).toBe('second');
+	expect(messages[1].text).toBe('first');
+	// delta_t should be set on the previous newest (now second)
+	expect(messages[1].delta_t).toBe(5000);
+});
+
+// ─── processSettings edge cases ──────────────────────────────────────
+
+test('processSettings stores max_broker_bytes correctly', () => {
+	const app = new AppState();
+	const result = processSettings({ max_broker_bytes: 512 * 1024 * 1024, max_message_size: 1024 * 1024 }, app);
+	expect(result.maxBrokerBytes).toBe(512 * 1024 * 1024);
+});
+
+// ─── processBrokers edge cases ───────────────────────────────────────
+
+test('processBrokers updates existing broker status', () => {
+	const br: BrokerRepository = {
+		'b:1883': {
+			topics: [
+				{
+					id: 'existing',
+					text: 'existing',
+					original_text: 'existing',
+					number_of_messages: 5,
+					messages: [],
+					children: undefined
+				}
+			],
+			selectedTopic: null,
+			pipeline: [],
+			connected: false,
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: []
+		}
+	};
+	const decoder = new MockTextDecoder();
+	const params: BrokerParam = [
+		{ broker: 'b:1883', connected: true, topics: {}, total_bytes: 999 }
+	];
+
+	const result = processBrokers(params, decoder as unknown as TextDecoder, br);
+
+	expect(result['b:1883'].connected).toBe(true);
+	expect(result['b:1883'].backendTotalBytes).toBe(999);
+	// Topics should be preserved (not overwritten)
+	expect(result['b:1883'].topics).toHaveLength(1);
+	expect(result['b:1883'].topics[0].original_text).toBe('existing');
 });

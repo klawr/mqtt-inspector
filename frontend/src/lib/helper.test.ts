@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { findbranchwithid, formatDuration } from './helper';
+import { findbranchwithid, formatDuration, getAllTopics, shouldFilterItem } from './helper';
 import { type Treebranch } from './state';
 
 const tree: Treebranch[] = [
@@ -83,4 +83,110 @@ test('formatDuration shows hours from 720min up to 48h', () => {
 test('formatDuration shows days beyond 48h', () => {
 	expect(formatDuration(49 * 60 * 60 * 1000)).toBe('2.0 d');
 	expect(formatDuration(7 * 24 * 60 * 60 * 1000)).toBe('7.0 d');
+});
+
+// ─── getAllTopics ─────────────────────────────────────────────────────
+
+test('getAllTopics flattens tree to array', () => {
+	const result = getAllTopics(tree);
+	// tree has: Root, Child 1, Child 2 = 3 nodes
+	expect(result).toHaveLength(3);
+	expect(result.map((t) => t.id)).toEqual(['1', '2', '3']);
+});
+
+test('getAllTopics returns empty for empty tree', () => {
+	const result = getAllTopics([]);
+	expect(result).toHaveLength(0);
+});
+
+test('getAllTopics handles deeply nested tree', () => {
+	const deep: Treebranch[] = [
+		{
+			id: 'a',
+			text: 'a',
+			original_text: 'a',
+			number_of_messages: 1,
+			messages: [],
+			children: [
+				{
+					id: 'a/b',
+					text: 'b',
+					original_text: 'b',
+					number_of_messages: 1,
+					messages: [],
+					children: [
+						{
+							id: 'a/b/c',
+							text: 'c',
+							original_text: 'c',
+							number_of_messages: 1,
+							messages: [],
+							children: [
+								{
+									id: 'a/b/c/d',
+									text: 'd',
+									original_text: 'd',
+									number_of_messages: 1,
+									messages: []
+								}
+							]
+						}
+					]
+				}
+			]
+		}
+	];
+
+	const result = getAllTopics(deep);
+	expect(result).toHaveLength(4);
+	expect(result.map((t) => t.id)).toEqual(['a', 'a/b', 'a/b/c', 'a/b/c/d']);
+});
+
+test('getAllTopics handles nodes without children', () => {
+	const flat: Treebranch[] = [
+		{ id: 'x', text: 'x', original_text: 'x', number_of_messages: 0, messages: [] },
+		{ id: 'y', text: 'y', original_text: 'y', number_of_messages: 0, messages: [] }
+	];
+
+	const result = getAllTopics(flat);
+	expect(result).toHaveLength(2);
+});
+
+// ─── shouldFilterItem ────────────────────────────────────────────────
+
+test('shouldFilterItem returns true for empty filter value', () => {
+	expect(shouldFilterItem({ text: 'anything' }, '')).toBe(true);
+});
+
+test('shouldFilterItem matches case-insensitively for lowercase input', () => {
+	expect(shouldFilterItem({ text: 'Hello WORLD' }, 'hello')).toBe(true);
+	expect(shouldFilterItem({ text: 'Hello WORLD' }, 'world')).toBe(true);
+});
+
+test('shouldFilterItem does not match uppercase filter value', () => {
+	// value is not lowercased by the implementation
+	expect(shouldFilterItem({ text: 'Hello WORLD' }, 'HELLO')).toBe(false);
+});
+
+test('shouldFilterItem matches partial text', () => {
+	expect(shouldFilterItem({ text: 'test/topic/data' }, 'topic')).toBe(true);
+});
+
+test('shouldFilterItem returns false for non-matching text', () => {
+	expect(shouldFilterItem({ text: 'sensor/temperature' }, 'humidity')).toBe(false);
+});
+
+test('shouldFilterItem handles special characters in text', () => {
+	expect(shouldFilterItem({ text: '$SYS/broker/load' }, '$sys')).toBe(true);
+	expect(shouldFilterItem({ text: 'topic.with.dots' }, '.with.')).toBe(true);
+});
+
+// ─── findbranchwithid edge cases ─────────────────────────────────────
+
+test('findbranchwithid returns undefined for empty tree', () => {
+	expect(findbranchwithid('1', [])).toBeUndefined();
+});
+
+test('findbranchwithid returns undefined for undefined tree', () => {
+	expect(findbranchwithid('1', undefined)).toBeUndefined();
 });

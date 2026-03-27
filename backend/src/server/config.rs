@@ -410,4 +410,95 @@ mod tests {
         assert!(std::fs::metadata(pipeline_path).is_err());
         assert!(true);
     }
+
+    // --- Tests for missing/invalid "name" parameter ---
+
+    #[test]
+    fn test_remove_from_commands_missing_name_param() {
+        let resource = TestResource::new();
+        // No "name" key at all — should not panic, just early return
+        let params = serde_json::json!({});
+        remove_from_commands(&resource.commands_path, params);
+        // Verify no files were deleted (first_command still exists)
+        let command_path = std::format!("{}/first_command.json", resource.commands_path);
+        assert!(std::path::Path::new(&command_path).exists());
+    }
+
+    #[test]
+    fn test_remove_from_commands_wrong_key() {
+        let resource = TestResource::new();
+        // Has a key, but not "name"
+        let params = serde_json::json!({"wrong_key": "first_command"});
+        remove_from_commands(&resource.commands_path, params);
+        let command_path = std::format!("{}/first_command.json", resource.commands_path);
+        assert!(std::path::Path::new(&command_path).exists());
+    }
+
+    #[test]
+    fn test_remove_from_commands_name_is_not_string() {
+        let resource = TestResource::new();
+        // "name" exists but is a number, not a string
+        let params = serde_json::json!({"name": 42});
+        remove_from_commands(&resource.commands_path, params);
+        let command_path = std::format!("{}/first_command.json", resource.commands_path);
+        assert!(std::path::Path::new(&command_path).exists());
+    }
+
+    #[test]
+    fn test_remove_from_commands_name_is_null() {
+        let resource = TestResource::new();
+        let params = serde_json::json!({"name": null});
+        remove_from_commands(&resource.commands_path, params);
+        let command_path = std::format!("{}/first_command.json", resource.commands_path);
+        assert!(std::path::Path::new(&command_path).exists());
+    }
+
+    #[test]
+    fn test_remove_from_pipelines_missing_name_param() {
+        let resource = TestResource::new();
+        let params = serde_json::json!({});
+        remove_from_pipelines(&resource.pipelines_path, params);
+        let pipeline_path = std::format!("{}/empty_pipeline.json", resource.pipelines_path);
+        assert!(std::path::Path::new(&pipeline_path).exists());
+    }
+
+    #[test]
+    fn test_remove_from_pipelines_wrong_key() {
+        let resource = TestResource::new();
+        let params = serde_json::json!({"wrong_key": "empty_pipeline"});
+        remove_from_pipelines(&resource.pipelines_path, params);
+        let pipeline_path = std::format!("{}/empty_pipeline.json", resource.pipelines_path);
+        assert!(std::path::Path::new(&pipeline_path).exists());
+    }
+
+    #[test]
+    fn test_remove_from_pipelines_name_is_not_string() {
+        let resource = TestResource::new();
+        let params = serde_json::json!({"name": 123});
+        remove_from_pipelines(&resource.pipelines_path, params);
+        let pipeline_path = std::format!("{}/empty_pipeline.json", resource.pipelines_path);
+        assert!(std::path::Path::new(&pipeline_path).exists());
+    }
+
+    #[test]
+    fn test_remove_from_pipelines_name_is_null() {
+        let resource = TestResource::new();
+        let params = serde_json::json!({"name": null});
+        remove_from_pipelines(&resource.pipelines_path, params);
+        let pipeline_path = std::format!("{}/empty_pipeline.json", resource.pipelines_path);
+        assert!(std::path::Path::new(&pipeline_path).exists());
+    }
+
+    // --- add_to_commands edge case: invalid JSON params ---
+
+    #[test]
+    fn test_add_to_commands_invalid_params() {
+        let resource = TestResource::new();
+        // Missing required fields — should not panic
+        let params = serde_json::json!({"name": "broken"});
+        add_to_commands(&resource.commands_path, params);
+        // File should not be created since deserialization fails
+        let command_path = std::format!("{}/broken.json", resource.commands_path);
+        assert!(!std::path::Path::new(&command_path).exists());
+    }
 }
