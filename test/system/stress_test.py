@@ -4,13 +4,20 @@ System / stress test for mqtt-inspector.
 
 Starts a Mosquitto broker (Docker), the backend binary, WebSocket clients,
 and MQTT publishers, then monitors stability for a configurable duration.
+
+Architecture-aware: tests the meta-only + on-demand loading protocol:
+  - All WS peers receive text JSON batches (mqtt_message_meta_batch,
+    messages_evicted_batch) for every incoming MQTT message.
+  - Only peers that have sent a select_topic request receive binary
+    mqtt_message frames for the selected topic.
+  - The test verifies both paths: observer clients (meta only) and
+    subscriber clients (meta + binary payloads via select_topic).
 """
 
 import argparse
 import json
 import os
 import random
-import signal
 import socket
 import subprocess
 import sys
@@ -210,6 +217,7 @@ def publisher_thread(
     port: int,
     rate: float,
     msg_size: int,
+    num_topics: int,
     counter: dict,
     errors: list,
 ):
@@ -225,14 +233,12 @@ def publisher_thread(
         errors.append(f"pub-{thread_id}: connect failed: {exc}")
         return
 
-    interval = 1.0 / rate if rate > 0 else 1.0
     topic_base = f"stress/pub{thread_id}"
     seq = 0
 
     try:
         while not _stop_event.is_set():
-            topic = f"{topic_base}/{seq % 50}"  # rotate across 50 subtopics
-            # Variant: prefix with seq, fill rest with random bytes
+            topic = f"{topic_base}/{seq % num_topics}"
             # Randomize size around msg_size (±50%)
             size_variation = int(msg_size * 0.5)
             this_size = msg_size + random.randint(-size_variation, size_variation)
@@ -257,30 +263,241 @@ def publisher_thread(
 # ---------------------------------------------------------------------------
 
 
-def ws_client_thread(client_id: int, url: str, counter: dict, errors: list):
-    """Connect to the backend WebSocket and count received messages."""
+def _parse_text_message(data: str, counter: dict):
+    """Parse a text JSON-RPC notification and update counters."""
+    try:
+        msg = json.loads(data)
+    except json.JSONDecodeError:
+        return
+
+    method = msg.get("method", "")
+    params = msg.get("params", {})
+
+    if method == "mqtt_message_meta_batch":
+        if isinstance(params, list):
+            counter["meta_entries"] += len(params)
+        counter["meta_batches"] += 1
+    elif method == "messages_evicted_batch":
+        if isinstance(params, list):
+            counter["eviction_entries"] += len(params)
+        counter["eviction_batches"] += 1
+    elif method == "topic_messages_clear":
+        counter["topic_clears"] += 1
+    elif method == "topic_sync_complete":
+        counter["topic_syncs"] += 1
+    elif method == "sync_complete":
+        counter["initial_syncs"] += 1
+
+
+def ws_observer_thread(client_id: int, url: str, counter: dict, errors: list):
+    """
+    Observer client: connects but never sends select_topic.
+    Should receive meta batches + eviction batches (text) but NO binary frames.
+    """
     try:
         ws = websocket.WebSocket()
         ws.settimeout(5)
         ws.connect(url)
     except Exception as exc:
-        errors.append(f"ws-{client_id}: connect failed: {exc}")
+        errors.append(f"ws-observer-{client_id}: connect failed: {exc}")
         return
 
     try:
         while not _stop_event.is_set():
             try:
-                data = ws.recv()
-                if data:
-                    if isinstance(data, bytes):
-                        counter["ws_recv"] += 1
+                opcode, data = ws.recv_data()
+                if not data:
+                    continue
+                if opcode == websocket.ABNF.OPCODE_TEXT:
+                    _parse_text_message(data.decode("utf-8", errors="replace"), counter)
+                elif opcode == websocket.ABNF.OPCODE_BINARY:
+                    # Observers should NOT receive binary frames (no topic selected)
+                    counter["observer_unexpected_binary"] += 1
             except websocket.WebSocketTimeoutException:
                 continue
             except websocket.WebSocketConnectionClosedException:
-                errors.append(f"ws-{client_id}: connection closed unexpectedly")
+                errors.append(f"ws-observer-{client_id}: connection closed unexpectedly")
                 break
             except Exception as exc:
-                errors.append(f"ws-{client_id}: {exc}")
+                errors.append(f"ws-observer-{client_id}: {exc}")
+                break
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def ws_subscriber_thread(
+    client_id: int,
+    url: str,
+    mqtt_broker: str,
+    counter: dict,
+    errors: list,
+):
+    """
+    Subscriber client: waits for initial sync, then sends select_topic to
+    subscribe to a topic. Should receive meta batches (text) AND binary
+    mqtt_message frames for the selected topic.
+    """
+    try:
+        ws = websocket.WebSocket()
+        ws.settimeout(5)
+        ws.connect(url)
+    except Exception as exc:
+        errors.append(f"ws-subscriber-{client_id}: connect failed: {exc}")
+        return
+
+    got_initial_sync = threading.Event()
+    selected = False
+    # Pick a topic to subscribe to — use publisher 0's first subtopic
+    subscribe_topic = "stress/pub0/0"
+
+    try:
+        while not _stop_event.is_set():
+            try:
+                opcode, data = ws.recv_data()
+                if not data:
+                    continue
+
+                if opcode == websocket.ABNF.OPCODE_TEXT:
+                    text = data.decode("utf-8", errors="replace")
+                    _parse_text_message(text, counter)
+
+                    # After initial sync, send select_topic
+                    if not selected:
+                        try:
+                            msg = json.loads(text)
+                        except json.JSONDecodeError:
+                            continue
+                        if msg.get("method") == "sync_complete":
+                            got_initial_sync.set()
+                        # Wait until we've seen at least one meta batch
+                        # (meaning there's data to subscribe to)
+                        if (
+                            got_initial_sync.is_set()
+                            and counter["meta_entries"] > 0
+                        ):
+                            select_msg = json.dumps(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "method": "select_topic",
+                                    "params": {
+                                        "broker": mqtt_broker,
+                                        "topic": subscribe_topic,
+                                    },
+                                }
+                            )
+                            ws.send(select_msg)
+                            selected = True
+                            counter["select_topic_sent"] += 1
+                            print(
+                                f"\n  [ws-subscriber-{client_id}] "
+                                f"select_topic → {mqtt_broker} / {subscribe_topic}"
+                            )
+
+                elif opcode == websocket.ABNF.OPCODE_BINARY:
+                    counter["binary_frames"] += 1
+
+            except websocket.WebSocketTimeoutException:
+                continue
+            except websocket.WebSocketConnectionClosedException:
+                errors.append(
+                    f"ws-subscriber-{client_id}: connection closed unexpectedly"
+                )
+                break
+            except Exception as exc:
+                errors.append(f"ws-subscriber-{client_id}: {exc}")
+                break
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def ws_topic_switch_thread(
+    client_id: int,
+    url: str,
+    mqtt_broker: str,
+    num_publishers: int,
+    num_topics: int,
+    counter: dict,
+    errors: list,
+):
+    """
+    Topic-switching client: periodically changes the selected topic to exercise
+    the select_topic → clear → resync → stream cycle.
+    """
+    try:
+        ws = websocket.WebSocket()
+        ws.settimeout(5)
+        ws.connect(url)
+    except Exception as exc:
+        errors.append(f"ws-switcher-{client_id}: connect failed: {exc}")
+        return
+
+    got_initial_sync = threading.Event()
+    last_switch = 0.0
+    switch_interval = 5.0  # switch topic every 5 seconds
+    topic_index = 0
+
+    try:
+        while not _stop_event.is_set():
+            try:
+                opcode, data = ws.recv_data()
+                if not data:
+                    continue
+
+                if opcode == websocket.ABNF.OPCODE_TEXT:
+                    text = data.decode("utf-8", errors="replace")
+                    _parse_text_message(text, counter)
+
+                    try:
+                        msg = json.loads(text)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if msg.get("method") == "sync_complete":
+                        got_initial_sync.set()
+
+                    # Periodically switch topics
+                    now = time.monotonic()
+                    if (
+                        got_initial_sync.is_set()
+                        and counter["meta_entries"] > 0
+                        and now - last_switch >= switch_interval
+                    ):
+                        # Rotate across different publishers' subtopics
+                        topic = f"stress/pub{topic_index % num_publishers}/{topic_index % num_topics}"
+                        select_msg = json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "select_topic",
+                                "params": {
+                                    "broker": mqtt_broker,
+                                    "topic": topic,
+                                },
+                            }
+                        )
+                        ws.send(select_msg)
+                        counter["select_topic_sent"] += 1
+                        counter["topic_switches"] += 1
+                        topic_index += 1
+                        last_switch = now
+
+                elif opcode == websocket.ABNF.OPCODE_BINARY:
+                    counter["binary_frames"] += 1
+
+            except websocket.WebSocketTimeoutException:
+                continue
+            except websocket.WebSocketConnectionClosedException:
+                errors.append(
+                    f"ws-switcher-{client_id}: connection closed unexpectedly"
+                )
+                break
+            except Exception as exc:
+                errors.append(f"ws-switcher-{client_id}: {exc}")
                 break
     finally:
         try:
@@ -336,7 +553,33 @@ def parse_args():
                    help="Use an existing MQTT broker instead of starting one via Docker")
     p.add_argument("--mqtt-port", type=int, default=1883,
                    help="Port of the external MQTT broker (default: 1883)")
+    p.add_argument("--topics", type=int, default=int(os.environ.get("STRESS_TOPICS", "50")),
+                   help="Number of subtopics per publisher (default: 50)")
     return p.parse_args()
+
+
+def make_counter() -> dict:
+    """Create a fresh counter dict with all expected keys."""
+    return {
+        # Publishers
+        "sent": 0,
+        # Meta / eviction batches (all clients see these)
+        "meta_batches": 0,
+        "meta_entries": 0,
+        "eviction_batches": 0,
+        "eviction_entries": 0,
+        # Binary frames (only subscriber/switcher clients)
+        "binary_frames": 0,
+        # Observer got unexpected binary (should stay 0)
+        "observer_unexpected_binary": 0,
+        # select_topic protocol
+        "select_topic_sent": 0,
+        "topic_clears": 0,
+        "topic_syncs": 0,
+        "topic_switches": 0,
+        # Initial connection
+        "initial_syncs": 0,
+    }
 
 
 def main():
@@ -345,25 +588,23 @@ def main():
     mqtt_port = find_free_port()
     http_port = 3030  # backend currently hardcodes this
 
-    print("=" * 60)
-    print("  mqtt-inspector  SYSTEM / STRESS TEST")
-    print("=" * 60)
+    print("=" * 70)
+    print("  mqtt-inspector  SYSTEM / STRESS TEST  (meta-only architecture)")
+    print("=" * 70)
     print(f"  Duration        : {args.duration}s")
     print(f"  Publishers      : {args.publishers}  @ {args.rate} msg/s each")
+    print(f"  Topics/publisher: {args.topics}  (total: {args.publishers * args.topics})")
     print(f"  Message size    : {args.msg_size} bytes")
-    print(f"  WS clients      : {args.ws_clients}")
+    print(f"  WS clients      : {args.ws_clients}  (observer / subscriber / switcher)")
     print(f"  Max broker MB   : {args.max_broker_mb}")
     print(f"  RSS limit       : {args.backend_rss_limit} MB")
-    print("=" * 60)
+    print("=" * 70)
 
     # ---- Start infrastructure ----
     broker_proc = None
     backend_proc = None
     threads = []
-    counter = {
-        "sent": 0,
-        "ws_recv": 0,
-    }
+    counter = make_counter()
     rss_samples: list[float] = []
     errors: list[str] = []
 
@@ -381,16 +622,44 @@ def main():
 
         backend_proc = start_backend(mqtt_host, mqtt_port, args.max_broker_mb, http_port)
 
-        # ---- Start WebSocket clients ----
         ws_url = f"ws://127.0.0.1:{http_port}/ws"
-        for i in range(args.ws_clients):
+        mqtt_broker = f"{mqtt_host}:{mqtt_port}"
+
+        # ---- Allocate WS client roles ----
+        # At least 1 observer + 1 subscriber + 1 switcher; rest are observers
+        n_ws = max(args.ws_clients, 3)
+        n_observers = max(1, n_ws - 2)
+
+        # Observers: receive only meta batches (no select_topic)
+        for i in range(n_observers):
             t = threading.Thread(
-                target=ws_client_thread,
+                target=ws_observer_thread,
                 args=(i, ws_url, counter, errors),
                 daemon=True,
             )
             t.start()
             threads.append(t)
+        print(f"[ws] {n_observers} observer client(s) connected")
+
+        # Subscriber: sends select_topic once for a fixed topic
+        t = threading.Thread(
+            target=ws_subscriber_thread,
+            args=(0, ws_url, mqtt_broker, counter, errors),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+        print("[ws] 1 subscriber client connected")
+
+        # Switcher: periodically rotates select_topic
+        t = threading.Thread(
+            target=ws_topic_switch_thread,
+            args=(0, ws_url, mqtt_broker, args.publishers, args.topics, counter, errors),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+        print("[ws] 1 topic-switcher client connected")
 
         # ---- Start monitor ----
         mon = threading.Thread(
@@ -405,7 +674,7 @@ def main():
         for i in range(args.publishers):
             t = threading.Thread(
                 target=publisher_thread,
-                args=(i, mqtt_host, mqtt_port, args.rate, args.msg_size, counter, errors),
+                args=(i, mqtt_host, mqtt_port, args.rate, args.msg_size, args.topics, counter, errors),
                 daemon=True,
             )
             t.start()
@@ -419,9 +688,11 @@ def main():
             print(
                 f"\r  [{elapsed:6.0f}s / {args.duration}s]  "
                 f"sent={counter['sent']:>8,}  "
-                f"ws_recv={counter['ws_recv']:>8,}  "
+                f"metas={counter['meta_entries']:>8,}  "
+                f"binary={counter['binary_frames']:>6,}  "
+                f"evict={counter['eviction_entries']:>6,}  "
                 f"RSS={rss_now:6.1f} MB  "
-                f"errors={len(errors)}",
+                f"err={len(errors)}",
                 end="",
                 flush=True,
             )
@@ -466,44 +737,105 @@ def main():
         if broker_proc:
             stop_mosquitto(broker_proc)
 
-    # ---- Throughput sanity check ----
-    # Each WS client should receive roughly as many messages as were sent
-    # (minus the startup window).  If ws_recv is far below expectations the
-    # backend likely stalled.  We use a deliberately generous threshold: at
-    # least 10% of sent messages should have been forwarded to WS clients.
+    # ---- Validation checks ----
     sent = counter["sent"]
-    ws_recv = counter["ws_recv"]
-    if sent > 0 and args.ws_clients > 0:
-        recv_per_client = ws_recv / args.ws_clients
-        ratio = recv_per_client / sent
-        if ratio < 0.10:
+
+    # 1. Meta throughput: every WS client receives meta batches with entries
+    #    roughly proportional to messages sent.  With batching, we expect
+    #    fewer batches but the total entry count should be significant.
+    if sent > 0:
+        meta_ratio = counter["meta_entries"] / sent
+        if meta_ratio < 0.05:
             errors.append(
-                f"WS throughput too low: each client received ~{recv_per_client:,.0f} "
-                f"of {sent:,} sent ({ratio:.1%}).  Backend may have stalled."
+                f"Meta throughput too low: {counter['meta_entries']:,} meta entries "
+                f"for {sent:,} sent ({meta_ratio:.1%}).  Backend may have stalled."
             )
+
+    # 2. Observer clients must NOT receive binary frames (meta-only architecture)
+    if counter["observer_unexpected_binary"] > 0:
+        errors.append(
+            f"Observer clients received {counter['observer_unexpected_binary']} "
+            f"unexpected binary frames — meta-only isolation is broken."
+        )
+
+    # 3. Subscriber/switcher clients SHOULD receive some binary frames
+    #    (they sent select_topic, so should get payloads for selected topic)
+    if sent > 100 and counter["select_topic_sent"] > 0 and counter["binary_frames"] == 0:
+        errors.append(
+            "Subscriber/switcher sent select_topic but received 0 binary frames. "
+            "On-demand loading may be broken."
+        )
+
+    # 4. select_topic flow: every select_topic should produce a clear + sync
+    if counter["select_topic_sent"] > 0:
+        if counter["topic_clears"] == 0:
+            errors.append(
+                f"Sent {counter['select_topic_sent']} select_topic requests "
+                f"but received 0 topic_messages_clear responses."
+            )
+        if counter["topic_syncs"] == 0:
+            errors.append(
+                f"Sent {counter['select_topic_sent']} select_topic requests "
+                f"but received 0 topic_sync_complete responses."
+            )
+
+    # 5. Topic-switcher should have switched multiple times
+    expected_switches = max(1, (args.duration // 5) - 1)
+    if counter["topic_switches"] < expected_switches // 2:
+        errors.append(
+            f"Topic-switcher only switched {counter['topic_switches']} times "
+            f"(expected ~{expected_switches}).  May indicate stalled client."
+        )
+
+    # 6. Initial sync: all clients should have received initial sync
+    total_ws_clients = max(args.ws_clients, 3)
+    if counter["initial_syncs"] < total_ws_clients:
+        errors.append(
+            f"Only {counter['initial_syncs']} of {total_ws_clients} clients "
+            f"received initial sync_complete."
+        )
+
+    # 7. Evictions: with a small max_broker_mb, evictions should occur
+    #    under sustained load (unless message rate is very low)
+    if sent > 1000 and counter["eviction_entries"] == 0:
+        # Only a warning, not an error — depends on timing and broker size
+        print(
+            f"  [note] No evictions observed with {sent:,} messages sent "
+            f"and {args.max_broker_mb} MB cap. This may be normal for low volume."
+        )
 
     # ---- Report ----
     print()
-    print("=" * 60)
+    print("=" * 70)
     print("  RESULTS")
-    print("=" * 60)
-    print(f"  Messages sent        : {sent:,}")
-    print(f"  WS messages received : {ws_recv:,}")
+    print("=" * 70)
+    print(f"  Messages sent           : {sent:,}")
+    print(f"  Meta batches / entries  : {counter['meta_batches']:,} / {counter['meta_entries']:,}")
+    print(f"  Eviction batches/entries: {counter['eviction_batches']:,} / {counter['eviction_entries']:,}")
+    print(f"  Binary frames received  : {counter['binary_frames']:,}")
+    print(f"  Observer stray binary   : {counter['observer_unexpected_binary']:,}")
+    print(f"  select_topic sent       : {counter['select_topic_sent']:,}")
+    print(f"  topic_messages_clear    : {counter['topic_clears']:,}")
+    print(f"  topic_sync_complete     : {counter['topic_syncs']:,}")
+    print(f"  Topic switches          : {counter['topic_switches']:,}")
+    print(f"  Initial syncs           : {counter['initial_syncs']:,}")
     if rss_samples:
-        print(f"  RSS (min / avg / max): {min(rss_samples):.1f} / "
-              f"{sum(rss_samples)/len(rss_samples):.1f} / {max(rss_samples):.1f} MB")
-    print(f"  Errors               : {len(errors)}")
+        print(
+            f"  RSS (min / avg / max)   : {min(rss_samples):.1f} / "
+            f"{sum(rss_samples)/len(rss_samples):.1f} / {max(rss_samples):.1f} MB"
+        )
+    print(f"  Errors                  : {len(errors)}")
     for err in errors:
         print(f"    - {err}")
-    print("=" * 60)
+    print("=" * 70)
 
     if errors:
         print("  VERDICT: FAIL")
-        print("=" * 60)
+        print("=" * 70)
         sys.exit(1)
     else:
         print("  VERDICT: PASS")
-        print("=" * 60)
+        print("=" * 70)
         sys.exit(0)
 
 
