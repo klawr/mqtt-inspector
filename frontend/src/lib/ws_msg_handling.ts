@@ -54,8 +54,6 @@ function findLeafBranch(topics: Treebranch[], topicPath: string): Treebranch | n
 	return found;
 }
 
-export type Command = { id: string; text: string; topic: string; payload: string };
-
 export type CommandParam = { id: string; name: string; topic: string; payload: string };
 export type BrokerParam = {
 	broker: string;
@@ -278,66 +276,6 @@ function createTreeBranchEntryText(branch: Treebranch) {
 	text += ')';
 
 	return text;
-}
-
-function addToTopicBranch(
-	topicsplit: string[],
-	index: number,
-	topicbranch: Treebranch[] | undefined,
-	payload: string,
-	timestamp: string
-) {
-	const key = topicsplit[index];
-	let found = topicbranch?.find((element) => element.original_text === key);
-
-	if (index === topicsplit.length) {
-		return;
-	}
-
-	if (found) {
-		found.children = found.children || [];
-	} else {
-		found = {
-			id: topicsplit.slice(0, index + 1).join('/'),
-			text: key,
-			children: [],
-			original_text: key,
-			number_of_messages: 0,
-			messages: []
-		};
-		topicbranch?.push(found);
-	}
-	addToTopicBranch(topicsplit, index + 1, found.children, payload, timestamp);
-
-	if (found.children?.length === 0) {
-		found.children = undefined;
-	}
-
-	if (index === topicsplit.length - 1) {
-		const ff = found || topicbranch?.find((element) => element.original_text === key);
-		const new_entry = { timestamp: timestamp, text: payload, delta_t: 0 };
-		if (ff?.messages.length) {
-			ff.messages[0].delta_t =
-				new Date(timestamp).getTime() - new Date(ff.messages[0].timestamp).getTime();
-		}
-		new_entry.delta_t = 0;
-
-		ff?.messages.unshift(new_entry);
-	}
-	found.text = createTreeBranchEntryText(found);
-
-	return topicbranch;
-}
-
-function addToTopicTree(
-	topic: string,
-	topictree: Treebranch[],
-	payload: string,
-	timestamp: string
-): Treebranch[] {
-	const branch = topic.split('/');
-
-	return addToTopicBranch(branch, 0, topictree, payload, timestamp) || [];
 }
 
 /** Walk the topic tree and increment number_of_messages along the path.

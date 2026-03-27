@@ -241,39 +241,6 @@ fn build_binary_mqtt_frame(
     Some(frame)
 }
 
-/// Send lightweight metadata (no payload) about a new message to ALL peers.
-/// (Now only used in tests; production code uses buffered batching.)
-#[allow(dead_code)]
-pub fn send_message_meta_to_peers(
-    peer_map: &PeerMap,
-    source: &str,
-    topic: &str,
-    timestamp: &str,
-    payload_size: usize,
-    total_bytes: usize,
-    topic_message_count: usize,
-) {
-    let message = jsonrpc::JsonRpcNotification {
-        jsonrpc: "2.0",
-        method: "mqtt_message_meta",
-        params: serde_json::json!({
-            "source": source,
-            "topic": topic,
-            "timestamp": timestamp,
-            "payload_size": payload_size,
-            "total_bytes": total_bytes,
-            "topic_message_count": topic_message_count,
-        }),
-    };
-
-    let serialized = match serde_json::to_string(&message) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    send_serialized_to_peers(peer_map, &serialized, "mqtt_message_meta");
-}
-
 /// Send full message payload ONLY to peers that have selected this broker+topic.
 pub fn send_message_to_subscribed_peers(
     peer_map: &PeerMap,
@@ -326,35 +293,6 @@ pub fn send_message_to_subscribed_peers(
         for addr in to_remove {
             peers.remove(&addr);
         }
-    }
-}
-
-/// Send eviction notification for a set of topics that had messages removed.
-/// (Now only used in tests; production code uses buffered batching.)
-#[allow(dead_code)]
-pub fn send_evictions_to_peers(
-    peer_map: &PeerMap,
-    source: &str,
-    evictions: &[(String, usize, usize)], // (topic, evicted_count, new_topic_message_count)
-) {
-    for (topic, count, topic_message_count) in evictions {
-        let message = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0",
-            method: "messages_evicted",
-            params: serde_json::json!({
-                "source": source,
-                "topic": topic,
-                "count": count,
-                "topic_message_count": topic_message_count,
-            }),
-        };
-
-        let serialized = match serde_json::to_string(&message) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        send_serialized_to_peers(peer_map, &serialized, "messages_evicted");
     }
 }
 
@@ -736,50 +674,6 @@ mod tests {
         (addr, rx)
     }
 
-    // --- send_message_meta_to_peers ---
-
-    #[test]
-    fn test_send_message_meta_to_peers_with_no_peers() {
-        let peer_map = make_peer_map();
-        // Should not panic with an empty peer map
-        send_message_meta_to_peers(
-            &peer_map,
-            "broker:1883",
-            "test/topic",
-            "2024-01-01T00:00:00Z",
-            5,
-            100,
-            1,
-        );
-        assert_eq!(peer_map.lock().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_send_message_meta_to_peers_delivers_to_single_peer() {
-        let peer_map = make_peer_map();
-        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
-
-        send_message_meta_to_peers(
-            &peer_map,
-            "broker:1883",
-            "test/topic",
-            "2024-01-01T00:00:00Z",
-            5,
-            100,
-            1,
-        );
-
-        let msg = rx.try_recv().unwrap();
-        assert!(msg.is_text());
-        let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
-        assert_eq!(parsed["method"], "mqtt_message_meta");
-        assert_eq!(parsed["params"]["source"], "broker:1883");
-        assert_eq!(parsed["params"]["topic"], "test/topic");
-        assert_eq!(parsed["params"]["payload_size"], 5);
-        assert_eq!(parsed["params"]["total_bytes"], 100);
-        assert_eq!(parsed["params"]["topic_message_count"], 1);
-    }
-
     // --- send_message_to_subscribed_peers ---
 
     #[test]
@@ -876,8 +770,9 @@ mod tests {
     }
 
     #[test]
-    fn test_send_message_meta_removes_persistently_full_peers() {
+    fn test_flush_removes_persistently_full_peers() {
         let peer_map = make_peer_map();
+        let buf = make_notification_buf();
         let addr_full = make_addr(9001);
         let (tx_full, _rx_full) = channel(PEER_CHANNEL_CAPACITY);
         peer_map
@@ -888,8 +783,8 @@ mod tests {
         let mut removed = false;
 
         for _ in 0..(PEER_CHANNEL_CAPACITY + PEER_MAX_CONSECUTIVE_FULL_SENDS * 4) {
-            send_message_meta_to_peers(
-                &peer_map,
+            buffer_message_meta(
+                &buf,
                 "broker:1883",
                 "topic",
                 "2024-01-01T00:00:00Z",
@@ -897,6 +792,7 @@ mod tests {
                 0,
                 1,
             );
+            flush_notification_buffer(&buf, &peer_map);
 
             if !peer_map.lock().unwrap().contains_key(&addr_full) {
                 removed = true;
@@ -1053,6 +949,7 @@ mod tests {
         use std::thread;
 
         let peer_map = make_peer_map();
+        let buf = make_notification_buf();
         // Insert several peers
         let mut receivers = Vec::new();
         for port in 9001..9011 {
@@ -1060,11 +957,12 @@ mod tests {
             receivers.push(rx);
         }
 
-        let peer_map_clone = Arc::clone(&peer_map);
+        let pm1 = Arc::clone(&peer_map);
+        let buf1 = Arc::clone(&buf);
         let handle1 = thread::spawn(move || {
             for _ in 0..100 {
-                send_message_meta_to_peers(
-                    &peer_map_clone,
+                buffer_message_meta(
+                    &buf1,
                     "broker:1883",
                     "topic",
                     "2024-01-01T00:00:00Z",
@@ -1072,6 +970,7 @@ mod tests {
                     0,
                     1,
                 );
+                flush_notification_buffer(&buf1, &pm1);
             }
         });
 
@@ -1094,6 +993,7 @@ mod tests {
 
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
+        let buf = make_notification_buf();
 
         let mut receivers = Vec::new();
         for port in 9001..9006 {
@@ -1110,17 +1010,11 @@ mod tests {
         });
 
         let pm2 = Arc::clone(&peer_map);
+        let buf2 = Arc::clone(&buf);
         let handle2 = thread::spawn(move || {
             for _ in 0..100 {
-                send_message_meta_to_peers(
-                    &pm2,
-                    "broker:1883",
-                    "t",
-                    "2024-01-01T00:00:00Z",
-                    4,
-                    0,
-                    1,
-                );
+                buffer_message_meta(&buf2, "broker:1883", "t", "2024-01-01T00:00:00Z", 4, 0, 1);
+                flush_notification_buffer(&buf2, &pm2);
             }
         });
 
