@@ -60,12 +60,9 @@ test('processBrokerRemoval deletes broker from AppState', () => {
 			selectedTopic: null,
 			pipeline: [],
 			connected: false,
-			totalBytes: 0,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
 		}
 	};
 
@@ -83,12 +80,9 @@ test('processBrokerRemoval clears selectedBroker when deleting the selected one'
 			selectedTopic: null,
 			pipeline: [],
 			connected: false,
-			totalBytes: 0,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
 		}
 	};
 
@@ -106,12 +100,9 @@ test('processBrokerRemoval handles non-existing broker correctly', () => {
 			selectedTopic: null,
 			pipeline: [],
 			connected: false,
-			totalBytes: 0,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
 		}
 	};
 
@@ -128,12 +119,9 @@ test('processConnectionStatus updates connection status in AppState', () => {
 			topics: [],
 			selectedTopic: null,
 			pipeline: [],
-			totalBytes: 0,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
 		}
 	};
 
@@ -151,12 +139,9 @@ test('processConnectionStatus handles non-existing broker correctly', () => {
 			topics: [],
 			selectedTopic: null,
 			pipeline: [],
-			totalBytes: 0,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
 		}
 	};
 
@@ -192,95 +177,35 @@ test('processBrokers updates BrokerRepository correctly', () => {
 		{
 			broker: 'broker1',
 			connected: true,
-			topics: {
-				topic1: [
-					{ payload: new Uint8Array([72, 101, 108, 108, 111]).buffer, timestamp: '2022-01-01' }
-				],
-				topic2: [
-					{ payload: new Uint8Array([87, 111, 114, 108, 100]).buffer, timestamp: '2022-01-02' }
-				]
-			}
+			topics: {}
 		},
 		{
 			broker: 'broker2',
 			connected: false,
-			topics: {
-				topic3: [{ payload: new Uint8Array([72, 105]).buffer, timestamp: '2022-01-03' }],
-				topic4: [{ payload: new Uint8Array([70, 114, 111, 109]).buffer, timestamp: '2022-01-04' }]
-			}
+			topics: {}
 		}
 	];
 
 	const result = processBrokers(params, decoder as unknown as TextDecoder, brokerRepository);
 
-	const expectedBroker1Topics = [
-		{
-			id: 'topic1',
-			text: 'topic1 (1 message)',
-			children: undefined,
-			number_of_messages: 1,
-			original_text: 'topic1',
-			messages: [{ delta_t: 0, text: 'Hello', timestamp: '2022-01-01' }]
-		},
-		{
-			id: 'topic2',
-			text: 'topic2 (1 message)',
-			children: undefined,
-			number_of_messages: 1,
-			original_text: 'topic2',
-			messages: [{ delta_t: 0, text: 'World', timestamp: '2022-01-02' }]
-		}
-	];
-
-	const expectedBroker2Topics = [
-		{
-			id: 'topic3',
-			text: 'topic3 (1 message)',
-			children: undefined,
-			number_of_messages: 1,
-			original_text: 'topic3',
-			messages: [{ delta_t: 0, text: 'Hi', timestamp: '2022-01-03' }]
-		},
-		{
-			id: 'topic4',
-			text: 'topic4 (1 message)',
-			children: undefined,
-			number_of_messages: 1,
-			original_text: 'topic4',
-			messages: [{ delta_t: 0, text: 'From', timestamp: '2022-01-04' }]
-		}
-	];
-
 	expect(result).toEqual({
 		broker1: {
-			topics: expectedBroker1Topics,
+			topics: [],
 			selectedTopic: null,
 			pipeline: [],
 			connected: true,
-			totalBytes: 10,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
-			rateHistory: [],
-			evictionOrder: [
-				{ topic: 'topic1', payloadLen: 5 },
-				{ topic: 'topic2', payloadLen: 5 }
-			],
-			evictionHead: 0
+			rateHistory: []
 		},
 		broker2: {
-			topics: expectedBroker2Topics,
+			topics: [],
 			selectedTopic: null,
 			pipeline: [],
 			connected: false,
-			totalBytes: 6,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
-			rateHistory: [],
-			evictionOrder: [
-				{ topic: 'topic3', payloadLen: 2 },
-				{ topic: 'topic4', payloadLen: 4 }
-			],
-			evictionHead: 0
+			rateHistory: []
 		}
 	});
 });
@@ -324,6 +249,25 @@ test('parseMqttWebSocketMessage parses binary mqtt frame', () => {
 test('processMQTTMessage handles payload from parsed binary frame', () => {
 	const decoder = new MockTextDecoder();
 	const app = new AppState();
+	// Pre-create broker entry with topic tree (processMQTTMessage no longer auto-creates)
+	app.brokerRepository['broker1'] = {
+		topics: [
+			{
+				id: 'topic1',
+				text: 'topic1 (1 message)',
+				children: undefined,
+				number_of_messages: 1,
+				original_text: 'topic1',
+				messages: []
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 17,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
 	const message: MQTTMessageParam = {
 		source: 'broker1',
 		topic: 'topic1',
@@ -335,12 +279,30 @@ test('processMQTTMessage handles payload from parsed binary frame', () => {
 	processMQTTMessage(message, decoder as unknown as TextDecoder, app);
 
 	expect(app.brokerRepository['broker1'].topics[0].messages[0].text).toBe('Hello from binary');
-	expect(app.brokerRepository['broker1'].backendTotalBytes).toBe(17);
 });
 
 test('processMQTTMessages applies batched messages in order', () => {
 	const decoder = new MockTextDecoder();
 	const app = new AppState();
+	// Pre-create broker entry with topic tree
+	app.brokerRepository['broker1'] = {
+		topics: [
+			{
+				id: 'topic1',
+				text: 'topic1 (2 messages)',
+				children: undefined,
+				number_of_messages: 2,
+				original_text: 'topic1',
+				messages: []
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 11,
+		bytesPerSecond: 0,
+		rateHistory: []
+	};
 	const messages: MQTTMessageParam[] = [
 		{
 			source: 'broker1',
@@ -363,41 +325,6 @@ test('processMQTTMessages applies batched messages in order', () => {
 	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual(
 		['second', 'first']
 	);
-	expect(app.brokerRepository['broker1'].backendTotalBytes).toBe(11);
-});
-
-test('processMQTTMessage evicts oldest messages when byte budget exceeded', () => {
-	const decoder = new MockTextDecoder();
-	const app = new AppState();
-
-	// Send many messages to push past the 64 MB byte budget
-	// Each message payload is 1 MB of text
-	const oneMB = 'x'.repeat(1024 * 1024);
-	for (let i = 0; i < 70; i++) {
-		const timestamp = new Date(2022, 0, 1, 0, 0, i).toISOString();
-		const message: MQTTMessageParam = {
-			source: 'broker1',
-			topic: `topic${i % 3}`,
-			payload: new TextEncoder().encode(oneMB).buffer,
-			timestamp
-		};
-		processMQTTMessage(message, decoder as unknown as TextDecoder, app);
-	}
-
-	// totalBytes should be at or under 64 MB
-	expect(app.brokerRepository['broker1'].totalBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
-
-	// Should have evicted some messages — fewer than 70 total
-	let totalMessages = 0;
-	function countMessages(branches: (typeof app.brokerRepository)['broker1']['topics']) {
-		for (const branch of branches) {
-			totalMessages += branch.messages.length;
-			if (branch.children) countMessages(branch.children);
-		}
-	}
-	countMessages(app.brokerRepository['broker1'].topics);
-	expect(totalMessages).toBeLessThan(70);
-	expect(totalMessages).toBeGreaterThan(0);
 });
 
 test('processSettings updates maxBrokerBytes on AppState', () => {
@@ -424,12 +351,9 @@ test('processRateHistorySample appends entry and updates bytesPerSecond', () => 
 			selectedTopic: null,
 			pipeline: [],
 			connected: true,
-			totalBytes: 5000,
 			backendTotalBytes: 5000,
 			bytesPerSecond: 0,
 			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
 		}
 	};
 
@@ -456,12 +380,9 @@ test('processRateHistorySample creates new array reference', () => {
 			selectedTopic: null,
 			pipeline: [],
 			connected: true,
-			totalBytes: 0,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
 		}
 	};
 

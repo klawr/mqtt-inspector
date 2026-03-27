@@ -54,24 +54,6 @@ function findLeafBranch(topics: Treebranch[], topicPath: string): Treebranch | n
 	return found;
 }
 
-function evictUntilUnderBudget(entry: BrokerRepositoryEntry) {
-	while (entry.totalBytes > maxBrokerBytes) {
-		if (entry.evictionHead >= entry.evictionOrder.length) break;
-		const item = entry.evictionOrder[entry.evictionHead];
-		entry.evictionHead++;
-		const leaf = findLeafBranch(entry.topics, item.topic);
-		if (leaf && leaf.messages.length > 0) {
-			leaf.messages.pop();
-			entry.totalBytes -= item.payloadLen;
-		}
-	}
-	// Compact the eviction queue when the consumed head is large
-	if (entry.evictionHead > 10000) {
-		entry.evictionOrder = entry.evictionOrder.slice(entry.evictionHead);
-		entry.evictionHead = 0;
-	}
-}
-
 export type Command = { id: string; text: string; topic: string; payload: string };
 
 export type CommandParam = { id: string; name: string; topic: string; payload: string };
@@ -93,6 +75,27 @@ export type MQTTMessageParam = {
 	payload: ArrayBuffer;
 	timestamp: string;
 	total_bytes?: number;
+};
+
+export type MQTTMessageMetaParam = {
+	source: string;
+	topic: string;
+	timestamp: string;
+	payload_size: number;
+	total_bytes: number;
+	topic_message_count: number;
+};
+
+export type TopicSummariesParam = {
+	source: string;
+	topics: { [key: string]: { count: number; latest_timestamp: string } };
+};
+
+export type MessagesEvictedParam = {
+	source: string;
+	topic: string;
+	count: number;
+	topic_message_count: number;
 };
 
 function decodePayloadBytes(message: { payload: ArrayBuffer }): Uint8Array {
@@ -157,6 +160,21 @@ export function processConnectionStatus(params: MqttConnectionStatus, app: AppSt
 	return app;
 }
 
+function ensureBrokerEntry(brokerRepository: BrokerRepository, broker: string): BrokerRepositoryEntry {
+	if (!brokerRepository[broker]) {
+		brokerRepository[broker] = {
+			topics: [],
+			selectedTopic: null,
+			pipeline: [],
+			connected: true,
+			backendTotalBytes: 0,
+			bytesPerSecond: 0,
+			rateHistory: [],
+		};
+	}
+	return brokerRepository[broker];
+}
+
 export function processBrokers(
 	params: BrokerParam,
 	decoder: TextDecoder,
@@ -169,7 +187,6 @@ export function processBrokers(
 				selectedTopic: null,
 				pipeline: [],
 				connected: param.connected,
-				totalBytes: 0,
 				backendTotalBytes: param.total_bytes ?? 0,
 				bytesPerSecond: 0,
 				rateHistory: (param.rate_history ?? []).map((e) => ({
@@ -177,8 +194,6 @@ export function processBrokers(
 					bytesPerSecond: e.bytes_per_second,
 					totalBytes: e.total_bytes
 				})),
-				evictionOrder: [],
-				evictionHead: 0
 			};
 		} else {
 			brokerRepository[param.broker].connected = param.connected;
@@ -193,23 +208,21 @@ export function processBrokers(
 				}));
 			}
 		}
-
-		for (const topic of Object.keys(param.topics)) {
-			for (const message of param.topics[topic]) {
-				const decoded = decoder.decode(decodePayloadBytes(message));
-				brokerRepository[param.broker].topics = addToTopicTree(
-					topic,
-					brokerRepository[param.broker].topics,
-					decoded,
-					message.timestamp
-				);
-				brokerRepository[param.broker].totalBytes += decoded.length;
-				brokerRepository[param.broker].evictionOrder.push({ topic, payloadLen: decoded.length });
-			}
-		}
-
-		evictUntilUnderBudget(brokerRepository[param.broker]);
 	});
+
+	return brokerRepository;
+}
+
+/// Process topic summaries from the backend (initial sync).
+/// Builds the topic tree structure with correct counts but no message content.
+export function processTopicSummaries(params: TopicSummariesParam, brokerRepository: BrokerRepository) {
+	const entry = ensureBrokerEntry(brokerRepository, params.source);
+
+	for (const [topic, info] of Object.entries(params.topics)) {
+		for (let i = 0; i < info.count; i++) {
+			entry.topics = addToTopicTreeMeta(topic, entry.topics);
+		}
+	}
 
 	return brokerRepository;
 }
@@ -242,22 +255,24 @@ function addToPipeline(
 function createTreeBranchEntryText(branch: Treebranch) {
 	let text = branch.original_text;
 
-	if (!branch.children?.length && !branch.messages.length) {
+	if (!branch.children?.length && !branch.number_of_messages) {
 		return text;
 	}
 
 	text += ' (';
 
-	if (branch.messages.length) {
-		text += `${branch.messages.length} message${branch.messages.length > 1 ? 's' : ''}`;
+	const leafMessages = branch.number_of_messages - (branch.children ?? []).reduce((sum, c) => sum + c.number_of_messages, 0);
+
+	if (leafMessages > 0) {
+		text += `${leafMessages} message${leafMessages > 1 ? 's' : ''}`;
 		if (branch.children?.length) {
 			text += ', ';
 		}
 	}
 
 	if (branch.children?.length) {
-		const number_of_messages = branch.number_of_messages - branch.messages.length;
-		text += `${branch.children.length} subtopic${branch.children.length > 1 ? 's' : ''} with ${number_of_messages} message${number_of_messages > 1 ? 's' : ''}`;
+		const childMessages = branch.number_of_messages - leafMessages;
+		text += `${branch.children.length} subtopic${branch.children.length > 1 ? 's' : ''} with ${childMessages} message${childMessages > 1 ? 's' : ''}`;
 	}
 
 	text += ')';
@@ -281,14 +296,13 @@ function addToTopicBranch(
 
 	if (found) {
 		found.children = found.children || [];
-		found.number_of_messages += 1;
 	} else {
 		found = {
 			id: topicsplit.slice(0, index + 1).join('/'),
-			text: key + ' (1 message)',
+			text: key,
 			children: [],
 			original_text: key,
-			number_of_messages: 1,
+			number_of_messages: 0,
 			messages: []
 		};
 		topicbranch?.push(found);
@@ -326,57 +340,159 @@ function addToTopicTree(
 	return addToTopicBranch(branch, 0, topictree, payload, timestamp) || [];
 }
 
-export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecoder, app: AppState) {
-	if (!app.brokerRepository[message.source]) {
-		app.brokerRepository[message.source] = {
-			topics: [],
-			selectedTopic: null,
-			pipeline: [],
-			connected: true,
-			totalBytes: 0,
-			backendTotalBytes: 0,
-			bytesPerSecond: 0,
-			rateHistory: [],
-			evictionOrder: [],
-			evictionHead: 0
-		};
+/** Walk the topic tree and increment number_of_messages along the path.
+ *  Creates nodes as needed. Does NOT add message content. */
+function addToTopicBranchMeta(
+	topicsplit: string[],
+	index: number,
+	topicbranch: Treebranch[] | undefined,
+) {
+	const key = topicsplit[index];
+	let found = topicbranch?.find((element) => element.original_text === key);
+
+	if (index === topicsplit.length) {
+		return;
 	}
-	app.brokerRepository[message.source].connected = true;
+
+	if (found) {
+		found.children = found.children || [];
+		found.number_of_messages += 1;
+	} else {
+		found = {
+			id: topicsplit.slice(0, index + 1).join('/'),
+			text: key + ' (1 message)',
+			children: [],
+			original_text: key,
+			number_of_messages: 1,
+			messages: []
+		};
+		topicbranch?.push(found);
+	}
+	addToTopicBranchMeta(topicsplit, index + 1, found.children);
+
+	if (found.children?.length === 0) {
+		found.children = undefined;
+	}
+
+	found.text = createTreeBranchEntryText(found);
+
+	return topicbranch;
+}
+
+function addToTopicTreeMeta(topic: string, topictree: Treebranch[]): Treebranch[] {
+	const branch = topic.split('/');
+	return addToTopicBranchMeta(branch, 0, topictree) || [];
+}
+
+/** Walk the topic tree and decrement number_of_messages along the path. */
+function decrementTopicTreeCounts(
+	topicsplit: string[],
+	index: number,
+	topicbranch: Treebranch[] | undefined,
+	count: number,
+) {
+	if (!topicbranch || index === topicsplit.length) return;
+	const key = topicsplit[index];
+	const found = topicbranch.find((element) => element.original_text === key);
+	if (!found) return;
+
+	found.number_of_messages = Math.max(0, found.number_of_messages - count);
+
+	decrementTopicTreeCounts(topicsplit, index + 1, found.children, count);
+
+	// Remove empty leaf nodes
+	if (found.number_of_messages === 0 && !found.children?.length) {
+		const idx = topicbranch.indexOf(found);
+		if (idx !== -1) topicbranch.splice(idx, 1);
+	} else {
+		found.text = createTreeBranchEntryText(found);
+	}
+}
+
+/** Process a lightweight meta notification about a new MQTT message.
+ *  Updates the topic tree counts but does NOT add message content. */
+export function processMQTTMessageMeta(message: MQTTMessageMetaParam, app: AppState) {
+	const entry = ensureBrokerEntry(app.brokerRepository, message.source);
+	entry.connected = true;
 
 	if (!app.selectedBroker) {
 		app.selectedBroker = message.source;
 	}
 
-	const payload = decoder.decode(decodePayloadBytes(message));
-	app.brokerRepository[message.source].topics = addToTopicTree(
-		message.topic,
-		app.brokerRepository[message.source].topics,
-		payload,
-		message.timestamp
-	);
-	if (app.selectedTopic) {
-		app.selectedTopic =
-			findbranchwithid(
-				app.selectedTopic?.id.toString(),
-				app.brokerRepository[message.source].topics
-			) || app.selectedTopic;
+	// Update topic tree counts
+	entry.topics = addToTopicTreeMeta(message.topic, entry.topics);
+
+	// Update the selected topic reference if it belongs to this broker
+	if (app.brokerRepository[app.selectedBroker]?.selectedTopic) {
+		const sel = app.brokerRepository[app.selectedBroker].selectedTopic;
+		if (sel) {
+			app.brokerRepository[app.selectedBroker].selectedTopic =
+				findbranchwithid(sel.id.toString(), app.brokerRepository[app.selectedBroker].topics) || sel;
+		}
 	}
 
+	// Update backend total bytes
+	entry.backendTotalBytes = message.total_bytes;
+	entry.bytesPerSecond = updateBytesPerSecond(message.source, message.payload_size);
+
+	// Pipeline tracking
 	addToPipeline(message.source, message.topic, message.timestamp, app.brokerRepository);
 
-	app.brokerRepository[message.source].totalBytes += payload.length;
-	app.brokerRepository[message.source].evictionOrder.push({
-		topic: message.topic,
-		payloadLen: payload.length
-	});
-	if (message.total_bytes !== undefined) {
-		app.brokerRepository[message.source].backendTotalBytes = message.total_bytes;
+	return app;
+}
+
+/** Process eviction notifications from the backend. */
+export function processMessagesEvicted(params: MessagesEvictedParam, app: AppState) {
+	const entry = app.brokerRepository[params.source];
+	if (!entry) return app;
+
+	// Decrement topic tree counts
+	const parts = params.topic.split('/');
+	decrementTopicTreeCounts(parts, 0, entry.topics, params.count);
+
+	// If the evicted topic is the currently selected one, remove oldest messages
+	const selectedTopic = entry.selectedTopic;
+	if (selectedTopic && selectedTopic.id === params.topic) {
+		for (let i = 0; i < params.count && selectedTopic.messages.length > 0; i++) {
+			selectedTopic.messages.pop(); // remove oldest (at the end)
+		}
 	}
-	app.brokerRepository[message.source].bytesPerSecond = updateBytesPerSecond(
-		message.source,
-		payload.length
-	);
-	evictUntilUnderBudget(app.brokerRepository[message.source]);
+
+	// Update selected topic reference
+	if (entry.selectedTopic) {
+		entry.selectedTopic =
+			findbranchwithid(entry.selectedTopic.id.toString(), entry.topics) || entry.selectedTopic;
+	}
+
+	return app;
+}
+
+/** Process full message content for the selected topic.
+ *  Does NOT update tree counts (meta handles that). Only adds message content. */
+export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecoder, app: AppState) {
+	if (!app.brokerRepository[message.source]) {
+		return app;
+	}
+
+	const entry = app.brokerRepository[message.source];
+	const payload = decoder.decode(decodePayloadBytes(message));
+
+	// Find the leaf node and add message content
+	const leaf = findLeafBranch(entry.topics, message.topic);
+	if (leaf) {
+		const new_entry = { timestamp: message.timestamp, text: payload, delta_t: 0 };
+		if (leaf.messages.length) {
+			leaf.messages[0].delta_t =
+				new Date(message.timestamp).getTime() - new Date(leaf.messages[0].timestamp).getTime();
+		}
+		leaf.messages.unshift(new_entry);
+	}
+
+	// Update the selectedTopic reference
+	if (entry.selectedTopic) {
+		entry.selectedTopic =
+			findbranchwithid(entry.selectedTopic.id.toString(), entry.topics) || entry.selectedTopic;
+	}
 
 	return app;
 }
@@ -391,6 +507,27 @@ export function processMQTTMessages(
 	}
 
 	return app;
+}
+
+/** Clear all message content from the selected topic's tree (before re-sync). */
+export function processTopicMessagesClear(app: AppState) {
+	// Clear messages from all leaf nodes for the current broker
+	if (app.selectedBroker && app.brokerRepository[app.selectedBroker]) {
+		const entry = app.brokerRepository[app.selectedBroker];
+		if (entry.selectedTopic) {
+			clearMessages(entry.selectedTopic);
+		}
+	}
+	return app;
+}
+
+function clearMessages(branch: Treebranch) {
+	branch.messages = [];
+	if (branch.children) {
+		for (const child of branch.children) {
+			clearMessages(child);
+		}
+	}
 }
 
 export function processPipelines(params: PipelineParam[]) {

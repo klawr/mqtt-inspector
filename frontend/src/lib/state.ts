@@ -72,12 +72,9 @@ export type BrokerRepositoryEntry = {
 	selectedTopic: Treebranch | null;
 	pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
 	connected: boolean;
-	totalBytes: number;
 	backendTotalBytes: number;
 	bytesPerSecond: number;
 	rateHistory: RateHistoryEntry[];
-	evictionOrder: { topic: string; payloadLen: number }[];
-	evictionHead: number;
 };
 
 export type BrokerRepository = {

@@ -62,6 +62,10 @@ THE SOFTWARE.
 		processConfigs,
 		processConnectionStatus,
 		processMQTTMessages,
+		processMQTTMessageMeta,
+		processMessagesEvicted,
+		processTopicSummaries,
+		processTopicMessagesClear,
 		processPipelines,
 		parseMqttWebSocketMessage,
 		processRateHistorySample,
@@ -72,6 +76,7 @@ THE SOFTWARE.
 	import { selectedTheme, availableThemes } from '../store';
 	import { goto } from '$app/navigation';
 	import { findbranchwithid } from '$lib/helper';
+	import { requestTopicSelection } from '$lib/socket';
 
 	let socket: WebSocket;
 	let app = new AppState();
@@ -161,7 +166,7 @@ THE SOFTWARE.
 			if (!json) {
 				return;
 			}
-			if (json.method !== 'mqtt_message') {
+			if (json.method !== 'mqtt_message' && json.method !== 'mqtt_message_meta') {
 				flushPendingMqttMessages();
 			}
 			switch (json.method) {
@@ -189,9 +194,25 @@ THE SOFTWARE.
 					}
 					break;
 				}
+				case 'topic_summaries':
+					app.brokerRepository = processTopicSummaries(json.params, app.brokerRepository);
+					break;
+				case 'mqtt_message_meta':
+					app = processMQTTMessageMeta(json.params, app);
+					break;
 				case 'mqtt_message':
 					pendingMqttMessages.push(json.params);
 					scheduleMqttFlush();
+					break;
+				case 'messages_evicted':
+					app = processMessagesEvicted(json.params, app);
+					break;
+				case 'topic_messages_clear':
+					app = processTopicMessagesClear(app);
+					break;
+				case 'topic_sync_complete':
+					// Topic messages have been loaded, trigger reactivity
+					app.brokerRepository = app.brokerRepository;
 					break;
 				case 'rate_history_sample':
 					processRateHistorySample(json.params, app);
@@ -216,6 +237,8 @@ THE SOFTWARE.
 						);
 						if (found) {
 							app.brokerRepository[app.selectedBroker].selectedTopic = found;
+							// Tell backend about our topic selection
+							requestTopicSelection(app.selectedBroker, found.id, socket);
 						}
 						pendingTopic = null;
 					}
@@ -312,6 +335,23 @@ THE SOFTWARE.
 	}
 
 	let selectedTab = 1;
+
+	// Track topic selection and notify backend when it changes
+	let lastSelectedBroker: string | null = null;
+	let lastSelectedTopicId: string | null = null;
+	$: {
+		const currentBroker = app.selectedBroker || null;
+		const currentTopicId = currentBroker
+			? app.brokerRepository[currentBroker]?.selectedTopic?.id ?? null
+			: null;
+		if (currentBroker !== lastSelectedBroker || currentTopicId !== lastSelectedTopicId) {
+			lastSelectedBroker = currentBroker;
+			lastSelectedTopicId = currentTopicId;
+			if (socket && socket.readyState === WebSocket.OPEN) {
+				requestTopicSelection(currentBroker, currentTopicId, socket);
+			}
+		}
+	}
 	$: {
 		const params = new URLSearchParams($page.url.search);
 		if (app.selectedBroker) {
@@ -399,7 +439,7 @@ THE SOFTWARE.
 			style="font-size: 0.75rem; opacity: 0.7; padding: 0 1em; white-space: nowrap; display: flex; align-items: center; gap: 0.4em;"
 		>
 			{#if app.syncComplete}
-				{formatBytes(entry.totalBytes)}
+				{formatBytes(entry.backendTotalBytes)}
 				{#if entry.backendTotalBytes >= app.maxBrokerBytes}
 					<InformationFilled
 						size={16}
@@ -415,7 +455,7 @@ THE SOFTWARE.
 					/>
 				{/if}
 			{:else}
-				{formatBytes(entry.totalBytes)} | {formatBytes(entry.backendTotalBytes)}
+				{formatBytes(entry.backendTotalBytes)}
 				<Renew size={16} title="Syncing..." class="spin-icon" />
 			{/if}
 			<span style="opacity: 0.8;">| {formatRate(entry.bytesPerSecond || 0)}</span>

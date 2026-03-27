@@ -76,6 +76,7 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
                             &peer_map,
                             &mqtt_map,
                             &config_path,
+                            addr,
                         );
                     }
 

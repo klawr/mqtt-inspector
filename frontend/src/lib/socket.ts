@@ -92,3 +92,17 @@ export function requestPublishMqttMessage(
 
 	socket.send(message);
 }
+
+export function requestTopicSelection(
+	broker: string | null,
+	topic: string | null,
+	socket: WebSocket
+) {
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'select_topic',
+		params: { broker, topic }
+	});
+
+	socket.send(message);
+}
