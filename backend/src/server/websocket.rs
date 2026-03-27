@@ -41,6 +41,104 @@ pub const PEER_CHANNEL_CAPACITY: usize = 1024;
 /// of the run faning out to a peer that no longer keeps up.
 const PEER_MAX_CONSECUTIVE_FULL_SENDS: usize = 128;
 
+// ─── Notification batching ───────────────────────────────────────────
+
+#[derive(Clone, serde::Serialize)]
+pub struct PendingMeta {
+    pub source: String,
+    pub topic: String,
+    pub timestamp: String,
+    pub payload_size: usize,
+    pub total_bytes: usize,
+    pub topic_message_count: usize,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct PendingEviction {
+    pub source: String,
+    pub topic: String,
+    pub count: usize,
+    pub topic_message_count: usize,
+}
+
+#[derive(Default)]
+pub struct NotificationBuffer {
+    pub metas: Vec<PendingMeta>,
+    pub evictions: Vec<PendingEviction>,
+}
+
+pub type NotificationBuf = Arc<Mutex<NotificationBuffer>>;
+
+/// Drain the notification buffer and send batched messages to all connected
+/// peers. Called periodically by a dedicated timer thread (e.g. every 100 ms).
+pub fn flush_notification_buffer(buf: &NotificationBuf, peer_map: &PeerMap) {
+    let (metas, evictions) = {
+        let mut lock = buf.lock().unwrap();
+        if lock.metas.is_empty() && lock.evictions.is_empty() {
+            return;
+        }
+        (
+            std::mem::take(&mut lock.metas),
+            std::mem::take(&mut lock.evictions),
+        )
+    };
+
+    if !evictions.is_empty() {
+        let message = jsonrpc::JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "messages_evicted_batch",
+            params: serde_json::json!(evictions),
+        };
+        if let Ok(serialized) = serde_json::to_string(&message) {
+            send_serialized_to_peers(peer_map, &serialized, "messages_evicted_batch");
+        }
+    }
+
+    if !metas.is_empty() {
+        let message = jsonrpc::JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "mqtt_message_meta_batch",
+            params: serde_json::json!(metas),
+        };
+        if let Ok(serialized) = serde_json::to_string(&message) {
+            send_serialized_to_peers(peer_map, &serialized, "mqtt_message_meta_batch");
+        }
+    }
+}
+
+// ─── Notification buffer helpers (called from broker loops) ──────────
+
+pub fn buffer_message_meta(
+    buf: &NotificationBuf,
+    source: &str,
+    topic: &str,
+    timestamp: &str,
+    payload_size: usize,
+    total_bytes: usize,
+    topic_message_count: usize,
+) {
+    buf.lock().unwrap().metas.push(PendingMeta {
+        source: source.to_string(),
+        topic: topic.to_string(),
+        timestamp: timestamp.to_string(),
+        payload_size,
+        total_bytes,
+        topic_message_count,
+    });
+}
+
+pub fn buffer_evictions(buf: &NotificationBuf, source: &str, evictions: &[(String, usize, usize)]) {
+    let mut lock = buf.lock().unwrap();
+    for (topic, count, topic_message_count) in evictions {
+        lock.evictions.push(PendingEviction {
+            source: source.to_string(),
+            topic: topic.clone(),
+            count: *count,
+            topic_message_count: *topic_message_count,
+        });
+    }
+}
+
 pub struct PeerConnection {
     pub tx: Sender<warp::filters::ws::Message>,
     consecutive_full: usize,
@@ -144,6 +242,8 @@ fn build_binary_mqtt_frame(
 }
 
 /// Send lightweight metadata (no payload) about a new message to ALL peers.
+/// (Now only used in tests; production code uses buffered batching.)
+#[allow(dead_code)]
 pub fn send_message_meta_to_peers(
     peer_map: &PeerMap,
     source: &str,
@@ -230,6 +330,8 @@ pub fn send_message_to_subscribed_peers(
 }
 
 /// Send eviction notification for a set of topics that had messages removed.
+/// (Now only used in tests; production code uses buffered batching.)
+#[allow(dead_code)]
 pub fn send_evictions_to_peers(
     peer_map: &PeerMap,
     source: &str,
@@ -1051,5 +1153,66 @@ mod tests {
 
         handle1.join().unwrap();
         handle2.join().unwrap();
+    }
+
+    // --- flush_notification_buffer ---
+
+    fn make_notification_buf() -> NotificationBuf {
+        NotificationBuf::new(Mutex::new(NotificationBuffer::default()))
+    }
+
+    #[test]
+    fn test_flush_empty_buffer_is_noop() {
+        let peer_map = make_peer_map();
+        let buf = make_notification_buf();
+        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+        flush_notification_buffer(&buf, &peer_map);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_flush_sends_batched_metas() {
+        let peer_map = make_peer_map();
+        let buf = make_notification_buf();
+        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        buffer_message_meta(&buf, "broker:1883", "t/1", "ts1", 5, 100, 1);
+        buffer_message_meta(&buf, "broker:1883", "t/2", "ts2", 10, 200, 2);
+
+        flush_notification_buffer(&buf, &peer_map);
+
+        let msg = rx.try_recv().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
+        assert_eq!(parsed["method"], "mqtt_message_meta_batch");
+        let params = parsed["params"].as_array().unwrap();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0]["topic"], "t/1");
+        assert_eq!(params[1]["topic"], "t/2");
+
+        // Buffer should be empty after flush
+        assert!(buf.lock().unwrap().metas.is_empty());
+    }
+
+    #[test]
+    fn test_flush_sends_batched_evictions() {
+        let peer_map = make_peer_map();
+        let buf = make_notification_buf();
+        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        buffer_evictions(
+            &buf,
+            "broker:1883",
+            &[("t/1".to_string(), 3, 10), ("t/2".to_string(), 1, 5)],
+        );
+
+        flush_notification_buffer(&buf, &peer_map);
+
+        let msg = rx.try_recv().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
+        assert_eq!(parsed["method"], "messages_evicted_batch");
+        let params = parsed["params"].as_array().unwrap();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0]["count"], 3);
+        assert_eq!(params[1]["count"], 1);
     }
 }

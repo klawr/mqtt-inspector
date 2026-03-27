@@ -31,6 +31,7 @@ fn loop_forever(
     mut connection: rumqttc::Connection,
     peer_map: &websocket::PeerMap,
     mqtt_map: &mqtt::BrokerMap,
+    notification_buf: &websocket::NotificationBuf,
 ) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
     let hostname = format!("{ip}:{port}");
@@ -151,13 +152,13 @@ fn loop_forever(
                     );
                     websocket::send_rate_sample_to_peers(peer_map, &hostname, sample);
                 }
-                // Send eviction notifications before the new message meta
+                // Buffer eviction notifications (will be flushed in batch)
                 if !evictions.is_empty() {
-                    websocket::send_evictions_to_peers(peer_map, &hostname, &evictions);
+                    websocket::buffer_evictions(notification_buf, &hostname, &evictions);
                 }
-                // Send lightweight meta to ALL peers
-                websocket::send_message_meta_to_peers(
-                    peer_map,
+                // Buffer lightweight meta (will be flushed in batch)
+                websocket::buffer_message_meta(
+                    notification_buf,
                     &hostname,
                     &p.topic,
                     &timestamp,
@@ -198,8 +199,8 @@ fn loop_forever(
                 let payload = bytes::Bytes::from(std::format!("Payload size limit exceeded: {p}."));
                 println!("Payload size limit exceeded: {p}");
                 let timestamp = chrono::Utc::now().to_rfc3339();
-                websocket::send_message_meta_to_peers(
-                    peer_map,
+                websocket::buffer_message_meta(
+                    notification_buf,
                     &hostname,
                     "$ERROR",
                     &timestamp,
@@ -241,11 +242,12 @@ pub fn connect_to_known_brokers(
     broker_path: &str,
     peer_map: &websocket::PeerMap,
     mqtt_map: &mqtt::BrokerMap,
+    notification_buf: &websocket::NotificationBuf,
 ) {
     config::get_known_brokers(broker_path)
         .iter()
         .for_each(|broker| {
-            connect_to_broker(broker, peer_map, mqtt_map);
+            connect_to_broker(broker, peer_map, mqtt_map, notification_buf);
         });
 }
 
@@ -255,6 +257,7 @@ pub fn deserialize_json_rpc_and_process(
     mqtt_map: &mqtt::BrokerMap,
     config_path: &str,
     addr: Option<std::net::SocketAddr>,
+    notification_buf: &websocket::NotificationBuf,
 ) {
     let result = jsonrpc::deserialize_json_rpc(json_rpc);
     if result.is_err() {
@@ -273,7 +276,7 @@ pub fn deserialize_json_rpc_and_process(
                 .to_string()
                 .trim_matches('"')
                 .to_string();
-            connect_to_broker(&hostname, peer_map, mqtt_map);
+            connect_to_broker(&hostname, peer_map, mqtt_map, notification_buf);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::add_to_brokers(&broker_path, &hostname);
             websocket::broadcast_brokers(peer_map, mqtt_map)
@@ -331,13 +334,24 @@ pub fn deserialize_json_rpc_and_process(
     // Implement deserialization and processing of JSON-RPC message
 }
 
-fn connect_to_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt::BrokerMap) {
+fn connect_to_broker(
+    mqtt_host: &str,
+    peer_map: &websocket::PeerMap,
+    mqtt_map: &mqtt::BrokerMap,
+    notification_buf: &websocket::NotificationBuf,
+) {
     let mqtt_host_clone = mqtt_host.trim_matches('"').to_string();
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
+    let buf_clone = notification_buf.clone();
 
     std::thread::spawn(move || {
-        connect_to_mqtt_client_and_loop_forever(&mqtt_host_clone, &mqtt_map_clone, &peer_map_clone);
+        connect_to_mqtt_client_and_loop_forever(
+            &mqtt_host_clone,
+            &mqtt_map_clone,
+            &peer_map_clone,
+            &buf_clone,
+        );
     });
 }
 
@@ -345,6 +359,7 @@ fn connect_to_mqtt_client_and_loop_forever(
     mqtt_host: &String,
     mqtt_map: &mqtt::BrokerMap,
     peer_map: &websocket::PeerMap,
+    notification_buf: &websocket::NotificationBuf,
 ) {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
     let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
@@ -370,7 +385,7 @@ fn connect_to_mqtt_client_and_loop_forever(
         mqtt_lock.insert(mqtt_host.to_string(), broker);
         drop(mqtt_lock);
 
-        loop_forever(connection, peer_map, mqtt_map);
+        loop_forever(connection, peer_map, mqtt_map, notification_buf);
     }
 }
 
@@ -435,6 +450,10 @@ mod tests {
         mqtt::BrokerMap::new(Mutex::new(HashMap::new()))
     }
 
+    fn make_notification_buf() -> websocket::NotificationBuf {
+        websocket::NotificationBuf::new(Mutex::new(websocket::NotificationBuffer::default()))
+    }
+
     fn make_addr(port: u16) -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port)
     }
@@ -462,7 +481,14 @@ mod tests {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         // Should not panic
-        deserialize_json_rpc_and_process("not json", &peer_map, &mqtt_map, "/tmp", None);
+        deserialize_json_rpc_and_process(
+            "not json",
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
     }
 
     #[test]
@@ -471,7 +497,14 @@ mod tests {
         let mqtt_map = make_mqtt_map();
         let json = r#"{"jsonrpc":"2.0","method":"unknown_method","params":{}}"#;
         // Should not panic
-        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, "/tmp", None);
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
     }
 
     #[test]
@@ -480,7 +513,14 @@ mod tests {
         let mqtt_map = make_mqtt_map();
         let json = r#"{"jsonrpc":"2.0","method":"publish","params":{"host":"nonexistent:1883","topic":"test","payload":"hello"}}"#;
         // Should not panic (broker doesn't exist, but it's handled gracefully)
-        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, "/tmp", None);
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            "/tmp",
+            None,
+            &make_notification_buf(),
+        );
     }
 
     #[test]
@@ -492,7 +532,14 @@ mod tests {
         let json =
             r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19999"}}"#;
 
-        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         // Give the spawned thread a moment to take the lock
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -515,11 +562,25 @@ mod tests {
 
         let json =
             r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19998"}}"#;
-        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Connect again — should not duplicate
-        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         assert_eq!(mqtt_map.lock().unwrap().len(), 1);
@@ -537,7 +598,14 @@ mod tests {
         let json =
             r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"nonexistent:1883"}}"#;
         // Should not panic
-        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         std::fs::remove_dir_all(&config_path).ok();
     }
@@ -552,7 +620,14 @@ mod tests {
 
         // Save a command
         let save_json = r#"{"jsonrpc":"2.0","method":"save_command","params":{"name":"test_cmd","topic":"t","payload":"p"}}"#;
-        deserialize_json_rpc_and_process(save_json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            save_json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         let cmd_file = format!("{}/test_cmd.json", commands_path);
         assert!(std::path::Path::new(&cmd_file).exists());
@@ -560,7 +635,14 @@ mod tests {
         // Remove the command
         let remove_json =
             r#"{"jsonrpc":"2.0","method":"remove_command","params":{"name":"test_cmd"}}"#;
-        deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            remove_json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         assert!(!std::path::Path::new(&cmd_file).exists());
 
@@ -576,14 +658,28 @@ mod tests {
         std::fs::create_dir_all(&pipelines_path).ok();
 
         let save_json = r#"{"jsonrpc":"2.0","method":"save_pipeline","params":{"name":"test_pipe","pipeline":[{"topic":"t1"}]}}"#;
-        deserialize_json_rpc_and_process(save_json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            save_json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         let pipe_file = format!("{}/test_pipe.json", pipelines_path);
         assert!(std::path::Path::new(&pipe_file).exists());
 
         let remove_json =
             r#"{"jsonrpc":"2.0","method":"remove_pipeline","params":{"name":"test_pipe"}}"#;
-        deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            remove_json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         assert!(!std::path::Path::new(&pipe_file).exists());
 
@@ -600,7 +696,14 @@ mod tests {
 
         let json =
             r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19997"}}"#;
-        deserialize_json_rpc_and_process(json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         // Should have received a broadcast_brokers message, even if a status
         // notification arrived first.
@@ -627,7 +730,14 @@ mod tests {
         // First connect
         let connect_json =
             r#"{"jsonrpc":"2.0","method":"connect","params":{"hostname":"127.0.0.1:19996"}}"#;
-        deserialize_json_rpc_and_process(connect_json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            connect_json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Drain the connect broadcast
@@ -636,7 +746,14 @@ mod tests {
         // Now remove
         let remove_json =
             r#"{"jsonrpc":"2.0","method":"remove","params":{"hostname":"127.0.0.1:19996"}}"#;
-        deserialize_json_rpc_and_process(remove_json, &peer_map, &mqtt_map, &config_path, None);
+        deserialize_json_rpc_and_process(
+            remove_json,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            None,
+            &make_notification_buf(),
+        );
 
         // Should receive broker_removal and broadcast_brokers messages
         let mut methods = Vec::new();
@@ -663,7 +780,12 @@ mod tests {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         // Nonexistent file should result in 0 brokers being connected
-        connect_to_known_brokers("/nonexistent/brokers.json", &peer_map, &mqtt_map);
+        connect_to_known_brokers(
+            "/nonexistent/brokers.json",
+            &peer_map,
+            &mqtt_map,
+            &make_notification_buf(),
+        );
         // Give threads a moment
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert_eq!(mqtt_map.lock().unwrap().len(), 0);
@@ -703,7 +825,7 @@ mod tests {
                         r#"{{"jsonrpc":"2.0","method":"save_command","params":{{"name":"cmd_{}","topic":"t","payload":"p"}}}}"#,
                         i
                     );
-                    deserialize_json_rpc_and_process(&json, &pm, &mm, &cp, None);
+                    deserialize_json_rpc_and_process(&json, &pm, &mm, &cp, None, &make_notification_buf());
                 })
             })
             .collect();

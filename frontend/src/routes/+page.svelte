@@ -63,7 +63,9 @@ THE SOFTWARE.
 		processConnectionStatus,
 		processMQTTMessages,
 		processMQTTMessageMeta,
+		processMQTTMessageMetaBatch,
 		processMessagesEvicted,
+		processMessagesEvictedBatch,
 		processTopicSummaries,
 		processTopicMessagesClear,
 		processPipelines,
@@ -166,7 +168,12 @@ THE SOFTWARE.
 			if (!json) {
 				return;
 			}
-			if (json.method !== 'mqtt_message' && json.method !== 'mqtt_message_meta') {
+			if (
+				json.method !== 'mqtt_message' &&
+				json.method !== 'mqtt_message_meta' &&
+				json.method !== 'mqtt_message_meta_batch' &&
+				json.method !== 'messages_evicted_batch'
+			) {
 				flushPendingMqttMessages();
 			}
 			switch (json.method) {
@@ -200,12 +207,18 @@ THE SOFTWARE.
 				case 'mqtt_message_meta':
 					app = processMQTTMessageMeta(json.params, app);
 					break;
+				case 'mqtt_message_meta_batch':
+					app = processMQTTMessageMetaBatch(json.params, app);
+					break;
 				case 'mqtt_message':
 					pendingMqttMessages.push(json.params);
 					scheduleMqttFlush();
 					break;
 				case 'messages_evicted':
 					app = processMessagesEvicted(json.params, app);
+					break;
+				case 'messages_evicted_batch':
+					app = processMessagesEvictedBatch(json.params, app);
 					break;
 				case 'topic_messages_clear':
 					app = processTopicMessagesClear(app);

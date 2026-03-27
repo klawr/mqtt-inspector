@@ -40,9 +40,22 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     let mqtt_map = mqtt::BrokerMap::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
     let peer_map = websocket::PeerMap::new(Mutex::new(HashMap::new()));
+    let notification_buf = websocket::NotificationBuf::new(
+        Mutex::new(websocket::NotificationBuffer::default()),
+    );
+
+    // Spawn a dedicated thread that flushes batched notifications every 100 ms
+    {
+        let buf = notification_buf.clone();
+        let pm = peer_map.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            websocket::flush_notification_buffer(&buf, &pm);
+        });
+    }
 
     let broker_path = &std::format!("{config_path}/brokers.json");
-    broker_peer_bridge::connect_to_known_brokers(broker_path, &peer_map, &mqtt_map);
+    broker_peer_bridge::connect_to_known_brokers(broker_path, &peer_map, &mqtt_map, &notification_buf);
     println!("Listening for connections on {server_addr} using static files from {static_files} and config {config_path}");
 
     let ws = warp::path("ws")
@@ -51,6 +64,7 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
         .map(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
             let peer_map = std::sync::Arc::clone(&peer_map);
             let mqtt_map = std::sync::Arc::clone(&mqtt_map);
+            let notification_buf = std::sync::Arc::clone(&notification_buf);
             // TODO can I avoid cloning config_path here?
             let config_path = config_path.clone();
             ws.on_upgrade(move |socket| async move {
@@ -77,6 +91,7 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
                             &mqtt_map,
                             &config_path,
                             addr,
+                            &notification_buf,
                         );
                     }
 

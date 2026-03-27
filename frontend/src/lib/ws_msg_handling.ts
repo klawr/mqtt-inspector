@@ -467,6 +467,22 @@ export function processMessagesEvicted(params: MessagesEvictedParam, app: AppSta
 	return app;
 }
 
+/** Process a batch of meta notifications (sent by the backend every ~100 ms). */
+export function processMQTTMessageMetaBatch(messages: MQTTMessageMetaParam[], app: AppState) {
+	for (const message of messages) {
+		processMQTTMessageMeta(message, app);
+	}
+	return app;
+}
+
+/** Process a batch of eviction notifications (sent by the backend every ~100 ms). */
+export function processMessagesEvictedBatch(items: MessagesEvictedParam[], app: AppState) {
+	for (const item of items) {
+		processMessagesEvicted(item, app);
+	}
+	return app;
+}
+
 /** Process full message content for the selected topic.
  *  Does NOT update tree counts (meta handles that). Only adds message content. */
 export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecoder, app: AppState) {
