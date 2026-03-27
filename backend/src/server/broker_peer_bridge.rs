@@ -48,7 +48,7 @@ fn loop_forever(
                     p.payload
                 };
                 let timestamp = chrono::Utc::now().to_rfc3339();
-                let (total_bytes, new_sample, topic_message_count, evictions) = {
+                let (total_bytes, new_sample, topic_message_count, evictions, rate_history_len) = {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
                     let broker = match mqtt_lock.get_mut(&hostname) {
                         Some(b) => b,
@@ -61,23 +61,27 @@ fn loop_forever(
                     let msg_bytes = payload.len();
                     let new_msg = mqtt::MqttMessage {
                         timestamp: timestamp.clone(),
-                        payload: payload.to_vec(),
+                        payload: payload.clone(),
                     };
-                    if let Some(topic_vec) = broker.topics.get_mut(&p.topic) {
+                    let topic_name = p.topic.clone();
+                    if let Some(topic_vec) = broker.topics.get_mut(&topic_name) {
                         topic_vec.push_back(new_msg);
                     } else {
                         let mut vd = std::collections::VecDeque::new();
                         vd.push_back(new_msg);
-                        broker.topics.insert(p.topic.clone(), vd);
+                        broker.topics.insert(topic_name.clone(), vd);
                     }
                     broker.total_bytes += msg_bytes;
-                    broker
-                        .eviction_order
-                        .push_back((p.topic.clone(), msg_bytes));
+                    broker.eviction_order.push_back((topic_name, msg_bytes));
 
                     // Evict oldest messages using the O(1) eviction queue
-                    // Track which topics had messages evicted
-                    let mut eviction_counts: HashMap<String, usize> = HashMap::new();
+                    // Track which topics had messages evicted (lazy allocation)
+                    let needs_eviction = broker.total_bytes > mqtt::max_broker_bytes();
+                    let mut eviction_counts: HashMap<String, usize> = if needs_eviction {
+                        HashMap::new()
+                    } else {
+                        HashMap::with_capacity(0)
+                    };
                     while broker.total_bytes > mqtt::max_broker_bytes() {
                         match broker.eviction_order.pop_front() {
                             Some((topic_key, payload_len)) => {
@@ -133,22 +137,21 @@ fn loop_forever(
                         None
                     };
 
+                    let rate_history_len = broker.rate_history.len();
+
                     (
                         broker.total_bytes,
                         new_sample,
                         topic_message_count,
                         evictions,
+                        rate_history_len,
                     )
                 }; // mqtt_lock dropped here
                 if let Some(ref sample) = new_sample {
                     println!(
-                        "Rate sample for {hostname}: {:.1} B/s, {} total bytes, history entry #{}",
+                        "Rate sample for {hostname}: {:.1} B/s, {} total bytes, history entry #{rate_history_len}",
                         sample.bytes_per_second,
                         sample.total_bytes,
-                        {
-                            let lock = mqtt_map.lock().unwrap();
-                            lock.get(&hostname).map_or(0, |b| b.rate_history.len())
-                        }
                     );
                     websocket::send_rate_sample_to_peers(peer_map, &hostname, sample);
                 }
@@ -223,7 +226,7 @@ fn loop_forever(
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
-            Err(_err) => {
+            Err(_) => {
                 {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
                     if let Some(broker) = mqtt_lock.get_mut(&hostname) {
@@ -236,6 +239,15 @@ fn loop_forever(
             }
         }
     }
+    // Connection iterator ended — broker disconnected or was removed
+    println!("Connection loop for {hostname:?} ended. Marking broker as disconnected.");
+    {
+        let mut mqtt_lock = mqtt_map.lock().unwrap();
+        if let Some(broker) = mqtt_lock.get_mut(&hostname) {
+            broker.connected = false;
+        }
+    }
+    websocket::send_broker_status_to_peers(peer_map, &hostname, false);
 }
 
 pub fn connect_to_known_brokers(
@@ -259,45 +271,66 @@ pub fn deserialize_json_rpc_and_process(
     addr: Option<std::net::SocketAddr>,
     notification_buf: &websocket::NotificationBuf,
 ) {
-    let result = jsonrpc::deserialize_json_rpc(json_rpc);
-    if result.is_err() {
-        println!("Error deserializing JSON-RPC: {:?}", result.err());
-        return;
-    }
-    let message = result.unwrap();
+    let message = match jsonrpc::deserialize_json_rpc(json_rpc) {
+        Ok(msg) => msg,
+        Err(err) => {
+            println!("Error deserializing JSON-RPC: {err:?}");
+            return;
+        }
+    };
     println!(
         "Got method \"{}\" with params {}",
-        message.method,
-        message.params.clone()
+        message.method, message.params
     );
     match message.method {
         "connect" => {
-            let hostname = message.params["hostname"]
-                .to_string()
-                .trim_matches('"')
-                .to_string();
+            let hostname = match message.params.get("hostname").and_then(|v| v.as_str()) {
+                Some(h) => h.trim_matches('"').to_string(),
+                None => {
+                    println!("Missing or invalid 'hostname' param for connect");
+                    return;
+                }
+            };
             connect_to_broker(&hostname, peer_map, mqtt_map, notification_buf);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::add_to_brokers(&broker_path, &hostname);
             websocket::broadcast_brokers(peer_map, mqtt_map)
         }
         "remove" => {
-            let hostname = message.params["hostname"]
-                .to_string()
-                .trim_matches('"')
-                .to_string();
+            let hostname = match message.params.get("hostname").and_then(|v| v.as_str()) {
+                Some(h) => h.trim_matches('"').to_string(),
+                None => {
+                    println!("Missing or invalid 'hostname' param for remove");
+                    return;
+                }
+            };
             remove_broker(&hostname, peer_map, mqtt_map);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::remove_from_brokers(&broker_path, &hostname);
             websocket::broadcast_brokers(peer_map, mqtt_map)
         }
         "publish" => {
-            let host = message.params["host"]
-                .to_string()
-                .trim_matches('"')
-                .to_string();
-            let topic = message.params["topic"].as_str().unwrap();
-            let payload = message.params["payload"].as_str().unwrap();
+            let host = match message.params.get("host").and_then(|v| v.as_str()) {
+                Some(h) => h.trim_matches('"').to_string(),
+                None => {
+                    println!("Missing or invalid 'host' param for publish");
+                    return;
+                }
+            };
+            let topic = match message.params.get("topic").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => {
+                    println!("Missing or invalid 'topic' param for publish");
+                    return;
+                }
+            };
+            let payload = match message.params.get("payload").and_then(|v| v.as_str()) {
+                Some(p) => p,
+                None => {
+                    println!("Missing or invalid 'payload' param for publish");
+                    return;
+                }
+            };
             mqtt::publish_message(&host, topic, payload, mqtt_map);
         }
         "save_command" => {
@@ -356,15 +389,14 @@ fn connect_to_broker(
 }
 
 fn connect_to_mqtt_client_and_loop_forever(
-    mqtt_host: &String,
+    mqtt_host: &str,
     mqtt_map: &mqtt::BrokerMap,
     peer_map: &websocket::PeerMap,
     notification_buf: &websocket::NotificationBuf,
 ) {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
-    let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
-    if mqtt_client.is_some() {
+    if mqtt_lock.contains_key(mqtt_host) {
         println!("MQTT-Client for {mqtt_host} already exists.");
     } else {
         println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
@@ -391,9 +423,8 @@ fn connect_to_mqtt_client_and_loop_forever(
 
 fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt::BrokerMap) {
     let mut mqtt_lock = mqtt_map.lock().unwrap();
-    let mqtt_client = mqtt_lock.iter().find(|entry| entry.0 == mqtt_host);
 
-    if let Some((_key, broker)) = mqtt_client {
+    if let Some(broker) = mqtt_lock.get(mqtt_host) {
         println!("Removing MQTT-Client for {mqtt_host}");
 
         if let Err(err) = broker.client.clone().disconnect() {

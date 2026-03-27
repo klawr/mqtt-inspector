@@ -37,7 +37,7 @@ pub enum JsonRpcError {
 pub fn deserialize_json_rpc(json_rpc: &str) -> Result<JsonRpcNotification<'_>, JsonRpcError> {
     match serde_json::from_str(json_rpc) {
         Ok(result) => Ok(result),
-        Err(_error) => Err(JsonRpcError::DeserializationError),
+        Err(_) => Err(JsonRpcError::DeserializationError),
     }
 }
 

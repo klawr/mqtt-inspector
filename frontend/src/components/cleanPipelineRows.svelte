@@ -38,7 +38,7 @@ THE SOFTWARE.
 <Modal
 	bind:open
 	danger
-	modalHeading="Remove MQTT Broker"
+	modalHeading="Clear Pipeline Rows"
 	primaryButtonText="Confirm"
 	secondaryButtonText="Cancel"
 	on:click:button--secondary={() => (open = false)}

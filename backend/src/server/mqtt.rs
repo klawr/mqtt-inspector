@@ -30,7 +30,7 @@ use rumqttc::{MqttOptions, QoS};
 #[derive(serde::Serialize)]
 pub struct MqttMessage {
     pub timestamp: String,
-    pub payload: Vec<u8>,
+    pub payload: bytes::Bytes,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -95,7 +95,7 @@ pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection
     let port = hostname_ip[1].parse::<u16>().unwrap();
     let mut mqttoptions = MqttOptions::new(id, hostname, port);
     mqttoptions.set_keep_alive(std::time::Duration::from_secs(30));
-    mqttoptions.set_max_packet_size(1000000 * 1024, 1000000 * 1024);
+    mqttoptions.set_max_packet_size(max_message_size(), max_message_size());
 
     let (mut client, connection) = rumqttc::Client::new(mqttoptions, 1000);
     client.subscribe("#", QoS::AtMostOnce).unwrap();
@@ -152,7 +152,7 @@ mod tests {
     fn test_mqtt_message_serialization() {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-            payload: vec![72, 101, 108, 108, 111],
+            payload: bytes::Bytes::from(vec![72, 101, 108, 108, 111]),
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         assert!(serialized.contains("\"timestamp\":\"2024-01-01T00:00:00Z\""));
@@ -184,7 +184,7 @@ mod tests {
     fn test_mqtt_message_empty_payload() {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-            payload: vec![],
+            payload: bytes::Bytes::new(),
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         assert!(serialized.contains("\"payload\":[]"));

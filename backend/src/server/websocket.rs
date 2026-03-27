@@ -177,41 +177,34 @@ fn send_message_to_peer_map(
     build_message: impl Fn() -> warp::filters::ws::Message,
 ) {
     let mut to_remove = Vec::new();
-    {
-        let mut peers = peer_map.lock().unwrap();
-        for (addr, peer) in peers.iter_mut() {
-            match peer.tx.try_send(build_message()) {
-                Ok(_) => {
-                    peer.mark_success();
-                }
-                Err(err) => {
-                    if err.is_disconnected() {
-                        println!("Peer {addr} is closed while sending {message_kind}. Removing from peer map.");
-                        to_remove.push(*addr);
-                    } else if peer.mark_full() {
-                        println!(
-                            "Peer {addr} fell behind on {message_kind} and dropped {} messages. Disconnecting slow peer.",
-                            peer.dropped_messages
-                        );
-                        to_remove.push(*addr);
-                    }
+    let mut peers = peer_map.lock().unwrap();
+    for (addr, peer) in peers.iter_mut() {
+        match peer.tx.try_send(build_message()) {
+            Ok(_) => {
+                peer.mark_success();
+            }
+            Err(err) => {
+                if err.is_disconnected() {
+                    println!("Peer {addr} is closed while sending {message_kind}. Removing from peer map.");
+                    to_remove.push(*addr);
+                } else if peer.mark_full() {
+                    println!(
+                        "Peer {addr} fell behind on {message_kind} and dropped {} messages. Disconnecting slow peer.",
+                        peer.dropped_messages
+                    );
+                    to_remove.push(*addr);
                 }
             }
         }
     }
-
-    if !to_remove.is_empty() {
-        let mut peers = peer_map.lock().unwrap();
-        for addr in to_remove {
-            peers.remove(&addr);
-        }
+    for addr in to_remove {
+        peers.remove(&addr);
     }
 }
 
 fn send_serialized_to_peers(peer_map: &PeerMap, serialized: &str, message_kind: &str) {
-    send_message_to_peer_map(peer_map, message_kind, || {
-        warp::filters::ws::Message::text(serialized.to_string())
-    })
+    let msg = warp::filters::ws::Message::text(serialized);
+    send_message_to_peer_map(peer_map, message_kind, || msg.clone())
 }
 
 fn build_binary_mqtt_frame(
@@ -262,37 +255,29 @@ pub fn send_message_to_subscribed_peers(
     };
 
     let mut to_remove = Vec::new();
-    {
-        let mut peers = peer_map.lock().unwrap();
-        for (addr, peer) in peers.iter_mut() {
-            let watching = peer.selected_broker.as_deref() == Some(source)
-                && peer.selected_topic.as_deref() == Some(topic);
-            if !watching {
-                continue;
+    let mut peers = peer_map.lock().unwrap();
+    for (addr, peer) in peers.iter_mut() {
+        let watching = peer.selected_broker.as_deref() == Some(source)
+            && peer.selected_topic.as_deref() == Some(topic);
+        if !watching {
+            continue;
+        }
+        match peer
+            .tx
+            .try_send(warp::filters::ws::Message::binary(binary_frame.clone()))
+        {
+            Ok(_) => {
+                peer.mark_success();
             }
-            match peer
-                .tx
-                .try_send(warp::filters::ws::Message::binary(binary_frame.clone()))
-            {
-                Ok(_) => {
-                    peer.mark_success();
-                }
-                Err(err) => {
-                    if err.is_disconnected() {
-                        to_remove.push(*addr);
-                    } else if peer.mark_full() {
-                        to_remove.push(*addr);
-                    }
+            Err(err) => {
+                if err.is_disconnected() || peer.mark_full() {
+                    to_remove.push(*addr);
                 }
             }
         }
     }
-
-    if !to_remove.is_empty() {
-        let mut peers = peer_map.lock().unwrap();
-        for addr in to_remove {
-            peers.remove(&addr);
-        }
+    for addr in to_remove {
+        peers.remove(&addr);
     }
 }
 
@@ -306,7 +291,7 @@ pub fn handle_select_topic(
     topic: Option<&str>,
 ) {
     // Phase 1: Collect messages from the mqtt_map (if a topic is selected)
-    let messages: Vec<(String, Vec<u8>)> =
+    let messages: Vec<(String, bytes::Bytes)> =
         if let (Some(broker_name), Some(topic_name)) = (broker, topic) {
             let mqtt_lock = mqtt_map.lock().unwrap();
             if let Some(broker_data) = mqtt_lock.get(broker_name) {
@@ -425,7 +410,7 @@ pub fn send_configs(sender: &mut Sender<warp::filters::ws::Message>, config_path
     send_pipelines(sender, &format!("{config_path}/pipelines"));
 }
 
-pub fn send_commands(sender: &mut Sender<warp::filters::ws::Message>, commands_path: &String) {
+pub fn send_commands(sender: &mut Sender<warp::filters::ws::Message>, commands_path: &str) {
     if let Ok(commands) = std::fs::read_dir(commands_path) {
         let commands: Vec<CommandMessage> = commands
             .filter_map(|dir_entry| {
@@ -457,7 +442,7 @@ pub fn send_commands(sender: &mut Sender<warp::filters::ws::Message>, commands_p
     }
 }
 
-pub fn send_pipelines(sender: &mut Sender<warp::filters::ws::Message>, pipelines_path: &String) {
+pub fn send_pipelines(sender: &mut Sender<warp::filters::ws::Message>, pipelines_path: &str) {
     if let Ok(pipelines) = std::fs::read_dir(pipelines_path) {
         let pipelines: Vec<PipelineMessage> = pipelines
             .filter_map(|dir_entry| {

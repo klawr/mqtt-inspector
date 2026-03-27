@@ -107,15 +107,21 @@ pub fn add_to_commands(commands_path: &str, params: serde_json::Value) {
     }
 }
 
-pub fn remove_from_commands(commands_path: &String, params: serde_json::Value) {
-    let command = params["name"].as_str().unwrap();
+pub fn remove_from_commands(commands_path: &str, params: serde_json::Value) {
+    let command = match params.get("name").and_then(|v| v.as_str()) {
+        Some(c) => c,
+        None => {
+            eprintln!("Missing or invalid 'name' param for remove_command");
+            return;
+        }
+    };
     let command_path = std::format!("{commands_path}/{command}.json");
     if std::fs::remove_file(&command_path).is_err() {
         eprintln!("Failed to remove command file from {command_path}");
     }
 }
 
-pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
+pub fn add_to_pipelines(pipelines_path: &str, params: serde_json::Value) {
     if let Ok(new_pipeline) = serde_json::from_value::<PipelineMessage>(params) {
         let new_pipeline_path = std::format!("{pipelines_path}/{}.json", new_pipeline.name);
         if let Some(parent_dir) = std::path::Path::new(&new_pipeline_path).parent() {
@@ -133,8 +139,14 @@ pub fn add_to_pipelines(pipelines_path: &String, params: serde_json::Value) {
     }
 }
 
-pub fn remove_from_pipelines(pipelines_path: &String, params: serde_json::Value) {
-    let pipeline = params["name"].as_str().unwrap();
+pub fn remove_from_pipelines(pipelines_path: &str, params: serde_json::Value) {
+    let pipeline = match params.get("name").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => {
+            eprintln!("Missing or invalid 'name' param for remove_pipeline");
+            return;
+        }
+    };
     let pipeline_path = std::format!("{pipelines_path}/{pipeline}.json");
     if std::fs::remove_file(&pipeline_path).is_err() {
         eprintln!("Failed to remove pipeline file from {pipeline_path}");
@@ -292,8 +304,8 @@ mod tests {
     fn test_add_to_commands_already_exists() {
         let resource = TestResource::new();
         let command_path = std::format!("{}/first_command.json", resource.commands_path);
-        assert_eq!(std::path::Path::new(&command_path.clone()).exists(), true);
-        let old_command = std::fs::read_to_string(command_path.clone()).unwrap();
+        assert!(std::path::Path::new(&command_path).exists());
+        let old_command = std::fs::read_to_string(&command_path).unwrap();
         let old_command: CommandMessage = serde_json::from_str(&old_command).unwrap();
         assert_eq!(old_command.name, "first_command");
         assert_eq!(old_command.topic, "test");
@@ -317,11 +329,11 @@ mod tests {
     fn test_remove_from_commands() {
         let resource = TestResource::new();
         let command_path = std::format!("{}/first_command.json", resource.commands_path);
-        assert_eq!(std::path::Path::new(&command_path.clone()).exists(), true);
+        assert!(std::path::Path::new(&command_path).exists());
         let params = serde_json::json!({
             "name": "first_command"
         });
-        remove_from_commands(&resource.commands_path.to_string(), params);
+        remove_from_commands(&resource.commands_path, params);
         assert!(std::fs::metadata(command_path).is_err());
     }
 
@@ -330,7 +342,7 @@ mod tests {
         let params = serde_json::json!({
             "name": "does_not_exist"
         });
-        remove_from_commands(&"whatever".to_string(), params);
+        remove_from_commands("whatever", params);
         // TODO: Should return error instead
         assert!(true);
     }
@@ -339,7 +351,7 @@ mod tests {
     fn test_add_to_pipelines() {
         let resource = TestResource::new();
         let pipeline_path = std::format!("{}/new_pipeline.json", resource.pipelines_path);
-        assert_eq!(std::path::Path::new(&pipeline_path.clone()).exists(), false);
+        assert!(!std::path::Path::new(&pipeline_path).exists());
         let params = serde_json::json!({
             "name": "new_pipeline",
             "pipeline": [
@@ -348,12 +360,12 @@ mod tests {
                 }
             ]
         });
-        add_to_pipelines(&resource.pipelines_path.to_string(), params);
-        let pipeline = std::fs::read_to_string(pipeline_path.clone()).unwrap();
+        add_to_pipelines(&resource.pipelines_path, params);
+        let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
         let pipeline: PipelineMessage = serde_json::from_str(&pipeline).unwrap();
         assert_eq!(pipeline.name, "new_pipeline");
         assert_eq!(pipeline.pipeline[0].topic, "test");
-        assert_eq!(std::path::Path::new(&pipeline_path.clone()).exists(), true);
+        assert!(std::path::Path::new(&pipeline_path).exists());
     }
 
     #[test]
@@ -367,7 +379,7 @@ mod tests {
                 }
             ]
         });
-        add_to_pipelines(&resource.pipelines_path.to_string(), params);
+        add_to_pipelines(&resource.pipelines_path, params);
         let pipeline_path = std::format!("{}/failure_mode.json", resource.pipelines_path);
         assert!(std::fs::metadata(pipeline_path).is_err());
     }
@@ -376,14 +388,14 @@ mod tests {
     fn test_remove_from_pipelines() {
         let resource = TestResource::new();
         let pipeline_path = std::format!("{}/empty_pipeline.json", resource.pipelines_path);
-        assert_eq!(std::path::Path::new(&pipeline_path.clone()).exists(), true);
+        assert!(std::path::Path::new(&pipeline_path).exists());
         let params = serde_json::json!({
             "name": "test"
         });
-        remove_from_pipelines(&resource.pipelines_path.to_string(), params);
+        remove_from_pipelines(&resource.pipelines_path, params);
         let pipeline_path = std::format!("{}/test.json", resource.pipelines_path);
-        assert!(std::fs::metadata(pipeline_path.clone()).is_err());
-        assert_eq!(std::path::Path::new(&pipeline_path.clone()).exists(), false);
+        assert!(std::fs::metadata(&pipeline_path).is_err());
+        assert!(!std::path::Path::new(&pipeline_path).exists());
     }
 
     #[test]
@@ -393,7 +405,7 @@ mod tests {
         let params = serde_json::json!({
             "name": "sould_not_exist"
         });
-        remove_from_pipelines(&pipelines_path.to_string(), params);
+        remove_from_pipelines(&pipelines_path, params);
         let pipeline_path = std::format!("{}/test.json", pipelines_path);
         assert!(std::fs::metadata(pipeline_path).is_err());
         assert!(true);

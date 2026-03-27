@@ -35,8 +35,11 @@ function updateBytesPerSecond(broker: string, bytesReceived: number): number {
 	rateWindows[broker].push({ t: now, b: bytesReceived });
 	// prune entries older than the window
 	const cutoff = now - RATE_WINDOW_MS;
-	while (rateWindows[broker].length > 0 && rateWindows[broker][0].t < cutoff) {
-		rateWindows[broker].shift();
+	const idx = rateWindows[broker].findIndex((e) => e.t >= cutoff);
+	if (idx > 0) {
+		rateWindows[broker].splice(0, idx);
+	} else if (idx === -1) {
+		rateWindows[broker].length = 0;
 	}
 	const totalBytes = rateWindows[broker].reduce((sum, e) => sum + e.b, 0);
 	return totalBytes / (RATE_WINDOW_MS / 1000);
@@ -217,9 +220,7 @@ export function processTopicSummaries(params: TopicSummariesParam, brokerReposit
 	const entry = ensureBrokerEntry(brokerRepository, params.source);
 
 	for (const [topic, info] of Object.entries(params.topics)) {
-		for (let i = 0; i < info.count; i++) {
-			entry.topics = addToTopicTreeMeta(topic, entry.topics);
-		}
+		entry.topics = addToTopicTreeMeta(topic, entry.topics, info.count);
 	}
 
 	return brokerRepository;
@@ -278,12 +279,13 @@ function createTreeBranchEntryText(branch: Treebranch) {
 	return text;
 }
 
-/** Walk the topic tree and increment number_of_messages along the path.
+/** Walk the topic tree and increment number_of_messages by `count` along the path.
  *  Creates nodes as needed. Does NOT add message content. */
 function addToTopicBranchMeta(
 	topicsplit: string[],
 	index: number,
 	topicbranch: Treebranch[] | undefined,
+	count: number = 1,
 ) {
 	const key = topicsplit[index];
 	let found = topicbranch?.find((element) => element.original_text === key);
@@ -294,19 +296,19 @@ function addToTopicBranchMeta(
 
 	if (found) {
 		found.children = found.children || [];
-		found.number_of_messages += 1;
+		found.number_of_messages += count;
 	} else {
 		found = {
 			id: topicsplit.slice(0, index + 1).join('/'),
-			text: key + ' (1 message)',
+			text: key + ` (${count} message${count > 1 ? 's' : ''})`,
 			children: [],
 			original_text: key,
-			number_of_messages: 1,
+			number_of_messages: count,
 			messages: []
 		};
 		topicbranch?.push(found);
 	}
-	addToTopicBranchMeta(topicsplit, index + 1, found.children);
+	addToTopicBranchMeta(topicsplit, index + 1, found.children, count);
 
 	if (found.children?.length === 0) {
 		found.children = undefined;
@@ -317,9 +319,9 @@ function addToTopicBranchMeta(
 	return topicbranch;
 }
 
-function addToTopicTreeMeta(topic: string, topictree: Treebranch[]): Treebranch[] {
+function addToTopicTreeMeta(topic: string, topictree: Treebranch[], count: number = 1): Treebranch[] {
 	const branch = topic.split('/');
-	return addToTopicBranchMeta(branch, 0, topictree) || [];
+	return addToTopicBranchMeta(branch, 0, topictree, count) || [];
 }
 
 /** Walk the topic tree and decrement number_of_messages along the path. */
