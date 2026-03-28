@@ -500,6 +500,7 @@ pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
                     "connected": broker.connected,
                     "topics": {},
                     "total_bytes": broker.total_bytes,
+                    "total_messages": broker.total_messages,
                     "rate_history": broker.rate_history,
                 })
             })
@@ -543,6 +544,7 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
                     "connected": broker.connected,
                     "topics": {},
                     "total_bytes": broker.total_bytes,
+                    "total_messages": broker.total_messages,
                     "rate_history": broker.rate_history,
                 })
             })
@@ -596,16 +598,6 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
                 break;
             }
         }
-    }
-
-    // Phase 3: Send a "sync_complete" so the frontend knows history is done
-    let done = jsonrpc::JsonRpcNotification {
-        jsonrpc: "2.0",
-        method: "sync_complete",
-        params: serde_json::json!({}),
-    };
-    if let Ok(serialized) = serde_json::to_string(&done) {
-        let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
     }
 }
 
@@ -894,17 +886,15 @@ mod tests {
         assert!(settings["params"]["max_broker_bytes"].is_number());
         assert!(settings["params"]["max_message_size"].is_number());
 
-        // Third message is "mqtt_brokers" with empty list
+        // Second message is "mqtt_brokers" with empty list
         let brokers_msg = rx.try_recv().unwrap();
         let parsed: serde_json::Value =
             serde_json::from_str(brokers_msg.to_str().unwrap()).unwrap();
         assert_eq!(parsed["method"], "mqtt_brokers");
         assert_eq!(parsed["params"], serde_json::json!([]));
 
-        // Fourth message is "sync_complete"
-        let sync_msg = rx.try_recv().unwrap();
-        let sync: serde_json::Value = serde_json::from_str(sync_msg.to_str().unwrap()).unwrap();
-        assert_eq!(sync["method"], "sync_complete");
+        // No more messages
+        assert!(rx.try_recv().is_err());
     }
 
     // --- broadcast_pipelines / broadcast_commands ---
@@ -1252,6 +1242,7 @@ mod tests {
                     connected: true,
                     topics,
                     total_bytes: 12,
+                    total_messages: 2,
                     eviction_order: std::collections::VecDeque::new(),
                     rate_history: Vec::new(),
                     rate_bytes_accumulator: 0,
@@ -1359,6 +1350,7 @@ mod tests {
                     connected: true,
                     topics: std::collections::HashMap::new(),
                     total_bytes: 0,
+                    total_messages: 0,
                     eviction_order: std::collections::VecDeque::new(),
                     rate_history: Vec::new(),
                     rate_bytes_accumulator: 0,
@@ -1491,6 +1483,7 @@ mod tests {
                     connected: true,
                     topics,
                     total_bytes: 4,
+                    total_messages: 2,
                     eviction_order: std::collections::VecDeque::new(),
                     rate_history: Vec::new(),
                     rate_bytes_accumulator: 0,
@@ -1523,6 +1516,5 @@ mod tests {
         assert!(methods.contains(&"settings".to_string()));
         assert!(methods.contains(&"mqtt_brokers".to_string()));
         assert!(methods.contains(&"topic_summaries".to_string()));
-        assert!(methods.contains(&"sync_complete".to_string()));
     }
 }

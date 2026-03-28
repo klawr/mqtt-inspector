@@ -72,6 +72,7 @@ fn loop_forever(
                         broker.topics.insert(topic_name.clone(), vd);
                     }
                     broker.total_bytes += msg_bytes;
+                    broker.total_messages += 1;
                     broker.eviction_order.push_back((topic_name, msg_bytes));
 
                     // Evict oldest messages using the O(1) eviction queue
@@ -90,6 +91,8 @@ fn loop_forever(
                                         topic_vec.pop_front();
                                         broker.total_bytes =
                                             broker.total_bytes.saturating_sub(payload_len);
+                                        broker.total_messages =
+                                            broker.total_messages.saturating_sub(1);
                                         *eviction_counts.entry(topic_key.clone()).or_insert(0) += 1;
                                         if topic_vec.is_empty() {
                                             broker.topics.remove(&topic_key);
@@ -408,6 +411,7 @@ fn connect_to_mqtt_client_and_loop_forever(
             connected: false,
             topics: HashMap::new(),
             total_bytes: 0,
+            total_messages: 0,
             eviction_order: std::collections::VecDeque::new(),
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,

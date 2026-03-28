@@ -28,7 +28,6 @@ THE SOFTWARE.
 
 	export let readonly = false;
 	export let code: string = '';
-	export let result: string = '';
 
 	let editorElement: HTMLDivElement;
 
@@ -88,7 +87,6 @@ THE SOFTWARE.
 			editor.setValue(code ? prettyPrint(code) : '');
 			isUpdatingFromCode = false;
 		}
-		result = editor?.getValue();
 	}
 </script>
 

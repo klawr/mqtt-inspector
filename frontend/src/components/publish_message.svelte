@@ -144,7 +144,7 @@ THE SOFTWARE.
 		</div>
 	</div>
 	<div style="height: calc(100% - 8em)">
-		<Monaco bind:result={payload} bind:code={payload} />
+		<Monaco bind:code={payload} />
 	</div>
 
 	<Button on:click={send} style="width: 100%">Send</Button>

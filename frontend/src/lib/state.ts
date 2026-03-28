@@ -27,22 +27,19 @@ export class AppState {
 	pipelines: SavedPipeline[] = [];
 	commands: Command[] = [];
 	maxBrokerBytes: number = 64 * 1024 * 1024;
-	syncComplete: boolean = false;
 }
 
 const decoder = new TextDecoder();
 
 export class Message {
 	timestamp: string;
-	delta_t: number;
 	private _payload: ArrayBuffer | null;
 	private _text: string | null;
 
-	constructor(timestamp: string, payload: ArrayBuffer | null, text: string | null, delta_t: number = 0) {
+	constructor(timestamp: string, payload: ArrayBuffer | null, text: string | null) {
 		this.timestamp = timestamp;
 		this._payload = payload;
 		this._text = text;
-		this.delta_t = delta_t;
 	}
 
 	get text(): string {
@@ -96,7 +93,9 @@ export type BrokerRepositoryEntry = {
 	pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
 	connected: boolean;
 	backendTotalBytes: number;
+	backendTotalMessages: number;
 	bytesPerSecond: number;
+	messagesPerSecond: number;
 	rateHistory: RateHistoryEntry[];
 };
 

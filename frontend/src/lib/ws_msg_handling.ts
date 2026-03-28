@@ -30,7 +30,7 @@ let maxBrokerBytes = 64 * 1024 * 1024; // default, overridden by settings from b
 const rateWindows: Record<string, { t: number; b: number }[]> = {};
 const RATE_WINDOW_MS = 3000;
 
-function updateBytesPerSecond(broker: string, bytesReceived: number): number {
+function updateRates(broker: string, bytesReceived: number): { bytesPerSecond: number; messagesPerSecond: number } {
 	const now = Date.now();
 	if (!rateWindows[broker]) rateWindows[broker] = [];
 	rateWindows[broker].push({ t: now, b: bytesReceived });
@@ -43,7 +43,11 @@ function updateBytesPerSecond(broker: string, bytesReceived: number): number {
 		rateWindows[broker].length = 0;
 	}
 	const totalBytes = rateWindows[broker].reduce((sum, e) => sum + e.b, 0);
-	return totalBytes / (RATE_WINDOW_MS / 1000);
+	const seconds = RATE_WINDOW_MS / 1000;
+	return {
+		bytesPerSecond: totalBytes / seconds,
+		messagesPerSecond: rateWindows[broker].length / seconds
+	};
 }
 
 function findLeafBranch(topics: Treebranch[], topicPath: string): Treebranch | null {
@@ -66,6 +70,7 @@ export type BrokerParam = {
 		[key: string]: { payload: ArrayBuffer; timestamp: string }[];
 	};
 	total_bytes?: number;
+	total_messages?: number;
 	rate_history?: { timestamp: number; bytes_per_second: number; total_bytes: number }[];
 }[];
 export type MqttConnectionStatus = { source: string; connected: boolean };
@@ -100,9 +105,6 @@ export type MessagesEvictedParam = {
 	topic_message_count: number;
 };
 
-function decodePayloadBytes(message: { payload: ArrayBuffer }): Uint8Array {
-	return new Uint8Array(message.payload);
-}
 
 export function parseMqttWebSocketMessage(buffer: ArrayBuffer) {
 	const bytes = new Uint8Array(buffer);
@@ -170,7 +172,9 @@ function ensureBrokerEntry(brokerRepository: BrokerRepository, broker: string): 
 			pipeline: [],
 			connected: true,
 			backendTotalBytes: 0,
+			backendTotalMessages: 0,
 			bytesPerSecond: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		};
 	}
@@ -179,7 +183,6 @@ function ensureBrokerEntry(brokerRepository: BrokerRepository, broker: string): 
 
 export function processBrokers(
 	params: BrokerParam,
-	decoder: TextDecoder,
 	brokerRepository: BrokerRepository
 ) {
 	params.forEach((param) => {
@@ -190,7 +193,9 @@ export function processBrokers(
 				pipeline: [],
 				connected: param.connected,
 				backendTotalBytes: param.total_bytes ?? 0,
+				backendTotalMessages: param.total_messages ?? 0,
 				bytesPerSecond: 0,
+				messagesPerSecond: 0,
 				rateHistory: (param.rate_history ?? []).map((e) => ({
 					timestamp: e.timestamp,
 					bytesPerSecond: e.bytes_per_second,
@@ -201,6 +206,8 @@ export function processBrokers(
 			brokerRepository[param.broker].connected = param.connected;
 			brokerRepository[param.broker].backendTotalBytes =
 				param.total_bytes ?? brokerRepository[param.broker].backendTotalBytes;
+			brokerRepository[param.broker].backendTotalMessages =
+				param.total_messages ?? brokerRepository[param.broker].backendTotalMessages;
 			// Update rate history from backend (authoritative source)
 			if (param.rate_history) {
 				brokerRepository[param.broker].rateHistory = param.rate_history.map((e) => ({
@@ -372,9 +379,12 @@ export function processMQTTMessageMeta(message: MQTTMessageMetaParam, app: AppSt
 		}
 	}
 
-	// Update backend total bytes
+	// Update backend total bytes and rates
 	entry.backendTotalBytes = message.total_bytes;
-	entry.bytesPerSecond = updateBytesPerSecond(message.source, message.payload_size);
+	entry.backendTotalMessages += 1;
+	const rates = updateRates(message.source, message.payload_size);
+	entry.bytesPerSecond = rates.bytesPerSecond;
+	entry.messagesPerSecond = rates.messagesPerSecond;
 
 	// Pipeline tracking
 	addToPipeline(message.source, message.topic, message.timestamp, app.brokerRepository);
@@ -426,7 +436,7 @@ export function processMessagesEvictedBatch(items: MessagesEvictedParam[], app: 
 
 /** Process full message content for the selected topic.
  *  Does NOT update tree counts (meta handles that). Only adds message content. */
-export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecoder, app: AppState) {
+export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 	if (!app.brokerRepository[message.source]) {
 		return app;
 	}
@@ -437,10 +447,6 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 	const leaf = findLeafBranch(entry.topics, message.topic);
 	if (leaf) {
 		const new_entry = new Message(message.timestamp, message.payload, null);
-		if (leaf.messages.length) {
-			leaf.messages[0].delta_t =
-				new Date(message.timestamp).getTime() - new Date(leaf.messages[0].timestamp).getTime();
-		}
 		leaf.messages.unshift(new_entry);
 	}
 
@@ -455,7 +461,6 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 
 export function processMQTTMessages(
 	messages: MQTTMessageParam[],
-	decoder: TextDecoder,
 	app: AppState
 ) {
 	// Group messages by source+topic for bulk insertion
@@ -481,18 +486,6 @@ export function processMQTTMessages(
 	for (const { leaf, entries } of groups.values()) {
 		// Reverse to newest-first (messages arrive oldest-first from backend)
 		entries.reverse();
-		// Compute delta_t within the batch
-		for (let i = 1; i < entries.length; i++) {
-			entries[i - 1].delta_t =
-				new Date(entries[i - 1].timestamp).getTime() -
-				new Date(entries[i].timestamp).getTime();
-		}
-		// Connect batch to existing messages
-		if (entries.length > 0 && leaf.messages.length > 0) {
-			entries[entries.length - 1].delta_t =
-				new Date(entries[entries.length - 1].timestamp).getTime() -
-				new Date(leaf.messages[0].timestamp).getTime();
-		}
 		leaf.messages.splice(0, 0, ...entries);
 	}
 
@@ -571,7 +564,4 @@ export function processRateHistorySample(params: RateHistorySampleParam, app: Ap
 	return app;
 }
 
-export function processSyncComplete(app: AppState) {
-	app.syncComplete = true;
-	return app;
-}
+

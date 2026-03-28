@@ -48,6 +48,7 @@ pub struct MqttBroker {
     pub connected: bool,
     pub topics: HashMap<String, VecDeque<MqttMessage>>,
     pub total_bytes: usize,
+    pub total_messages: usize,
     /// Tracks insertion order for O(1) eviction: (topic_name, payload_len).
     #[serde(skip)]
     pub eviction_order: VecDeque<(String, usize)>,
@@ -200,6 +201,7 @@ mod tests {
             connected: false,
             topics: HashMap::new(),
             total_bytes: 0,
+            total_messages: 0,
             eviction_order: VecDeque::new(),
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
@@ -223,6 +225,7 @@ mod tests {
             connected: false,
             topics: HashMap::new(),
             total_bytes: 0,
+            total_messages: 0,
             eviction_order: VecDeque::new(),
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
@@ -308,6 +311,7 @@ mod tests {
             connected: true,
             topics: HashMap::new(),
             total_bytes: 0,
+            total_messages: 0,
             eviction_order: VecDeque::new(),
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
@@ -366,6 +370,7 @@ mod tests {
             connected: true,
             topics: HashMap::new(),
             total_bytes: 0,
+            total_messages: 0,
             eviction_order: VecDeque::new(),
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
@@ -382,8 +387,14 @@ mod tests {
         broker.topics.insert("stress/topic".to_string(), msgs);
 
         assert_eq!(broker.topics["stress/topic"].len(), 100);
-        assert_eq!(broker.topics["stress/topic"].front().unwrap().timestamp, "ts_0");
-        assert_eq!(broker.topics["stress/topic"].back().unwrap().timestamp, "ts_99");
+        assert_eq!(
+            broker.topics["stress/topic"].front().unwrap().timestamp,
+            "ts_0"
+        );
+        assert_eq!(
+            broker.topics["stress/topic"].back().unwrap().timestamp,
+            "ts_99"
+        );
     }
 
     #[test]
@@ -395,6 +406,7 @@ mod tests {
             connected: true,
             topics: HashMap::new(),
             total_bytes: 0,
+            total_messages: 0,
             eviction_order: VecDeque::new(),
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,

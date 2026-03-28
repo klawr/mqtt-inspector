@@ -41,13 +41,11 @@ THE SOFTWARE.
 	import AddBroker from '../components/dialogs/add_broker.svelte';
 	import {
 		Add,
-		CheckmarkFilled,
 		CircleDash,
 		CircleSolid,
 		Connect,
 		InformationFilled,
 		LogoGithub,
-		Renew,
 		TrashCan
 	} from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
@@ -69,8 +67,7 @@ THE SOFTWARE.
 		processPipelines,
 		parseMqttWebSocketMessage,
 		processRateHistorySample,
-		processSettings,
-		processSyncComplete
+		processSettings
 	} from '$lib/ws_msg_handling';
 	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
 	import { selectedTheme, availableThemes } from '../store';
@@ -90,8 +87,6 @@ THE SOFTWARE.
 
 	const MQTT_BATCH_FLUSH_MS = 16;
 	const SYNC_TIMEOUT_MS = 5000;
-
-	const decoder = new TextDecoder('utf-8');
 
 	// Save initial URL params before reactive statements can clear them
 	const initialParams = new URLSearchParams(window.location.search);
@@ -121,7 +116,7 @@ THE SOFTWARE.
 		}
 		const batch = pendingMqttMessages;
 		pendingMqttMessages = [];
-		app = processMQTTMessages(batch, decoder, app);
+		app = processMQTTMessages(batch, app);
 	}
 
 	function scheduleMqttFlush() {
@@ -184,7 +179,7 @@ THE SOFTWARE.
 					app = processConnectionStatus(json.params, app);
 					break;
 				case 'mqtt_brokers': {
-					app.brokerRepository = processBrokers(json.params, decoder, app.brokerRepository);
+					app.brokerRepository = processBrokers(json.params, app.brokerRepository);
 					const params = new URLSearchParams(window.location.search);
 					const broker = params.get('broker');
 					if (broker && app.brokerRepository[broker]) {
@@ -203,6 +198,17 @@ THE SOFTWARE.
 				}
 				case 'topic_summaries':
 					app.brokerRepository = processTopicSummaries(json.params, app.brokerRepository);
+					if (pendingTopic && app.selectedBroker && app.brokerRepository[app.selectedBroker]) {
+						const found = findbranchwithid(
+							pendingTopic,
+							app.brokerRepository[app.selectedBroker].topics
+						);
+						if (found) {
+							app.brokerRepository[app.selectedBroker].selectedTopic = found;
+							requestTopicSelection(app.selectedBroker, found.id, socket);
+						}
+						pendingTopic = null;
+					}
 					break;
 				case 'mqtt_message_meta_batch':
 					app = processMQTTMessageMetaBatch(json.params, app);
@@ -251,21 +257,6 @@ THE SOFTWARE.
 				case 'settings':
 					app = processSettings(json.params, app);
 					break;
-				case 'sync_complete':
-					app = processSyncComplete(app);
-					if (pendingTopic && app.selectedBroker && app.brokerRepository[app.selectedBroker]) {
-						const found = findbranchwithid(
-							pendingTopic,
-							app.brokerRepository[app.selectedBroker].topics
-						);
-						if (found) {
-							app.brokerRepository[app.selectedBroker].selectedTopic = found;
-							// Tell backend about our topic selection
-							requestTopicSelection(app.selectedBroker, found.id, socket);
-						}
-						pendingTopic = null;
-					}
-					break;
 				default:
 					break;
 			}
@@ -302,6 +293,17 @@ THE SOFTWARE.
 		if (bytesPerSecond < 1024) return bytesPerSecond.toFixed(0) + ' B/s';
 		if (bytesPerSecond < 1024 * 1024) return (bytesPerSecond / 1024).toFixed(1) + ' KB/s';
 		return (bytesPerSecond / (1024 * 1024)).toFixed(1) + ' MB/s';
+	}
+
+	function formatMsgCount(count: number): string {
+		if (count < 1000) return count + ' msg';
+		if (count < 1_000_000) return (count / 1000).toFixed(1) + 'k msg';
+		return (count / 1_000_000).toFixed(1) + 'M msg';
+	}
+
+	function formatMsgRate(rate: number): string {
+		if (rate < 1000) return rate.toFixed(0) + ' msg/s';
+		return (rate / 1000).toFixed(1) + 'k msg/s';
 	}
 
 	function formatDuration(ms: number): string {
@@ -461,27 +463,18 @@ THE SOFTWARE.
 		<div
 			style="font-size: 0.75rem; opacity: 0.7; padding: 0 1em; white-space: nowrap; display: flex; align-items: center; gap: 0.4em;"
 		>
-			{#if app.syncComplete}
-				{formatBytes(entry.backendTotalBytes)}
-				{#if entry.backendTotalBytes >= app.maxBrokerBytes}
-					<InformationFilled
-						size={16}
-						title="Storage at maximum ({formatBytes(
-							app.maxBrokerBytes
-						)}) — oldest messages are being evicted"
-					/>
-				{:else}
-					<CheckmarkFilled
-						size={16}
-						title="Synced"
-						style="color: var(--cds-support-success, #24a148)"
-					/>
-				{/if}
-			{:else}
-				{formatBytes(entry.backendTotalBytes)}
-				<Renew size={16} title="Syncing..." class="spin-icon" />
+			{formatBytes(entry.backendTotalBytes)}
+			{#if entry.backendTotalBytes >= app.maxBrokerBytes}
+				<InformationFilled
+					size={16}
+					title="Storage at maximum ({formatBytes(
+						app.maxBrokerBytes
+					)}) — oldest messages are being evicted"
+				/>
 			{/if}
 			<span style="opacity: 0.8;">| {formatRate(entry.bytesPerSecond || 0)}</span>
+			<span style="opacity: 0.8;">| {formatMsgCount(entry.backendTotalMessages)}</span>
+			<span style="opacity: 0.8;">| {formatMsgRate(entry.messagesPerSecond || 0)}</span>
 			<span style="opacity: 0.8;">| History: {formatDuration(getHistoryReachMs(entry) || 0)}</span>
 		</div>
 	{/if}
@@ -569,8 +562,11 @@ THE SOFTWARE.
 					<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
 				</div>
 				<div class="treeview-col">
-					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-						<Messages bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic} />
+					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length || topicSyncing}
+						<Messages
+							bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+							{topicSyncing}
+						/>
 					{/if}
 				</div>
 			</div>
@@ -584,8 +580,11 @@ THE SOFTWARE.
 					/>
 				</div>
 				<div class="treeview-col">
-					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length}
-						<Messages bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic} />
+					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length || topicSyncing}
+						<Messages
+							bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+							{topicSyncing}
+						/>
 					{/if}
 				</div>
 			</div>
@@ -646,18 +645,5 @@ THE SOFTWARE.
 
 	:global(.bx--side-nav__submenu-chevron) {
 		transform: scaleY(-1) !important;
-	}
-
-	:global(.spin-icon) {
-		animation: spin 1.5s linear infinite;
-	}
-
-	@keyframes spin {
-		from {
-			transform: rotate(0deg);
-		}
-		to {
-			transform: rotate(360deg);
-		}
 	}
 </style>

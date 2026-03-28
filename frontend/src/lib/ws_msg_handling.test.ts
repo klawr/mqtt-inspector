@@ -12,7 +12,6 @@ import {
 	parseMqttWebSocketMessage,
 	type MQTTMessageParam,
 	processSettings,
-	processSyncComplete,
 	processRateHistorySample,
 	type RateHistorySampleParam,
 	processTopicSummaries,
@@ -73,6 +72,8 @@ test('processBrokerRemoval deletes broker from AppState', () => {
 			connected: false,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		}
 	};
@@ -93,6 +94,8 @@ test('processBrokerRemoval clears selectedBroker when deleting the selected one'
 			connected: false,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		}
 	};
@@ -113,6 +116,8 @@ test('processBrokerRemoval handles non-existing broker correctly', () => {
 			connected: false,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		}
 	};
@@ -132,6 +137,8 @@ test('processConnectionStatus updates connection status in AppState', () => {
 			pipeline: [],
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		}
 	};
@@ -152,6 +159,8 @@ test('processConnectionStatus handles non-existing broker correctly', () => {
 			pipeline: [],
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		}
 	};
@@ -172,17 +181,8 @@ test('AppState class initializes correctly', () => {
 	expect(appState.commands).toEqual([]);
 });
 
-class MockTextDecoder {
-	decode(input?: ArrayBufferView | ArrayBuffer, options?: TextDecodeOptions): string {
-		if (input) {
-			return new TextDecoder().decode(input, options);
-		}
-		return '';
-	}
-}
 test('processBrokers updates BrokerRepository correctly', () => {
 	const brokerRepository: BrokerRepository = {};
-	const decoder = new MockTextDecoder();
 
 	const params: BrokerParam = [
 		{
@@ -197,7 +197,7 @@ test('processBrokers updates BrokerRepository correctly', () => {
 		}
 	];
 
-	const result = processBrokers(params, decoder as unknown as TextDecoder, brokerRepository);
+	const result = processBrokers(params, brokerRepository);
 
 	expect(result).toEqual({
 		broker1: {
@@ -207,6 +207,8 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			connected: true,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: []
 		},
 		broker2: {
@@ -216,6 +218,8 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			connected: false,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: []
 		}
 	});
@@ -223,11 +227,10 @@ test('processBrokers updates BrokerRepository correctly', () => {
 
 test('processBrokers handles empty params correctly', () => {
 	const brokerRepository: BrokerRepository = {};
-	const decoder = new MockTextDecoder();
 
 	const params: BrokerParam = [];
 
-	const result = processBrokers(params, decoder as unknown as TextDecoder, brokerRepository);
+	const result = processBrokers(params, brokerRepository);
 
 	expect(result).toEqual({});
 });
@@ -258,7 +261,6 @@ test('parseMqttWebSocketMessage parses binary mqtt frame', () => {
 });
 
 test('processMQTTMessage handles payload from parsed binary frame', () => {
-	const decoder = new MockTextDecoder();
 	const app = new AppState();
 	// Pre-create broker entry with topic tree (processMQTTMessage no longer auto-creates)
 	app.brokerRepository['broker1'] = {
@@ -277,6 +279,8 @@ test('processMQTTMessage handles payload from parsed binary frame', () => {
 		connected: true,
 		backendTotalBytes: 17,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 	const message: MQTTMessageParam = {
@@ -287,13 +291,12 @@ test('processMQTTMessage handles payload from parsed binary frame', () => {
 		total_bytes: 17
 	};
 
-	processMQTTMessage(message, decoder as unknown as TextDecoder, app);
+	processMQTTMessage(message, app);
 
 	expect(app.brokerRepository['broker1'].topics[0].messages[0].text).toBe('Hello from binary');
 });
 
 test('processMQTTMessages applies batched messages in order', () => {
-	const decoder = new MockTextDecoder();
 	const app = new AppState();
 	// Pre-create broker entry with topic tree
 	app.brokerRepository['broker1'] = {
@@ -312,6 +315,8 @@ test('processMQTTMessages applies batched messages in order', () => {
 		connected: true,
 		backendTotalBytes: 11,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 	const messages: MQTTMessageParam[] = [
@@ -331,7 +336,7 @@ test('processMQTTMessages applies batched messages in order', () => {
 		}
 	];
 
-	processMQTTMessages(messages, decoder as unknown as TextDecoder, app);
+	processMQTTMessages(messages, app);
 
 	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual(
 		['second', 'first']
@@ -347,13 +352,6 @@ test('processSettings updates maxBrokerBytes on AppState', () => {
 	expect(result.maxBrokerBytes).toBe(256 * 1024 * 1024);
 });
 
-test('processSyncComplete sets syncComplete flag', () => {
-	const app = new AppState();
-	expect(app.syncComplete).toBe(false);
-	const result = processSyncComplete(app);
-	expect(result.syncComplete).toBe(true);
-});
-
 test('processRateHistorySample appends entry and updates bytesPerSecond', () => {
 	const app = new AppState();
 	app.brokerRepository = {
@@ -364,6 +362,8 @@ test('processRateHistorySample appends entry and updates bytesPerSecond', () => 
 			connected: true,
 			backendTotalBytes: 5000,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		}
 	};
@@ -393,6 +393,8 @@ test('processRateHistorySample creates new array reference', () => {
 			connected: true,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: [],
 		}
 	};
@@ -429,7 +431,6 @@ test('processRateHistorySample ignores unknown broker', () => {
 
 test('processBrokers populates rateHistory from backend data', () => {
 	const brokerRepository: BrokerRepository = {};
-	const decoder = new MockTextDecoder();
 
 	const params: BrokerParam = [
 		{
@@ -444,7 +445,7 @@ test('processBrokers populates rateHistory from backend data', () => {
 		}
 	];
 
-	const result = processBrokers(params, decoder as unknown as TextDecoder, brokerRepository);
+	const result = processBrokers(params, brokerRepository);
 
 	expect(result['broker1:1883'].rateHistory).toHaveLength(2);
 	expect(result['broker1:1883'].rateHistory[0]).toEqual({
@@ -645,6 +646,8 @@ test('processMQTTMessageMeta increments existing topic count', () => {
 		connected: true,
 		backendTotalBytes: 0,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 
@@ -673,6 +676,8 @@ test('processMQTTMessageMeta does not overwrite selectedBroker', () => {
 		connected: true,
 		backendTotalBytes: 0,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 
@@ -738,6 +743,8 @@ function makeBrokerWithTopicTree(): AppState {
 		connected: true,
 		backendTotalBytes: 1000,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 	return app;
@@ -883,6 +890,8 @@ test('processTopicMessagesClear is noop without selected topic', () => {
 		connected: true,
 		backendTotalBytes: 0,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 
@@ -915,7 +924,6 @@ test('processPipelines handles empty array', () => {
 
 test('processMQTTMessage does nothing for non-existing broker', () => {
 	const app = new AppState();
-	const decoder = new MockTextDecoder();
 	const message: MQTTMessageParam = {
 		source: 'missing:1883',
 		topic: 'test',
@@ -923,13 +931,12 @@ test('processMQTTMessage does nothing for non-existing broker', () => {
 		timestamp: 'ts'
 	};
 
-	const result = processMQTTMessage(message, decoder as unknown as TextDecoder, app);
+	const result = processMQTTMessage(message, app);
 	expect(result).toBe(app);
 });
 
 test('processMQTTMessage does nothing for non-existing topic in tree', () => {
 	const app = new AppState();
-	const decoder = new MockTextDecoder();
 	app.brokerRepository['b:1883'] = {
 		topics: [
 			{
@@ -946,6 +953,8 @@ test('processMQTTMessage does nothing for non-existing topic in tree', () => {
 		connected: true,
 		backendTotalBytes: 0,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 
@@ -956,14 +965,13 @@ test('processMQTTMessage does nothing for non-existing topic in tree', () => {
 		timestamp: 'ts'
 	};
 
-	processMQTTMessage(message, decoder as unknown as TextDecoder, app);
+	processMQTTMessage(message, app);
 	// "other" topic should be untouched
 	expect(app.brokerRepository['b:1883'].topics[0].messages).toHaveLength(0);
 });
 
-test('processMQTTMessage calculates delta_t between messages', () => {
+test('processMQTTMessage inserts messages newest-first', () => {
 	const app = new AppState();
-	const decoder = new MockTextDecoder();
 	app.brokerRepository['b:1883'] = {
 		topics: [
 			{
@@ -980,6 +988,8 @@ test('processMQTTMessage calculates delta_t between messages', () => {
 		connected: true,
 		backendTotalBytes: 0,
 		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
 		rateHistory: []
 	};
 
@@ -996,16 +1006,14 @@ test('processMQTTMessage calculates delta_t between messages', () => {
 		timestamp: '2024-01-01T00:00:05.000Z'
 	};
 
-	processMQTTMessage(msg1, decoder as unknown as TextDecoder, app);
-	processMQTTMessage(msg2, decoder as unknown as TextDecoder, app);
+	processMQTTMessage(msg1, app);
+	processMQTTMessage(msg2, app);
 
 	const messages = app.brokerRepository['b:1883'].topics[0].messages;
 	expect(messages).toHaveLength(2);
 	// Newest first
 	expect(messages[0].text).toBe('second');
 	expect(messages[1].text).toBe('first');
-	// delta_t should be set on the previous newest (now second)
-	expect(messages[1].delta_t).toBe(5000);
 });
 
 // ─── processSettings edge cases ──────────────────────────────────────
@@ -1036,15 +1044,16 @@ test('processBrokers updates existing broker status', () => {
 			connected: false,
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
+			backendTotalMessages: 0,
+			messagesPerSecond: 0,
 			rateHistory: []
 		}
 	};
-	const decoder = new MockTextDecoder();
 	const params: BrokerParam = [
 		{ broker: 'b:1883', connected: true, topics: {}, total_bytes: 999 }
 	];
 
-	const result = processBrokers(params, decoder as unknown as TextDecoder, br);
+	const result = processBrokers(params, br);
 
 	expect(result['b:1883'].connected).toBe(true);
 	expect(result['b:1883'].backendTotalBytes).toBe(999);

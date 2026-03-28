@@ -26,6 +26,7 @@ THE SOFTWARE.
 		Button,
 		Checkbox,
 		CodeSnippet,
+		InlineLoading,
 		ProgressIndicator,
 		ProgressStep,
 		Tile
@@ -35,6 +36,7 @@ THE SOFTWARE.
 	import { ChevronLeft, ChevronRight, PageFirst } from 'carbon-icons-svelte';
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
+	export let topicSyncing = false;
 
 	const STEP_WIDTH_PX = 112; // width of one ProgressStep including gap
 
@@ -45,6 +47,20 @@ THE SOFTWARE.
 	let selectedMessage = selectedTopic?.messages[selectedIndex];
 
 	$: messageCount = selectedTopic?.messages.length ?? 0;
+
+	// When locked and new messages arrive (prepended at index 0), keep pointing
+	// at the same message by shifting selectedIndex.
+	let prevMessageCount = messageCount;
+	$: {
+		const diff = messageCount - prevMessageCount;
+		if (diff > 0 && lockedIndex && selectedIndex >= 0) {
+			selectedIndex += diff;
+		}
+		if (diff > 0 && lockedIndexCompare && selectedIndexCompare >= 0) {
+			selectedIndexCompare += diff;
+		}
+		prevMessageCount = messageCount;
+	}
 
 	// Dynamic window size based on container width
 	let containerWidth = 800;
@@ -106,6 +122,13 @@ THE SOFTWARE.
 		}
 	}
 
+	function getDeltaLabel(messages: import('$lib/state').Message[], index: number): string {
+		if (index >= messages.length - 1) return formatDuration(0);
+		const curr = new Date(messages[index].timestamp).getTime();
+		const next = new Date(messages[index + 1].timestamp).getTime();
+		return formatDuration(curr - next);
+	}
+
 	function curateDate(dateString: string) {
 		const date = new Date(dateString);
 		return `${date.toLocaleDateString('de-DE')}, ${date.toLocaleTimeString(undefined, {
@@ -120,23 +143,28 @@ THE SOFTWARE.
 		<CodeSnippet light code={selectedTopic?.id}></CodeSnippet>
 	</div>
 
-	{#if selectedTopic?.messages.length}
+	{#if topicSyncing && !selectedTopic?.messages.length}
+		<Tile
+			light
+			style="height: calc(100vh - 11em); display: flex; align-items: center; justify-content: center;"
+		>
+			<InlineLoading description="Loading messages..." />
+		</Tile>
+	{:else if selectedTopic?.messages.length}
 		<Tile light style="height: calc(100vh - 11em)">
 			{#if selectedMessage}
 				<div style="display: flex; justify-content: space-between; align-items: center;">
 					<h5>
 						Selected message: {curateDate(selectedMessage.timestamp)}
-						{#if selectedMessage.delta_t}
-							<span
-								style="font-weight: normal; margin-left: 0.5em; color: var(--cds-text-02, #525252);"
-							>
-								(Δ {formatDuration(selectedMessage.delta_t)})
-							</span>
-						{/if}
 					</h5>
-					<p>
-						{selectedIndex + 1} / {messageCount} messages
-					</p>
+					<div style="display: flex; align-items: center; gap: 0.5em;">
+						{#if topicSyncing}
+							<InlineLoading description="Syncing..." />
+						{/if}
+						<p>
+							{selectedIndex + 1} / {messageCount} messages
+						</p>
+					</div>
 				</div>
 				<div style="height: calc(100% - 9em">
 					{#if compareMessage && selectedMessageCompare}
@@ -210,7 +238,7 @@ THE SOFTWARE.
 						{#each visibleSlice as message, i}
 							{@const realIndex = Math.max(0, windowStart) + i}
 							<ProgressStep
-								label={formatDuration(message.delta_t ? message.delta_t : 0)}
+								label={getDeltaLabel(selectedTopic?.messages ?? [], realIndex)}
 								on:click={() => selectMessage(realIndex)}
 								title={curateDate(message.timestamp)}
 							/>
@@ -225,7 +253,7 @@ THE SOFTWARE.
 							{#each visibleSliceCompare as message, i}
 								{@const realIndex = Math.max(0, windowStartCompare) + i}
 								<ProgressStep
-									label={formatDuration(message.delta_t ? message.delta_t : 0)}
+									label={getDeltaLabel(selectedTopic?.messages ?? [], realIndex)}
 									on:click={() => selectMessageCompare(realIndex)}
 									title={curateDate(message.timestamp)}
 								/>
