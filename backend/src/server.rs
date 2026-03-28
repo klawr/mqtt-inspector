@@ -40,9 +40,8 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     let mqtt_map = mqtt::BrokerMap::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
     let peer_map = websocket::PeerMap::new(Mutex::new(HashMap::new()));
-    let notification_buf = websocket::NotificationBuf::new(
-        Mutex::new(websocket::NotificationBuffer::default()),
-    );
+    let notification_buf =
+        websocket::NotificationBuf::new(Mutex::new(websocket::NotificationBuffer::default()));
 
     // Spawn a dedicated thread that flushes batched notifications every 100 ms
     {
@@ -55,7 +54,12 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     }
 
     let broker_path = &std::format!("{config_path}/brokers.json");
-    broker_peer_bridge::connect_to_known_brokers(broker_path, &peer_map, &mqtt_map, &notification_buf);
+    broker_peer_bridge::connect_to_known_brokers(
+        broker_path,
+        &peer_map,
+        &mqtt_map,
+        &notification_buf,
+    );
     println!("Listening for connections on {server_addr} using static files from {static_files} and config {config_path}");
 
     let ws = warp::path("ws")

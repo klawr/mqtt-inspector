@@ -26,7 +26,7 @@ import {
 	processPipelines,
 	type PipelineParam
 } from './ws_msg_handling';
-import { AppState, type BrokerRepository, type Treebranch } from './state';
+import { AppState, Message, type BrokerRepository } from './state';
 
 test('processConfigs processes commands correctly', () => {
 	const commands: CommandParam[] = [
@@ -74,7 +74,7 @@ test('processBrokerRemoval deletes broker from AppState', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		}
 	};
 
@@ -96,7 +96,7 @@ test('processBrokerRemoval clears selectedBroker when deleting the selected one'
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		}
 	};
 
@@ -118,7 +118,7 @@ test('processBrokerRemoval handles non-existing broker correctly', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		}
 	};
 
@@ -139,7 +139,7 @@ test('processConnectionStatus updates connection status in AppState', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		}
 	};
 
@@ -161,7 +161,7 @@ test('processConnectionStatus handles non-existing broker correctly', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		}
 	};
 
@@ -208,6 +208,7 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
+			evictedMessages: 0,
 			messagesPerSecond: 0,
 			rateHistory: []
 		},
@@ -219,6 +220,7 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
+			evictedMessages: 0,
 			messagesPerSecond: 0,
 			rateHistory: []
 		}
@@ -364,7 +366,7 @@ test('processRateHistorySample appends entry and updates bytesPerSecond', () => 
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		}
 	};
 
@@ -395,7 +397,7 @@ test('processRateHistorySample creates new array reference', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		}
 	};
 
@@ -517,7 +519,7 @@ test('parseMqttWebSocketMessage handles large payload', () => {
 		params: { source: 'b', topic: 't', timestamp: 'ts' }
 	});
 	const headerBytes = new TextEncoder().encode(header);
-	const payload = new Uint8Array(10000).fill(0xAB);
+	const payload = new Uint8Array(10000).fill(0xab);
 	const buffer = new Uint8Array(4 + headerBytes.length + payload.length);
 	new DataView(buffer.buffer).setUint32(0, headerBytes.length, false);
 	buffer.set(headerBytes, 4);
@@ -527,7 +529,7 @@ test('parseMqttWebSocketMessage handles large payload', () => {
 	expect(parsed).not.toBeNull();
 	const resultPayload = new Uint8Array(parsed?.params.payload);
 	expect(resultPayload.length).toBe(10000);
-	expect(resultPayload[0]).toBe(0xAB);
+	expect(resultPayload[0]).toBe(0xab);
 });
 
 // ─── processTopicSummaries ───────────────────────────────────────────
@@ -560,7 +562,7 @@ test('processTopicSummaries handles single topic with count 1', () => {
 	const br: BrokerRepository = {};
 	const params: TopicSummariesParam = {
 		source: 'b:1883',
-		topics: { 'test': { count: 1, latest_timestamp: 'ts' } }
+		topics: { test: { count: 1, latest_timestamp: 'ts' } }
 	};
 
 	const result = processTopicSummaries(params, br);
@@ -607,7 +609,7 @@ test('processTopicSummaries creates broker entry if missing', () => {
 	const br: BrokerRepository = {};
 	const params: TopicSummariesParam = {
 		source: 'new:1883',
-		topics: { 'x': { count: 1, latest_timestamp: 'ts' } }
+		topics: { x: { count: 1, latest_timestamp: 'ts' } }
 	};
 
 	const result = processTopicSummaries(params, br);
@@ -709,6 +711,23 @@ test('processMQTTMessageMeta updates backendTotalBytes', () => {
 	expect(app.brokerRepository['b:1883'].backendTotalBytes).toBe(12345);
 });
 
+test('processMQTTMessageMeta increments current backend message count', () => {
+	const app = new AppState();
+	const meta: MQTTMessageMetaParam = {
+		source: 'b:1883',
+		topic: 't',
+		timestamp: 'ts',
+		payload_size: 50,
+		total_bytes: 50,
+		topic_message_count: 1
+	};
+
+	processMQTTMessageMeta(meta, app);
+	processMQTTMessageMeta({ ...meta, total_bytes: 100, topic_message_count: 2 }, app);
+
+	expect(app.brokerRepository['b:1883'].backendTotalMessages).toBe(2);
+});
+
 // ─── processMessagesEvicted ──────────────────────────────────────────
 
 function makeBrokerWithTopicTree(): AppState {
@@ -728,11 +747,11 @@ function makeBrokerWithTopicTree(): AppState {
 						original_text: 'b',
 						number_of_messages: 5,
 						messages: [
-							{ timestamp: 'ts1', text: 'msg1' },
-							{ timestamp: 'ts2', text: 'msg2' },
-							{ timestamp: 'ts3', text: 'msg3' },
-							{ timestamp: 'ts4', text: 'msg4' },
-							{ timestamp: 'ts5', text: 'msg5' }
+							new Message('ts1', null, 'msg1'),
+							new Message('ts2', null, 'msg2'),
+							new Message('ts3', null, 'msg3'),
+							new Message('ts4', null, 'msg4'),
+							new Message('ts5', null, 'msg5')
 						]
 					}
 				]
@@ -743,7 +762,7 @@ function makeBrokerWithTopicTree(): AppState {
 		connected: true,
 		backendTotalBytes: 1000,
 		bytesPerSecond: 0,
-		backendTotalMessages: 0,
+		backendTotalMessages: 10,
 		messagesPerSecond: 0,
 		rateHistory: []
 	};
@@ -765,6 +784,21 @@ test('processMessagesEvicted decrements topic tree counts', () => {
 	expect(root.number_of_messages).toBe(8); // 10 - 2
 	const child = root.children![0];
 	expect(child.number_of_messages).toBe(3); // 5 - 2
+});
+
+test('processMessagesEvicted decrements backend count and tracks evicted messages', () => {
+	const app = makeBrokerWithTopicTree();
+	const params: MessagesEvictedParam = {
+		source: 'b:1883',
+		topic: 'a/b',
+		count: 2,
+		topic_message_count: 3
+	};
+
+	processMessagesEvicted(params, app);
+
+	const entry = app.brokerRepository['b:1883'];
+	expect(entry.backendTotalMessages).toBe(8);
 });
 
 test('processMessagesEvicted removes oldest messages from selected topic', () => {
@@ -837,9 +871,30 @@ test('processMessagesEvicted removes leaf node when count reaches 0', () => {
 test('processMQTTMessageMetaBatch processes all items', () => {
 	const app = new AppState();
 	const metas: MQTTMessageMetaParam[] = [
-		{ source: 'b:1883', topic: 't1', timestamp: 'ts1', payload_size: 10, total_bytes: 10, topic_message_count: 1 },
-		{ source: 'b:1883', topic: 't2', timestamp: 'ts2', payload_size: 20, total_bytes: 30, topic_message_count: 1 },
-		{ source: 'b:1883', topic: 't3', timestamp: 'ts3', payload_size: 30, total_bytes: 60, topic_message_count: 1 }
+		{
+			source: 'b:1883',
+			topic: 't1',
+			timestamp: 'ts1',
+			payload_size: 10,
+			total_bytes: 10,
+			topic_message_count: 1
+		},
+		{
+			source: 'b:1883',
+			topic: 't2',
+			timestamp: 'ts2',
+			payload_size: 20,
+			total_bytes: 30,
+			topic_message_count: 1
+		},
+		{
+			source: 'b:1883',
+			topic: 't3',
+			timestamp: 'ts3',
+			payload_size: 30,
+			total_bytes: 60,
+			topic_message_count: 1
+		}
 	];
 
 	processMQTTMessageMetaBatch(metas, app);
@@ -859,6 +914,7 @@ test('processMessagesEvictedBatch processes all items', () => {
 
 	const root = app.brokerRepository['b:1883'].topics[0];
 	expect(root.number_of_messages).toBe(8); // 10 - 1 - 1
+	expect(app.brokerRepository['b:1883'].backendTotalMessages).toBe(8);
 });
 
 // ─── processTopicMessagesClear ───────────────────────────────────────
@@ -1020,7 +1076,10 @@ test('processMQTTMessage inserts messages newest-first', () => {
 
 test('processSettings stores max_broker_bytes correctly', () => {
 	const app = new AppState();
-	const result = processSettings({ max_broker_bytes: 512 * 1024 * 1024, max_message_size: 1024 * 1024 }, app);
+	const result = processSettings(
+		{ max_broker_bytes: 512 * 1024 * 1024, max_message_size: 1024 * 1024 },
+		app
+	);
 	expect(result.maxBrokerBytes).toBe(512 * 1024 * 1024);
 });
 
@@ -1049,9 +1108,7 @@ test('processBrokers updates existing broker status', () => {
 			rateHistory: []
 		}
 	};
-	const params: BrokerParam = [
-		{ broker: 'b:1883', connected: true, topics: {}, total_bytes: 999 }
-	];
+	const params: BrokerParam = [{ broker: 'b:1883', connected: true, topics: {}, total_bytes: 999 }];
 
 	const result = processBrokers(params, br);
 

@@ -24,13 +24,14 @@ import { findbranchwithid } from './helper';
 import { Message } from './state';
 import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
 
-let maxBrokerBytes = 64 * 1024 * 1024; // default, overridden by settings from backend
-
 /** Sliding-window rate tracker: per-broker list of (timestamp_ms, byteCount) samples. */
 const rateWindows: Record<string, { t: number; b: number }[]> = {};
 const RATE_WINDOW_MS = 3000;
 
-function updateRates(broker: string, bytesReceived: number): { bytesPerSecond: number; messagesPerSecond: number } {
+function updateRates(
+	broker: string,
+	bytesReceived: number
+): { bytesPerSecond: number; messagesPerSecond: number } {
 	const now = Date.now();
 	if (!rateWindows[broker]) rateWindows[broker] = [];
 	rateWindows[broker].push({ t: now, b: bytesReceived });
@@ -105,7 +106,6 @@ export type MessagesEvictedParam = {
 	topic_message_count: number;
 };
 
-
 export function parseMqttWebSocketMessage(buffer: ArrayBuffer) {
 	const bytes = new Uint8Array(buffer);
 	if (bytes.length < 4) {
@@ -164,7 +164,10 @@ export function processConnectionStatus(params: MqttConnectionStatus, app: AppSt
 	return app;
 }
 
-function ensureBrokerEntry(brokerRepository: BrokerRepository, broker: string): BrokerRepositoryEntry {
+function ensureBrokerEntry(
+	brokerRepository: BrokerRepository,
+	broker: string
+): BrokerRepositoryEntry {
 	if (!brokerRepository[broker]) {
 		brokerRepository[broker] = {
 			topics: [],
@@ -175,16 +178,13 @@ function ensureBrokerEntry(brokerRepository: BrokerRepository, broker: string): 
 			backendTotalMessages: 0,
 			bytesPerSecond: 0,
 			messagesPerSecond: 0,
-			rateHistory: [],
+			rateHistory: []
 		};
 	}
 	return brokerRepository[broker];
 }
 
-export function processBrokers(
-	params: BrokerParam,
-	brokerRepository: BrokerRepository
-) {
+export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepository) {
 	params.forEach((param) => {
 		if (!brokerRepository[param.broker]) {
 			brokerRepository[param.broker] = {
@@ -200,7 +200,7 @@ export function processBrokers(
 					timestamp: e.timestamp,
 					bytesPerSecond: e.bytes_per_second,
 					totalBytes: e.total_bytes
-				})),
+				}))
 			};
 		} else {
 			brokerRepository[param.broker].connected = param.connected;
@@ -224,7 +224,10 @@ export function processBrokers(
 
 /// Process topic summaries from the backend (initial sync).
 /// Builds the topic tree structure with correct counts but no message content.
-export function processTopicSummaries(params: TopicSummariesParam, brokerRepository: BrokerRepository) {
+export function processTopicSummaries(
+	params: TopicSummariesParam,
+	brokerRepository: BrokerRepository
+) {
 	const entry = ensureBrokerEntry(brokerRepository, params.source);
 
 	for (const [topic, info] of Object.entries(params.topics)) {
@@ -268,7 +271,9 @@ function createTreeBranchEntryText(branch: Treebranch) {
 
 	text += ' (';
 
-	const leafMessages = branch.number_of_messages - (branch.children ?? []).reduce((sum, c) => sum + c.number_of_messages, 0);
+	const leafMessages =
+		branch.number_of_messages -
+		(branch.children ?? []).reduce((sum, c) => sum + c.number_of_messages, 0);
 
 	if (leafMessages > 0) {
 		text += `${leafMessages} message${leafMessages > 1 ? 's' : ''}`;
@@ -293,7 +298,7 @@ function addToTopicBranchMeta(
 	topicsplit: string[],
 	index: number,
 	topicbranch: Treebranch[] | undefined,
-	count: number = 1,
+	count: number = 1
 ) {
 	const key = topicsplit[index];
 	let found = topicbranch?.find((element) => element.original_text === key);
@@ -327,7 +332,11 @@ function addToTopicBranchMeta(
 	return topicbranch;
 }
 
-function addToTopicTreeMeta(topic: string, topictree: Treebranch[], count: number = 1): Treebranch[] {
+function addToTopicTreeMeta(
+	topic: string,
+	topictree: Treebranch[],
+	count: number = 1
+): Treebranch[] {
 	const branch = topic.split('/');
 	return addToTopicBranchMeta(branch, 0, topictree, count) || [];
 }
@@ -337,7 +346,7 @@ function decrementTopicTreeCounts(
 	topicsplit: string[],
 	index: number,
 	topicbranch: Treebranch[] | undefined,
-	count: number,
+	count: number
 ) {
 	if (!topicbranch || index === topicsplit.length) return;
 	const key = topicsplit[index];
@@ -396,6 +405,7 @@ export function processMQTTMessageMeta(message: MQTTMessageMetaParam, app: AppSt
 export function processMessagesEvicted(params: MessagesEvictedParam, app: AppState) {
 	const entry = app.brokerRepository[params.source];
 	if (!entry) return app;
+	entry.backendTotalMessages = Math.max(0, entry.backendTotalMessages - params.count);
 
 	// Decrement topic tree counts
 	const parts = params.topic.split('/');
@@ -459,10 +469,7 @@ export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 	return app;
 }
 
-export function processMQTTMessages(
-	messages: MQTTMessageParam[],
-	app: AppState
-) {
+export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState) {
 	// Group messages by source+topic for bulk insertion
 	const groups = new Map<string, { leaf: Treebranch; entries: Message[] }>();
 
@@ -537,7 +544,6 @@ export type SettingsParam = { max_broker_bytes: number; max_message_size: number
 
 export function processSettings(params: SettingsParam, app: AppState) {
 	app.maxBrokerBytes = params.max_broker_bytes;
-	maxBrokerBytes = params.max_broker_bytes;
 	return app;
 }
 
@@ -563,5 +569,3 @@ export function processRateHistorySample(params: RateHistorySampleParam, app: Ap
 	entry.rateHistory = [...entry.rateHistory.filter((e) => e.timestamp >= cutoff), newEntry];
 	return app;
 }
-
-
