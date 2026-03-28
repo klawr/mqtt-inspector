@@ -21,6 +21,7 @@
  */
 
 import { findbranchwithid } from './helper';
+import { Message } from './state';
 import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
 
 let maxBrokerBytes = 64 * 1024 * 1024; // default, overridden by settings from backend
@@ -431,12 +432,11 @@ export function processMQTTMessage(message: MQTTMessageParam, decoder: TextDecod
 	}
 
 	const entry = app.brokerRepository[message.source];
-	const payload = decoder.decode(decodePayloadBytes(message));
 
 	// Find the leaf node and add message content
 	const leaf = findLeafBranch(entry.topics, message.topic);
 	if (leaf) {
-		const new_entry = { timestamp: message.timestamp, text: payload, delta_t: 0 };
+		const new_entry = new Message(message.timestamp, message.payload, null);
 		if (leaf.messages.length) {
 			leaf.messages[0].delta_t =
 				new Date(message.timestamp).getTime() - new Date(leaf.messages[0].timestamp).getTime();
@@ -458,8 +458,54 @@ export function processMQTTMessages(
 	decoder: TextDecoder,
 	app: AppState
 ) {
+	// Group messages by source+topic for bulk insertion
+	const groups = new Map<string, { leaf: Treebranch; entries: Message[] }>();
+
 	for (const message of messages) {
-		processMQTTMessage(message, decoder, app);
+		const entry = app.brokerRepository[message.source];
+		if (!entry) continue;
+
+		const leaf = findLeafBranch(entry.topics, message.topic);
+		if (!leaf) continue;
+
+		const key = `${message.source}\0${message.topic}`;
+		let group = groups.get(key);
+		if (!group) {
+			group = { leaf, entries: [] };
+			groups.set(key, group);
+		}
+		group.entries.push(new Message(message.timestamp, message.payload, null));
+	}
+
+	// Bulk-insert each group with a single splice (avoids O(n²) per-message unshift)
+	for (const { leaf, entries } of groups.values()) {
+		// Reverse to newest-first (messages arrive oldest-first from backend)
+		entries.reverse();
+		// Compute delta_t within the batch
+		for (let i = 1; i < entries.length; i++) {
+			entries[i - 1].delta_t =
+				new Date(entries[i - 1].timestamp).getTime() -
+				new Date(entries[i].timestamp).getTime();
+		}
+		// Connect batch to existing messages
+		if (entries.length > 0 && leaf.messages.length > 0) {
+			entries[entries.length - 1].delta_t =
+				new Date(entries[entries.length - 1].timestamp).getTime() -
+				new Date(leaf.messages[0].timestamp).getTime();
+		}
+		leaf.messages.splice(0, 0, ...entries);
+	}
+
+	// Update selectedTopic reference once per broker (not per message)
+	const updatedBrokers = new Set<string>();
+	for (const message of messages) {
+		if (updatedBrokers.has(message.source)) continue;
+		updatedBrokers.add(message.source);
+		const entry = app.brokerRepository[message.source];
+		if (entry?.selectedTopic) {
+			entry.selectedTopic =
+				findbranchwithid(entry.selectedTopic.id.toString(), entry.topics) || entry.selectedTopic;
+		}
 	}
 
 	return app;

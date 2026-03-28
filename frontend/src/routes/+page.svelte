@@ -85,8 +85,11 @@ THE SOFTWARE.
 	let reconnectAttempts = 0;
 	let shouldReconnect = true;
 	let pendingMqttMessages: import('$lib/ws_msg_handling').MQTTMessageParam[] = [];
+	let topicSyncing = false;
+	let syncTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const MQTT_BATCH_FLUSH_MS = 16;
+	const SYNC_TIMEOUT_MS = 5000;
 
 	const decoder = new TextDecoder('utf-8');
 
@@ -122,7 +125,7 @@ THE SOFTWARE.
 	}
 
 	function scheduleMqttFlush() {
-		if (mqttFlushTimer) {
+		if (topicSyncing || mqttFlushTimer) {
 			return;
 		}
 		mqttFlushTimer = setTimeout(() => {
@@ -212,10 +215,26 @@ THE SOFTWARE.
 					app = processMessagesEvictedBatch(json.params, app);
 					break;
 				case 'topic_messages_clear':
+					flushPendingMqttMessages();
 					app = processTopicMessagesClear(app);
+					topicSyncing = true;
+					if (syncTimeoutTimer) clearTimeout(syncTimeoutTimer);
+					syncTimeoutTimer = setTimeout(() => {
+						if (topicSyncing) {
+							topicSyncing = false;
+							flushPendingMqttMessages();
+							app.brokerRepository = app.brokerRepository;
+						}
+						syncTimeoutTimer = null;
+					}, SYNC_TIMEOUT_MS);
 					break;
 				case 'topic_sync_complete':
-					// Topic messages have been loaded, trigger reactivity
+					topicSyncing = false;
+					if (syncTimeoutTimer) {
+						clearTimeout(syncTimeoutTimer);
+						syncTimeoutTimer = null;
+					}
+					flushPendingMqttMessages();
 					app.brokerRepository = app.brokerRepository;
 					break;
 				case 'rate_history_sample':

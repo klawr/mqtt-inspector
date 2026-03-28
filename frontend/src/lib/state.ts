@@ -30,11 +30,34 @@ export class AppState {
 	syncComplete: boolean = false;
 }
 
-type Message = {
+const decoder = new TextDecoder();
+
+export class Message {
 	timestamp: string;
-	delta_t?: number;
-	text: string;
-};
+	delta_t: number;
+	private _payload: ArrayBuffer | null;
+	private _text: string | null;
+
+	constructor(timestamp: string, payload: ArrayBuffer | null, text: string | null, delta_t: number = 0) {
+		this.timestamp = timestamp;
+		this._payload = payload;
+		this._text = text;
+		this.delta_t = delta_t;
+	}
+
+	get text(): string {
+		if (this._text === null) {
+			this._text = this._payload ? decoder.decode(new Uint8Array(this._payload)) : '';
+			this._payload = null; // free the raw buffer
+		}
+		return this._text;
+	}
+
+	set text(value: string) {
+		this._text = value;
+		this._payload = null;
+	}
+}
 
 export type Treebranch = {
 	id: string;

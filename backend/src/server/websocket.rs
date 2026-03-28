@@ -353,14 +353,30 @@ pub fn handle_select_topic(
         }
     }
 
-    // Phase 5: Send topic_sync_complete
+    // Phase 5: Send topic_sync_complete (retry briefly if channel is full)
     let done = jsonrpc::JsonRpcNotification {
         jsonrpc: "2.0",
         method: "topic_sync_complete",
         params: serde_json::json!({}),
     };
     if let Ok(serialized) = serde_json::to_string(&done) {
-        let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
+        let msg = warp::filters::ws::Message::text(serialized);
+        // The channel may be full from the burst above. Retry a few times with
+        // a short sleep to let the WebSocket consumer drain.
+        let mut msg_opt = Some(msg);
+        for _ in 0..50 {
+            match tx.try_send(msg_opt.take().unwrap()) {
+                Ok(()) => break,
+                Err(e) => {
+                    if e.is_full() {
+                        msg_opt = Some(e.into_inner());
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    } else {
+                        break; // disconnected
+                    }
+                }
+            }
+        }
     }
 }
 

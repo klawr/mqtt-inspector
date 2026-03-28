@@ -36,11 +36,39 @@ THE SOFTWARE.
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 
+	const STEP_WIDTH_PX = 112; // width of one ProgressStep including gap
+
 	let compareMessage = false;
 	let lockedIndex = false;
 	let lockedIndexCompare = false;
 	let selectedIndex = 0;
 	let selectedMessage = selectedTopic?.messages[selectedIndex];
+
+	$: messageCount = selectedTopic?.messages.length ?? 0;
+
+	// Dynamic window size based on container width
+	let containerWidth = 800;
+	$: maxVisible = Math.max(3, Math.floor(containerWidth / STEP_WIDTH_PX));
+
+	// Sliding window around selectedIndex for the main indicator
+	$: windowStart = Math.max(
+		0,
+		Math.min(selectedIndex - Math.floor(maxVisible / 2), messageCount - maxVisible)
+	);
+	$: windowEnd = Math.min(messageCount, (windowStart < 0 ? 0 : windowStart) + maxVisible);
+	$: visibleSlice = selectedTopic?.messages.slice(Math.max(0, windowStart), windowEnd) ?? [];
+
+	// Sliding window around selectedIndexCompare for the compare indicator
+	$: windowStartCompare = Math.max(
+		0,
+		Math.min(selectedIndexCompare - Math.floor(maxVisible / 2), messageCount - maxVisible)
+	);
+	$: windowEndCompare = Math.min(
+		messageCount,
+		(windowStartCompare < 0 ? 0 : windowStartCompare) + maxVisible
+	);
+	$: visibleSliceCompare =
+		selectedTopic?.messages.slice(Math.max(0, windowStartCompare), windowEndCompare) ?? [];
 
 	$: if (selectedTopic) {
 		if (!lockedIndex) {
@@ -68,10 +96,12 @@ THE SOFTWARE.
 		selectedMessageCompare = selectedTopic?.messages[index];
 	}
 
-	let scrollDiv: HTMLDivElement | null = null;
+	let navDiv: HTMLDivElement | null = null;
 	function handleWheel(event: WheelEvent) {
-		if (scrollDiv && event.deltaY !== 0) {
-			scrollDiv.scrollLeft -= event.deltaY;
+		if (navDiv && event.deltaY !== 0) {
+			// Scroll wheel on the indicator navigates messages
+			const direction = event.deltaY > 0 ? 1 : -1;
+			selectMessage(selectedIndex + direction);
 			event.preventDefault();
 		}
 	}
@@ -96,9 +126,16 @@ THE SOFTWARE.
 				<div style="display: flex; justify-content: space-between; align-items: center;">
 					<h5>
 						Selected message: {curateDate(selectedMessage.timestamp)}
+						{#if selectedMessage.delta_t}
+							<span
+								style="font-weight: normal; margin-left: 0.5em; color: var(--cds-text-02, #525252);"
+							>
+								(Δ {formatDuration(selectedMessage.delta_t)})
+							</span>
+						{/if}
 					</h5>
 					<p>
-						Cached Messages: {selectedTopic?.messages.length || 0}
+						{selectedIndex + 1} / {messageCount} messages
 					</p>
 				</div>
 				<div style="height: calc(100% - 9em">
@@ -113,7 +150,7 @@ THE SOFTWARE.
 				</div>
 			{/if}
 
-			<div style="display: flex;">
+			<div style="display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap;">
 				<div style="align-self: center; margin-right: 1em;">
 					<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
 				</div>
@@ -159,53 +196,52 @@ THE SOFTWARE.
 				{/if}
 			</div>
 
-			<div
-				bind:this={scrollDiv}
-				style="overflow-x: auto; padding-bottom: 1em;"
-				on:wheel={handleWheel}
-			>
-				<ProgressIndicator
-					class={compareMessage ? 'green-indicator' : ''}
-					currentIndex={lockedIndex
-						? selectedTopic?.messages.findIndex((e) => e.timestamp == selectedMessage?.timestamp)
-						: selectedIndex}
+			{#if messageCount > 1}
+				<div
+					bind:this={navDiv}
+					bind:clientWidth={containerWidth}
+					style="padding-bottom: 1em;"
+					on:wheel={handleWheel}
 				>
-					{#each selectedTopic?.messages as message, index}
-						<ProgressStep
-							label={formatDuration(message.delta_t ? message.delta_t : 0)}
-							on:click={() => selectMessage(index)}
-							title={curateDate(message.timestamp)}
-						/>
-					{/each}
-				</ProgressIndicator>
-				{#if compareMessage}
-					<div style="height: 1em" />
 					<ProgressIndicator
-						class="red-indicator"
-						currentIndex={lockedIndexCompare
-							? selectedTopic?.messages.findIndex(
-									(e) => e.timestamp == selectedMessageCompare?.timestamp
-								)
-							: selectedIndexCompare}
+						class={compareMessage ? 'green-indicator' : ''}
+						currentIndex={selectedIndex - Math.max(0, windowStart)}
 					>
-						{#each selectedTopic?.messages as compareMessage, compareIndex}
+						{#each visibleSlice as message, i}
+							{@const realIndex = Math.max(0, windowStart) + i}
 							<ProgressStep
-								label={formatDuration(compareMessage.delta_t ? compareMessage.delta_t : 0)}
-								on:click={() => selectMessageCompare(compareIndex)}
-								title={curateDate(compareMessage.timestamp)}
+								label={formatDuration(message.delta_t ? message.delta_t : 0)}
+								on:click={() => selectMessage(realIndex)}
+								title={curateDate(message.timestamp)}
 							/>
 						{/each}
 					</ProgressIndicator>
-				{/if}
-				<style>
-					.green-indicator {
-						--cds-interactive-04: #4ec9b0;
-					}
-					.red-indicator {
-						--cds-interactive-04: #f44747;
-					}
-				</style>
-			</div>
+					{#if compareMessage}
+						<div style="height: 1em" />
+						<ProgressIndicator
+							class="red-indicator"
+							currentIndex={selectedIndexCompare - Math.max(0, windowStartCompare)}
+						>
+							{#each visibleSliceCompare as message, i}
+								{@const realIndex = Math.max(0, windowStartCompare) + i}
+								<ProgressStep
+									label={formatDuration(message.delta_t ? message.delta_t : 0)}
+									on:click={() => selectMessageCompare(realIndex)}
+									title={curateDate(message.timestamp)}
+								/>
+							{/each}
+						</ProgressIndicator>
+					{/if}
+					<style>
+						.green-indicator {
+							--cds-interactive-04: #4ec9b0;
+						}
+						.red-indicator {
+							--cds-interactive-04: #f44747;
+						}
+					</style>
+				</div>
+			{/if}
 		</Tile>
 	{/if}
 {/if}
