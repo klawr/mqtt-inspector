@@ -208,7 +208,6 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
-			evictedMessages: 0,
 			messagesPerSecond: 0,
 			rateHistory: []
 		},
@@ -220,7 +219,6 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			backendTotalBytes: 0,
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
-			evictedMessages: 0,
 			messagesPerSecond: 0,
 			rateHistory: []
 		}
