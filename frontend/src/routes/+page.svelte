@@ -386,6 +386,11 @@ THE SOFTWARE.
 
 	let selectedTab = 1;
 
+	$: brokerNeedsAuth = app.selectedBroker
+		? app.brokerRepository[app.selectedBroker]?.requiresAuth &&
+			!app.brokerRepository[app.selectedBroker]?.authenticated
+		: false;
+
 	// Track topic selection and notify backend when it changes
 	let lastSelectedBroker: string | null = null;
 	let lastSelectedTopicId: string | null = null;
@@ -464,6 +469,7 @@ THE SOFTWARE.
 
 	<Button
 		kind={selectedTab === 1 ? 'primary' : 'secondary'}
+		disabled={brokerNeedsAuth}
 		on:click={() => {
 			selectedTab = 1;
 		}}>Treeview</Button
@@ -471,18 +477,21 @@ THE SOFTWARE.
 
 	<Button
 		kind={selectedTab === 2 ? 'primary' : 'secondary'}
+		disabled={brokerNeedsAuth}
 		on:click={() => {
 			selectedTab = 2;
 		}}>Pipeline</Button
 	>
 	<Button
 		kind={selectedTab === 3 ? 'primary' : 'secondary'}
+		disabled={brokerNeedsAuth}
 		on:click={() => {
 			selectedTab = 3;
 		}}>Publish</Button
 	>
 	<Button
 		kind={selectedTab === 4 ? 'primary' : 'secondary'}
+		disabled={brokerNeedsAuth}
 		on:click={() => {
 			selectedTab = 4;
 		}}>Throughput</Button
@@ -566,7 +575,12 @@ THE SOFTWARE.
 				text={broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {
-					app.selectedBroker = broker;
+					if (app.selectedBroker === broker && entry.requiresAuth && !entry.authenticated) {
+						loginBroker = broker;
+						loginOpen = true;
+					} else {
+						app.selectedBroker = broker;
+					}
 				}}
 			/>
 		{/each}

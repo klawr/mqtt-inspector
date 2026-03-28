@@ -123,7 +123,7 @@ pub fn connect_to_mqtt_host(config: &BrokerConfig) -> (rumqttc::Client, rumqttc:
     (client, connection)
 }
 
-pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: &BrokerMap) {
+pub fn publish_message(host: &str, topic: &str, payload: &str, retain: bool, mqtt_map: &BrokerMap) {
     let client = {
         let binding = mqtt_map.lock().unwrap();
         binding.get(host).map(|broker| broker.client.clone())
@@ -131,7 +131,7 @@ pub fn publish_message(host: &str, topic: &str, payload: &str, mqtt_map: &Broker
 
     match client {
         Some(mut client) => {
-            match client.publish(topic, rumqttc::QoS::AtLeastOnce, false, payload.as_bytes()) {
+            match client.publish(topic, rumqttc::QoS::AtLeastOnce, retain, payload.as_bytes()) {
                 Ok(_) => {
                     // Successfully published
                 }
@@ -159,7 +159,7 @@ mod tests {
     fn test_publish_message_broker_not_found() {
         let mqtt_map = make_broker_map();
         // Should not panic, just prints a message
-        publish_message("nonexistent:1883", "topic", "payload", &mqtt_map);
+        publish_message("nonexistent:1883", "topic", "payload", false, &mqtt_map);
     }
 
     #[test]
@@ -274,7 +274,7 @@ mod tests {
         let mm1 = Arc::clone(&mqtt_map);
         let h1 = thread::spawn(move || {
             for i in 0..50 {
-                publish_message(&format!("host{}:1883", i), "topic", "payload", &mm1);
+                publish_message(&format!("host{}:1883", i), "topic", "payload", false, &mm1);
             }
         });
 

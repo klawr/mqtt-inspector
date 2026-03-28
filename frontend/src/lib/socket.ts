@@ -90,12 +90,13 @@ export function requestPublishMqttMessage(
 	host: string,
 	topic: string,
 	payload: string,
+	retain: boolean,
 	socket: WebSocket
 ) {
 	const message = JSON.stringify({
 		jsonrpc: '2.0',
 		method: 'publish',
-		params: { host, topic, payload }
+		params: { host, topic, payload, retain }
 	});
 
 	socket.send(message);

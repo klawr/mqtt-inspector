@@ -22,7 +22,7 @@ test('requestPublishMqttMessage sends correct message to WebSocket', () => {
 	const topic = 'test/topic';
 	const payload = 'Hello, World!';
 
-	requestPublishMqttMessage(host, topic, payload, socket as unknown as WebSocket);
+	requestPublishMqttMessage(host, topic, payload, false, socket as unknown as WebSocket);
 
 	const expectedMessage = `{
             "jsonrpc": "2.0",
@@ -30,7 +30,8 @@ test('requestPublishMqttMessage sends correct message to WebSocket', () => {
             "params": {
                 "host": "${host}",
                 "topic": "${topic}",
-                "payload": "${payload}"
+                "payload": "${payload}",
+                "retain": false
             }
         }`;
 
@@ -152,7 +153,7 @@ test('requestTopicSelection with broker but null topic', () => {
 
 test('requestPublishMqttMessage handles special characters in payload', () => {
 	const socket = new MockWebSocket();
-	requestPublishMqttMessage('host', 'topic', '{"key":"value"}', socket as unknown as WebSocket);
+	requestPublishMqttMessage('host', 'topic', '{"key":"value"}', false, socket as unknown as WebSocket);
 
 	const parsed = JSON.parse(socket.messages[0]);
 	expect(parsed.params.payload).toBe('{"key":"value"}');

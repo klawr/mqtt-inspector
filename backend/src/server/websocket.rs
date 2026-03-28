@@ -657,20 +657,47 @@ pub fn send_pipelines(sender: &mut Sender<warp::filters::ws::Message>, pipelines
 }
 
 pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
-    // Only send broker metadata, not the full message store
-    let serialized = {
+    // Build broker summaries, then send per-peer with throughput data
+    // filtered by authentication.
+    let brokers: Vec<(
+        String,
+        bool,
+        usize,
+        usize,
+        Vec<mqtt::RateHistoryEntry>,
+        bool,
+    )> = {
         let binding = mqtt_map.lock().unwrap();
-        let summaries: Vec<serde_json::Value> = binding
+        binding
             .values()
-            .map(|broker| {
+            .map(|b| {
+                (
+                    b.broker.clone(),
+                    b.connected,
+                    b.total_bytes,
+                    b.total_messages,
+                    b.rate_history.clone(),
+                    b.requires_auth,
+                )
+            })
+            .collect()
+    };
+
+    let mut to_remove = Vec::new();
+    let mut peers = peer_map.lock().unwrap();
+    for (addr, peer) in peers.iter_mut() {
+        let summaries: Vec<serde_json::Value> = brokers
+            .iter()
+            .map(|(broker, connected, total_bytes, total_messages, rate_history, requires_auth)| {
+                let authed = peer.authenticated_brokers.contains(broker.as_str());
                 serde_json::json!({
-                    "broker": broker.broker,
-                    "connected": broker.connected,
+                    "broker": broker,
+                    "connected": connected,
                     "topics": {},
-                    "total_bytes": broker.total_bytes,
-                    "total_messages": broker.total_messages,
-                    "rate_history": broker.rate_history,
-                    "requires_auth": broker.requires_auth,
+                    "total_bytes": if authed { *total_bytes } else { 0 },
+                    "total_messages": if authed { *total_messages } else { 0 },
+                    "rate_history": if authed { serde_json::json!(rate_history) } else { serde_json::json!([]) },
+                    "requires_auth": requires_auth,
                 })
             })
             .collect();
@@ -679,19 +706,24 @@ pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
             method: "mqtt_brokers",
             params: serde_json::json!(summaries),
         };
-        serde_json::to_string(&message)
-    };
-
-    match serialized {
-        Ok(serialized) => {
-            let mut peers = peer_map.lock().unwrap();
-            for (_addr, peer) in peers.iter_mut() {
-                let _ = peer
-                    .tx
-                    .try_send(warp::filters::ws::Message::text(serialized.clone()));
+        if let Ok(serialized) = serde_json::to_string(&message) {
+            match peer
+                .tx
+                .try_send(warp::filters::ws::Message::text(serialized))
+            {
+                Ok(_) => peer.mark_success(),
+                Err(err) => {
+                    if err.is_disconnected() {
+                        to_remove.push(*addr);
+                    } else if peer.mark_full() {
+                        to_remove.push(*addr);
+                    }
+                }
             }
         }
-        Err(_) => println!("Failed to serialize brokers."),
+    }
+    for addr in to_remove {
+        peers.remove(&addr);
     }
 }
 

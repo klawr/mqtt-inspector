@@ -20,7 +20,7 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { Button, ComboBox, TextInput, Tile } from 'carbon-components-svelte';
+	import { Button, ComboBox, TextInput, Tile, Toggle } from 'carbon-components-svelte';
 	import { requestCommandAddition, requestPublishMqttMessage } from '$lib/socket';
 	import { Add, TrashCan } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
@@ -34,10 +34,11 @@ THE SOFTWARE.
 
 	let topic: string;
 	let payload: string;
+	let retain = false;
 
 	function send(e: Event) {
 		stopPropagation(e);
-		requestPublishMqttMessage(selectedBroker, topic, payload, socket);
+		requestPublishMqttMessage(selectedBroker, topic, payload, retain, socket);
 	}
 
 	function setTopicToSelectedTopic() {
@@ -147,5 +148,8 @@ THE SOFTWARE.
 		<Monaco bind:code={payload} />
 	</div>
 
-	<Button on:click={send} style="width: 100%">Send</Button>
+	<div style="display: flex; width: 100%; align-items: center; gap: 0.5em;">
+		<Toggle size="sm" bind:toggled={retain} labelText="Retain message" />
+		<Button on:click={send} style="flex: 1">Send</Button>
+	</div>
 </Tile>

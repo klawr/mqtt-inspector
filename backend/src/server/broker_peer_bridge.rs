@@ -379,6 +379,22 @@ pub fn deserialize_json_rpc_and_process(
                     return;
                 }
             };
+            // Check authentication before allowing publish
+            if let Some(peer_addr) = addr {
+                let peers = peer_map.lock().unwrap();
+                if let Some(peer) = peers.get(&peer_addr) {
+                    if !peer.authenticated_brokers.contains(&host) {
+                        println!(
+                            "Peer {peer_addr} not authenticated for broker {host}, publish denied"
+                        );
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
             let topic = match message.params.get("topic").and_then(|v| v.as_str()) {
                 Some(t) => t,
                 None => {
@@ -393,7 +409,12 @@ pub fn deserialize_json_rpc_and_process(
                     return;
                 }
             };
-            mqtt::publish_message(&host, topic, payload, mqtt_map);
+            let retain = message
+                .params
+                .get("retain")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            mqtt::publish_message(&host, topic, payload, retain, mqtt_map);
         }
         "save_command" => {
             let command_path: String = std::format!("{config_path}/commands");

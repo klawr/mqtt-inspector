@@ -155,8 +155,10 @@ THE SOFTWARE.
 			{#if selectedMessage}
 				<div style="display: flex; justify-content: space-between; align-items: center;">
 					<h5>
-						Selected message: {curateDate(selectedMessage.timestamp)}{#if selectedMessage.retain}
-							(retained){/if}
+						Selected message: {curateDate(selectedMessage.timestamp)}
+						{#if selectedMessage.retain}
+							{' '}(retained)
+						{/if}
 					</h5>
 					<div style="display: flex; align-items: center; gap: 0.5em;">
 						{#if topicSyncing}
