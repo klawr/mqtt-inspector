@@ -33,6 +33,7 @@ use super::config::BrokerConfig;
 pub struct MqttMessage {
     pub timestamp: String,
     pub payload: bytes::Bytes,
+    pub retain: bool,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -172,6 +173,7 @@ mod tests {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             payload: bytes::Bytes::from(vec![72, 101, 108, 108, 111]),
+            retain: false,
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         assert!(serialized.contains("\"timestamp\":\"2024-01-01T00:00:00Z\""));
@@ -204,6 +206,7 @@ mod tests {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             payload: bytes::Bytes::new(),
+            retain: false,
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         assert!(serialized.contains("\"payload\":[]"));
@@ -306,6 +309,7 @@ mod tests {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             payload,
+            retain: false,
         };
         assert_eq!(msg.payload.len(), 1024 * 1024);
     }
@@ -317,6 +321,7 @@ mod tests {
         let msg = MqttMessage {
             timestamp: "ts".to_string(),
             payload,
+            retain: false,
         };
         let cloned = msg.payload.clone();
         assert_eq!(msg.payload.as_ptr(), cloned.as_ptr());
@@ -408,6 +413,7 @@ mod tests {
             msgs.push_back(MqttMessage {
                 timestamp: format!("ts_{i}"),
                 payload: bytes::Bytes::from(format!("payload_{i}")),
+                retain: false,
             });
         }
         broker.topics.insert("stress/topic".to_string(), msgs);
@@ -445,10 +451,12 @@ mod tests {
         msgs.push_back(MqttMessage {
             timestamp: "oldest".to_string(),
             payload: bytes::Bytes::from("a"),
+            retain: false,
         });
         msgs.push_back(MqttMessage {
             timestamp: "newest".to_string(),
             payload: bytes::Bytes::from("b"),
+            retain: false,
         });
         broker.topics.insert("t".to_string(), msgs);
         broker.eviction_order.push_back(("t".to_string(), 1));

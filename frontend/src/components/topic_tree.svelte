@@ -100,7 +100,6 @@ THE SOFTWARE.
 		bind:this={treeview}
 		bind:children={sanitizedTopics}
 		bind:activeId
-		bind:selectedIds
 		on:select={({ detail }) => select(detail)}
 	/>
 </div>

@@ -53,6 +53,7 @@ fn loop_forever(
     for notification in connection.iter() {
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
+                let retain = p.retain;
                 let payload = if p.payload.len() > mqtt::max_message_size() {
                     bytes::Bytes::from(std::format!(
                         "Payload size limit exceeded: {}.\nThe message is probably fine, but is is too large to be displayed.",
@@ -76,6 +77,7 @@ fn loop_forever(
                     let new_msg = mqtt::MqttMessage {
                         timestamp: timestamp.clone(),
                         payload: payload.clone(),
+                        retain,
                     };
                     let topic_name = p.topic.clone();
                     if let Some(topic_vec) = broker.topics.get_mut(&topic_name) {
@@ -185,6 +187,7 @@ fn loop_forever(
                     payload.len(),
                     total_bytes,
                     topic_message_count,
+                    retain,
                 );
                 // Send full payload ONLY to peers watching this topic
                 websocket::send_message_to_subscribed_peers(
@@ -194,6 +197,7 @@ fn loop_forever(
                     &payload,
                     total_bytes,
                     &timestamp,
+                    retain,
                 );
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
@@ -227,9 +231,10 @@ fn loop_forever(
                     payload.len(),
                     0,
                     0,
+                    false,
                 );
                 websocket::send_message_to_subscribed_peers(
-                    peer_map, &hostname, "$ERROR", &payload, 0, &timestamp,
+                    peer_map, &hostname, "$ERROR", &payload, 0, &timestamp, false,
                 )
             }
             Err(rumqttc::ConnectionError::MqttState(err)) => {

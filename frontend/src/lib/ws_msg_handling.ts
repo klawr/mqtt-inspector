@@ -84,6 +84,7 @@ export type MQTTMessageParam = {
 	payload: ArrayBuffer;
 	timestamp: string;
 	total_bytes?: number;
+	retain?: boolean;
 };
 
 export type MQTTMessageMetaParam = {
@@ -93,6 +94,7 @@ export type MQTTMessageMetaParam = {
 	payload_size: number;
 	total_bytes: number;
 	topic_message_count: number;
+	retain?: boolean;
 };
 
 export type TopicSummariesParam = {
@@ -463,7 +465,7 @@ export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 	// Find the leaf node and add message content
 	const leaf = findLeafBranch(entry.topics, message.topic);
 	if (leaf) {
-		const new_entry = new Message(message.timestamp, message.payload, null);
+		const new_entry = new Message(message.timestamp, message.payload, null, message.retain ?? false);
 		leaf.messages.unshift(new_entry);
 	}
 
@@ -493,7 +495,7 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 			group = { leaf, entries: [] };
 			groups.set(key, group);
 		}
-		group.entries.push(new Message(message.timestamp, message.payload, null));
+		group.entries.push(new Message(message.timestamp, message.payload, null, message.retain ?? false));
 	}
 
 	// Bulk-insert each group with a single splice (avoids O(n²) per-message unshift)

@@ -45,8 +45,10 @@ THE SOFTWARE.
 		CircleSolid,
 		Connect,
 		InformationFilled,
+		Locked,
 		LogoGithub,
-		TrashCan
+		TrashCan,
+		Unlocked
 	} from 'carbon-icons-svelte';
 	import PublishMessage from '../components/publish_message.svelte';
 	import RateHistoryChart from '../components/rate_history_chart.svelte';
@@ -552,8 +554,15 @@ THE SOFTWARE.
 <SideNav bind:isOpen={isSideNavOpen}>
 	<SideNavItems>
 		{#each Object.keys(app.brokerRepository) as broker}
+			{@const entry = app.brokerRepository[broker]}
 			<SideNavLink
-				icon={app.brokerRepository[broker].connected && socketConnected ? CircleSolid : CircleDash}
+				icon={entry.requiresAuth
+					? entry.authenticated
+						? Unlocked
+						: Locked
+					: entry.connected && socketConnected
+						? CircleSolid
+						: CircleDash}
 				text={broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {

@@ -51,6 +51,7 @@ pub struct PendingMeta {
     pub payload_size: usize,
     pub total_bytes: usize,
     pub topic_message_count: usize,
+    pub retain: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -174,6 +175,7 @@ pub fn buffer_message_meta(
     payload_size: usize,
     total_bytes: usize,
     topic_message_count: usize,
+    retain: bool,
 ) {
     buf.lock().unwrap().metas.push(PendingMeta {
         source: source.to_string(),
@@ -182,6 +184,7 @@ pub fn buffer_message_meta(
         payload_size,
         total_bytes,
         topic_message_count,
+        retain,
     });
 }
 
@@ -311,6 +314,7 @@ fn build_binary_mqtt_frame(
     timestamp: &str,
     payload: &[u8],
     total_bytes: Option<usize>,
+    retain: bool,
 ) -> Option<Vec<u8>> {
     let header = jsonrpc::JsonRpcNotification {
         jsonrpc: "2.0",
@@ -320,6 +324,7 @@ fn build_binary_mqtt_frame(
             "timestamp": timestamp,
             "topic": topic,
             "total_bytes": total_bytes,
+            "retain": retain,
         }),
     };
     let header_bytes = serde_json::to_vec(&header).ok()?;
@@ -341,6 +346,7 @@ pub fn send_message_to_subscribed_peers(
     payload: &bytes::Bytes,
     total_bytes: usize,
     timestamp: &str,
+    retain: bool,
 ) {
     let binary_frame = match build_binary_mqtt_frame(
         source,
@@ -348,6 +354,7 @@ pub fn send_message_to_subscribed_peers(
         timestamp,
         payload.as_ref(),
         Some(total_bytes),
+        retain,
     ) {
         Some(frame) => frame,
         None => return,
@@ -394,7 +401,7 @@ pub fn handle_select_topic(
     topic: Option<&str>,
 ) {
     // Phase 1: Collect messages from the mqtt_map (if a topic is selected)
-    let messages: Vec<(String, bytes::Bytes)> =
+    let messages: Vec<(String, bytes::Bytes, bool)> =
         if let (Some(broker_name), Some(topic_name)) = (broker, topic) {
             let mqtt_lock = mqtt_map.lock().unwrap();
             if let Some(broker_data) = mqtt_lock.get(broker_name) {
@@ -402,7 +409,7 @@ pub fn handle_select_topic(
                     topic_msgs
                         .iter()
                         .rev() // newest first
-                        .map(|msg| (msg.timestamp.clone(), msg.payload.clone()))
+                        .map(|msg| (msg.timestamp.clone(), msg.payload.clone(), msg.retain))
                         .collect()
                 } else {
                     Vec::new()
@@ -457,9 +464,9 @@ pub fn handle_select_topic(
 
     // Phase 4: Stream existing messages for the topic (newest first)
     if let (Some(source), Some(topic_name)) = (broker, topic) {
-        for (timestamp, payload) in &messages {
+        for (timestamp, payload, retain) in &messages {
             if let Some(frame) =
-                build_binary_mqtt_frame(source, topic_name, timestamp, payload, None)
+                build_binary_mqtt_frame(source, topic_name, timestamp, payload, None, *retain)
             {
                 if tx
                     .try_send(warp::filters::ws::Message::binary(frame))
@@ -859,6 +866,7 @@ mod tests {
             &payload,
             100,
             "2024-01-01T00:00:00Z",
+            false,
         );
 
         // Peer 1 should receive (watching the topic)
@@ -887,6 +895,7 @@ mod tests {
             &payload,
             100,
             "2024-01-01T00:00:00Z",
+            false,
         );
 
         // No peer is watching, should not receive anything
@@ -918,6 +927,7 @@ mod tests {
             &payload,
             0,
             "2024-01-01T00:00:00Z",
+            false,
         );
 
         // Closed peer should be removed
@@ -952,6 +962,7 @@ mod tests {
                 1,
                 0,
                 1,
+                false,
             );
             flush_notification_buffer(&buf, &peer_map);
 
@@ -1128,6 +1139,7 @@ mod tests {
                     4,
                     0,
                     1,
+                    false,
                 );
                 flush_notification_buffer(&buf1, &pm1);
             }
@@ -1172,7 +1184,16 @@ mod tests {
         let buf2 = Arc::clone(&buf);
         let handle2 = thread::spawn(move || {
             for _ in 0..100 {
-                buffer_message_meta(&buf2, "broker:1883", "t", "2024-01-01T00:00:00Z", 4, 0, 1);
+                buffer_message_meta(
+                    &buf2,
+                    "broker:1883",
+                    "t",
+                    "2024-01-01T00:00:00Z",
+                    4,
+                    0,
+                    1,
+                    false,
+                );
                 flush_notification_buffer(&buf2, &pm2);
             }
         });
@@ -1238,8 +1259,8 @@ mod tests {
             .authenticated_brokers
             .insert("broker:1883".to_string());
 
-        buffer_message_meta(&buf, "broker:1883", "t/1", "ts1", 5, 100, 1);
-        buffer_message_meta(&buf, "broker:1883", "t/2", "ts2", 10, 200, 2);
+        buffer_message_meta(&buf, "broker:1883", "t/1", "ts1", 5, 100, 1, false);
+        buffer_message_meta(&buf, "broker:1883", "t/2", "ts2", 10, 200, 2, false);
 
         flush_notification_buffer(&buf, &peer_map);
 
@@ -1296,6 +1317,7 @@ mod tests {
             "2024-01-01T00:00:00Z",
             b"hello",
             Some(100),
+            false,
         );
         assert!(frame.is_some());
         let frame = frame.unwrap();
@@ -1320,6 +1342,7 @@ mod tests {
             "2024-01-01T00:00:00Z",
             b"",
             None,
+            false,
         );
         assert!(frame.is_some());
         let frame = frame.unwrap();
@@ -1330,7 +1353,7 @@ mod tests {
 
     #[test]
     fn test_build_binary_mqtt_frame_total_bytes_none() {
-        let frame = build_binary_mqtt_frame("broker:1883", "t", "ts", b"data", None);
+        let frame = build_binary_mqtt_frame("broker:1883", "t", "ts", b"data", None, false);
         assert!(frame.is_some());
         let frame = frame.unwrap();
         let header_len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
@@ -1347,6 +1370,7 @@ mod tests {
             "ts",
             &payload,
             Some(1024 * 1024),
+            false,
         );
         assert!(frame.is_some());
         let frame = frame.unwrap();
@@ -1356,7 +1380,14 @@ mod tests {
 
     #[test]
     fn test_build_binary_mqtt_frame_unicode_topic() {
-        let frame = build_binary_mqtt_frame("broker:1883", "日本語/テスト", "ts", b"payload", None);
+        let frame = build_binary_mqtt_frame(
+            "broker:1883",
+            "日本語/テスト",
+            "ts",
+            b"payload",
+            None,
+            false,
+        );
         assert!(frame.is_some());
         let frame = frame.unwrap();
         let header_len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
@@ -1409,14 +1440,17 @@ mod tests {
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:01Z".to_string(),
                 payload: bytes::Bytes::from("msg1"),
+                retain: false,
             });
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:02Z".to_string(),
                 payload: bytes::Bytes::from("msg2"),
+                retain: false,
             });
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:03Z".to_string(),
                 payload: bytes::Bytes::from("msg3"),
+                retain: false,
             });
             topics.insert("test/topic".to_string(), msgs);
             map.insert(
@@ -1664,7 +1698,7 @@ mod tests {
             .insert("b:1883".to_string());
 
         buffer_evictions(&buf, "b:1883", &[("t".to_string(), 1, 0)]);
-        buffer_message_meta(&buf, "b:1883", "t", "ts", 5, 100, 1);
+        buffer_message_meta(&buf, "b:1883", "t", "ts", 5, 100, 1, false);
 
         flush_notification_buffer(&buf, &peer_map);
 
@@ -1693,6 +1727,7 @@ mod tests {
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
                 payload: bytes::Bytes::from("data"),
+                retain: false,
             });
             topics.insert("test/topic".to_string(), msgs);
             map.insert(
