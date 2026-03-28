@@ -73,6 +73,7 @@ export type BrokerParam = {
 	total_bytes?: number;
 	total_messages?: number;
 	rate_history?: { timestamp: number; bytes_per_second: number; total_bytes: number }[];
+	requires_auth?: boolean;
 }[];
 export type MqttConnectionStatus = { source: string; connected: boolean };
 type PipelineParamEntry = { topic: string };
@@ -178,7 +179,9 @@ function ensureBrokerEntry(
 			backendTotalMessages: 0,
 			bytesPerSecond: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			requiresAuth: false,
+			authenticated: false
 		};
 	}
 	return brokerRepository[broker];
@@ -186,6 +189,7 @@ function ensureBrokerEntry(
 
 export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepository) {
 	params.forEach((param) => {
+		const requiresAuth = param.requires_auth ?? false;
 		if (!brokerRepository[param.broker]) {
 			brokerRepository[param.broker] = {
 				topics: [],
@@ -200,10 +204,13 @@ export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepo
 					timestamp: e.timestamp,
 					bytesPerSecond: e.bytes_per_second,
 					totalBytes: e.total_bytes
-				}))
+				})),
+				requiresAuth,
+				authenticated: false
 			};
 		} else {
 			brokerRepository[param.broker].connected = param.connected;
+			brokerRepository[param.broker].requiresAuth = requiresAuth;
 			brokerRepository[param.broker].backendTotalBytes =
 				param.total_bytes ?? brokerRepository[param.broker].backendTotalBytes;
 			brokerRepository[param.broker].backendTotalMessages =

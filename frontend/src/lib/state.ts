@@ -97,6 +97,8 @@ export type BrokerRepositoryEntry = {
 	bytesPerSecond: number;
 	messagesPerSecond: number;
 	rateHistory: RateHistoryEntry[];
+	requiresAuth: boolean;
+	authenticated: boolean;
 };
 
 export type BrokerRepository = {

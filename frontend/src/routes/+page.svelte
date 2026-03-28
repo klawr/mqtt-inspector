@@ -70,6 +70,7 @@ THE SOFTWARE.
 		processSettings
 	} from '$lib/ws_msg_handling';
 	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
+	import Login from '../components/dialogs/login.svelte';
 	import { selectedTheme, availableThemes } from '../store';
 	import { goto } from '$app/navigation';
 	import { findbranchwithid } from '$lib/helper';
@@ -93,6 +94,9 @@ THE SOFTWARE.
 	let pendingTopic: string | null = initialParams.get('topic');
 
 	let socketConnected = false;
+	let loginOpen = false;
+	let loginBroker = '';
+	let loginRef: Login | undefined;
 
 	function scheduleReconnect() {
 		if (!shouldReconnect || reconnectTimer) {
@@ -142,7 +146,9 @@ THE SOFTWARE.
 		pendingMqttMessages = [];
 		app = new AppState();
 		socketConnected = false;
-		const currentSocket = new WebSocket(`ws://${$page.url.host}/ws`);
+		const wsProto = $page.url.protocol === 'https:' ? 'wss:' : 'ws:';
+		const wsUrl = `${wsProto}//${$page.url.host}/ws`;
+		const currentSocket = new WebSocket(wsUrl);
 		currentSocket.binaryType = 'arraybuffer';
 		socket = currentSocket;
 
@@ -257,6 +263,23 @@ THE SOFTWARE.
 				case 'settings':
 					app = processSettings(json.params, app);
 					break;
+				case 'broker_auth_result': {
+					const { broker, success } = json.params as { broker: string; success: boolean };
+					if (success) {
+						if (app.brokerRepository[broker]) {
+							app.brokerRepository[broker].authenticated = true;
+						}
+						loginOpen = false;
+						// Re-send topic selection now that peer is authenticated
+						if (socket && socket.readyState === WebSocket.OPEN) {
+							const entry = app.brokerRepository[broker];
+							requestTopicSelection(broker, entry?.selectedTopic?.id ?? null, socket);
+						}
+					} else {
+						loginRef?.showError('Invalid password');
+					}
+					break;
+				}
 				default:
 					break;
 			}
@@ -373,7 +396,13 @@ THE SOFTWARE.
 			lastSelectedBroker = currentBroker;
 			lastSelectedTopicId = currentTopicId;
 			if (socket && socket.readyState === WebSocket.OPEN) {
-				requestTopicSelection(currentBroker, currentTopicId, socket);
+				const entry = currentBroker ? app.brokerRepository[currentBroker] : null;
+				if (entry && entry.requiresAuth && !entry.authenticated) {
+					loginBroker = currentBroker!;
+					loginOpen = true;
+				} else {
+					requestTopicSelection(currentBroker, currentTopicId, socket);
+				}
 			}
 		}
 	}
@@ -424,6 +453,7 @@ THE SOFTWARE.
 
 <AddBroker bind:socket bind:open={addMqttBrokerModalOpen} />
 <RemoveBroker bind:app bind:socket bind:open={removeMqttBrokerModalOpen} />
+<Login bind:this={loginRef} bind:open={loginOpen} broker={loginBroker} {socket} />
 
 <Header platformName="MQTT-Inspector" bind:isSideNavOpen persistentHamburgerMenu={true}>
 	<svelte:fragment slot="skip-to-content">

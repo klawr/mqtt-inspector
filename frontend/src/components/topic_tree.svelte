@@ -27,7 +27,6 @@ THE SOFTWARE.
 
 	export let broker: BrokerRepositoryEntry;
 	let activeId = broker.selectedTopic?.id || '';
-	let selectedIds: string[] = [];
 
 	// Keep activeId in sync and expand tree when selectedTopic changes externally (e.g. URL restore)
 	$: if (broker.selectedTopic?.id && broker.selectedTopic.id !== activeId) {

@@ -209,7 +209,9 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			requiresAuth: false,
+			authenticated: false
 		},
 		broker2: {
 			topics: [],
@@ -220,7 +222,9 @@ test('processBrokers updates BrokerRepository correctly', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			requiresAuth: false,
+			authenticated: false
 		}
 	});
 });

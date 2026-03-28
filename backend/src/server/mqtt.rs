@@ -62,6 +62,8 @@ pub struct MqttBroker {
     /// Timestamp of last rate sample (epoch ms).
     #[serde(skip)]
     pub rate_last_sample_ms: i64,
+    /// Whether this broker requires authentication to view its messages.
+    pub requires_auth: bool,
 }
 
 fn env_usize_mb(name: &str, default_mb: usize) -> usize {
@@ -223,6 +225,7 @@ mod tests {
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
+            requires_auth: false,
         };
         mqtt_map
             .lock()
@@ -248,6 +251,7 @@ mod tests {
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
+            requires_auth: false,
         };
         mqtt_map
             .lock()
@@ -335,6 +339,7 @@ mod tests {
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
+            requires_auth: false,
         };
 
         broker.eviction_order.push_back(("t1".to_string(), 10));
@@ -395,6 +400,7 @@ mod tests {
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
+            requires_auth: false,
         };
 
         let mut msgs = VecDeque::new();
@@ -432,6 +438,7 @@ mod tests {
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
+            requires_auth: false,
         };
 
         let mut msgs = VecDeque::new();

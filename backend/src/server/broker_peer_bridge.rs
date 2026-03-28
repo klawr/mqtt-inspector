@@ -27,6 +27,20 @@ use super::websocket;
 
 use std::collections::HashMap;
 
+/// Constant-time string comparison to prevent timing attacks.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn loop_forever(
     mut connection: rumqttc::Connection,
     peer_map: &websocket::PeerMap,
@@ -317,10 +331,27 @@ pub fn deserialize_json_rpc_and_process(
                 username,
                 password,
             };
+            let has_password = broker_config
+                .password
+                .as_ref()
+                .is_some_and(|p| !p.is_empty());
             connect_to_broker(&broker_config, peer_map, mqtt_map, notification_buf);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::add_to_brokers(&broker_path, &broker_config);
-            websocket::broadcast_brokers(peer_map, mqtt_map)
+            websocket::broadcast_brokers(peer_map, mqtt_map);
+            // Auto-authenticate the peer that added a password-protected broker,
+            // and auto-authenticate ALL peers for non-password brokers.
+            let broker_key = broker_config.key().to_string();
+            if has_password {
+                if let Some(peer_addr) = addr {
+                    let mut peers = peer_map.lock().unwrap();
+                    if let Some(peer) = peers.get_mut(&peer_addr) {
+                        peer.authenticated_brokers.insert(broker_key);
+                    }
+                }
+            } else {
+                websocket::auto_authenticate_all_peers_for_broker(peer_map, &broker_key);
+            }
         }
         "remove" => {
             let hostname = match message.params.get("hostname").and_then(|v| v.as_str()) {
@@ -386,11 +417,65 @@ pub fn deserialize_json_rpc_and_process(
                 websocket::handle_select_topic(peer_map, mqtt_map, peer_addr, broker, topic);
             }
         }
-        _ => {
-            // Implement other methods
+        "authenticate_broker" => {
+            let hostname = match message.params.get("hostname").and_then(|v| v.as_str()) {
+                Some(h) => h.trim_matches('"').to_string(),
+                None => {
+                    println!("Missing 'hostname' param for authenticate_broker");
+                    return;
+                }
+            };
+            let supplied_password = message
+                .params
+                .get("password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Look up the broker's configured password
+            let brokers_path = std::format!("{config_path}/brokers.json");
+            let broker_configs = config::get_known_brokers(&brokers_path);
+            let broker_cfg = broker_configs.iter().find(|b| b.key() == hostname);
+
+            let success = match broker_cfg {
+                Some(cfg) => match &cfg.password {
+                    Some(p) if !p.is_empty() => constant_time_eq(supplied_password, p),
+                    _ => true, // No password required
+                },
+                None => false, // Broker not found in config
+            };
+
+            if success {
+                if let Some(peer_addr) = addr {
+                    {
+                        let mut peers = peer_map.lock().unwrap();
+                        if let Some(peer) = peers.get_mut(&peer_addr) {
+                            peer.authenticated_brokers.insert(hostname.clone());
+                        }
+                    }
+                    // Send topic summaries for this broker now that the peer is authenticated
+                    websocket::send_broker_topic_summaries(
+                        peer_map, mqtt_map, peer_addr, &hostname,
+                    );
+                }
+            }
+
+            // Send result back to the requesting peer
+            if let Some(peer_addr) = addr {
+                let result = jsonrpc::JsonRpcNotification {
+                    jsonrpc: "2.0",
+                    method: "broker_auth_result",
+                    params: serde_json::json!({
+                        "broker": hostname,
+                        "success": success,
+                    }),
+                };
+                if let Ok(serialized) = serde_json::to_string(&result) {
+                    websocket::send_to_specific_peer(peer_map, peer_addr, &serialized);
+                }
+            }
         }
+        _ => {}
     }
-    // Implement deserialization and processing of JSON-RPC message
 }
 
 fn connect_to_broker(
@@ -428,6 +513,10 @@ fn connect_to_mqtt_client_and_loop_forever(
     } else {
         println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
         let (client, connection) = mqtt::connect_to_mqtt_host(broker_config);
+        let requires_auth = broker_config
+            .password
+            .as_ref()
+            .is_some_and(|p| !p.is_empty());
         let now_ms = chrono::Utc::now().timestamp_millis();
         let broker = mqtt::MqttBroker {
             client,
@@ -440,6 +529,7 @@ fn connect_to_mqtt_client_and_loop_forever(
             rate_history: Vec::new(),
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: now_ms,
+            requires_auth,
         };
 
         mqtt_lock.insert(mqtt_host.to_string(), broker);
@@ -461,7 +551,6 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
 
         mqtt_lock.remove(mqtt_host);
         drop(mqtt_lock);
-        // TODO put this into websocket
         peer_map
             .lock()
             .unwrap()
@@ -478,11 +567,11 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
                         .tx
                         .try_send(warp::filters::ws::Message::text(serialized))
                     {
-                        Ok(_) => { /* Implement Logging */ }
+                        Ok(_) => {}
                         Err(err) if err.is_disconnected() => {
                             println!("Error sending message: {err:?}")
                         }
-                        Err(_) => { /* channel full, drop */ }
+                        Err(_) => {}
                     }
                 } else {
                     println!("Failed to serialize brokers.");

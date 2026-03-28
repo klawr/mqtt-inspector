@@ -39,6 +39,7 @@ impl BrokerConfig {
         &self.host
     }
 
+    #[cfg(test)]
     pub fn from_host(host: &str) -> Self {
         Self {
             host: host.to_string(),
@@ -296,10 +297,7 @@ mod tests {
     #[test]
     fn test_remove_from_brokers_failure_no_file() {
         let broker = "test.mosquitto.org:1883";
-        // TODO remove_from_brokers should return an Err
         remove_from_brokers("not_a_real_path.json", broker);
-
-        // Just to check that this did not fail
         assert!(true);
     }
 
@@ -365,7 +363,6 @@ mod tests {
             "name": "does_not_exist"
         });
         remove_from_commands("whatever", params);
-        // TODO: Should return error instead
         assert!(true);
     }
 

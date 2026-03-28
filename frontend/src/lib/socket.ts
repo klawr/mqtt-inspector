@@ -114,3 +114,17 @@ export function requestTopicSelection(
 
 	socket.send(message);
 }
+
+export function requestBrokerAuthentication(
+	hostname: string,
+	password: string,
+	socket: WebSocket
+) {
+	const message = JSON.stringify({
+		jsonrpc: '2.0',
+		method: 'authenticate_broker',
+		params: { hostname, password }
+	});
+
+	socket.send(message);
+}

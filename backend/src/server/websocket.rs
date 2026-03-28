@@ -69,8 +69,28 @@ pub struct NotificationBuffer {
 
 pub type NotificationBuf = Arc<Mutex<NotificationBuffer>>;
 
+/// Auto-authenticate a peer for all brokers that do not require a password.
+/// Called when a new peer connects so it immediately receives data from open brokers.
+pub fn auto_authenticate_peer(peer: &mut PeerConnection, mqtt_map: &mqtt::BrokerMap) {
+    let ml = mqtt_map.lock().unwrap();
+    for (name, broker) in ml.iter() {
+        if !broker.requires_auth {
+            peer.authenticated_brokers.insert(name.clone());
+        }
+    }
+}
+
+/// Add an open (no-password) broker to every connected peer's authenticated set.
+/// Called when a new broker without a password is added at runtime.
+pub fn auto_authenticate_all_peers_for_broker(peer_map: &PeerMap, broker_name: &str) {
+    let mut peers = peer_map.lock().unwrap();
+    for (_, peer) in peers.iter_mut() {
+        peer.authenticated_brokers.insert(broker_name.to_string());
+    }
+}
+
 /// Drain the notification buffer and send batched messages to all connected
-/// peers. Called periodically by a dedicated timer thread (e.g. every 100 ms).
+/// peers. Each peer only receives items for brokers in its `authenticated_brokers` set.
 pub fn flush_notification_buffer(buf: &NotificationBuf, peer_map: &PeerMap) {
     let (metas, evictions) = {
         let mut lock = buf.lock().unwrap();
@@ -83,26 +103,64 @@ pub fn flush_notification_buffer(buf: &NotificationBuf, peer_map: &PeerMap) {
         )
     };
 
-    if !evictions.is_empty() {
-        let message = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0",
-            method: "messages_evicted_batch",
-            params: serde_json::json!(evictions),
-        };
-        if let Ok(serialized) = serde_json::to_string(&message) {
-            send_serialized_to_peers(peer_map, &serialized, "messages_evicted_batch");
+    let mut to_remove = Vec::new();
+    let mut peers = peer_map.lock().unwrap();
+    for (addr, peer) in peers.iter_mut() {
+        let peer_evictions: Vec<&PendingEviction> = evictions
+            .iter()
+            .filter(|e| peer.authenticated_brokers.contains(&e.source))
+            .collect();
+
+        if !peer_evictions.is_empty() {
+            let message = jsonrpc::JsonRpcNotification {
+                jsonrpc: "2.0",
+                method: "messages_evicted_batch",
+                params: serde_json::json!(peer_evictions),
+            };
+            if let Ok(serialized) = serde_json::to_string(&message) {
+                match peer
+                    .tx
+                    .try_send(warp::filters::ws::Message::text(serialized))
+                {
+                    Ok(_) => peer.mark_success(),
+                    Err(err) => {
+                        if err.is_disconnected() || peer.mark_full() {
+                            to_remove.push(*addr);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        let peer_metas: Vec<&PendingMeta> = metas
+            .iter()
+            .filter(|m| peer.authenticated_brokers.contains(&m.source))
+            .collect();
+
+        if !peer_metas.is_empty() {
+            let message = jsonrpc::JsonRpcNotification {
+                jsonrpc: "2.0",
+                method: "mqtt_message_meta_batch",
+                params: serde_json::json!(peer_metas),
+            };
+            if let Ok(serialized) = serde_json::to_string(&message) {
+                match peer
+                    .tx
+                    .try_send(warp::filters::ws::Message::text(serialized))
+                {
+                    Ok(_) => peer.mark_success(),
+                    Err(err) => {
+                        if err.is_disconnected() || peer.mark_full() {
+                            to_remove.push(*addr);
+                        }
+                    }
+                }
+            }
         }
     }
-
-    if !metas.is_empty() {
-        let message = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0",
-            method: "mqtt_message_meta_batch",
-            params: serde_json::json!(metas),
-        };
-        if let Ok(serialized) = serde_json::to_string(&message) {
-            send_serialized_to_peers(peer_map, &serialized, "mqtt_message_meta_batch");
-        }
+    for addr in to_remove {
+        peers.remove(&addr);
     }
 }
 
@@ -145,6 +203,8 @@ pub struct PeerConnection {
     dropped_messages: usize,
     pub selected_broker: Option<String>,
     pub selected_topic: Option<String>,
+    /// Brokers this peer has authenticated for (by hostname key).
+    pub authenticated_brokers: std::collections::HashSet<String>,
 }
 
 impl PeerConnection {
@@ -155,6 +215,7 @@ impl PeerConnection {
             dropped_messages: 0,
             selected_broker: None,
             selected_topic: None,
+            authenticated_brokers: std::collections::HashSet::new(),
         }
     }
 
@@ -207,6 +268,43 @@ fn send_serialized_to_peers(peer_map: &PeerMap, serialized: &str, message_kind: 
     send_message_to_peer_map(peer_map, message_kind, || msg.clone())
 }
 
+/// Send a serialized message only to peers authenticated for the given broker.
+fn send_serialized_to_authenticated_peers(peer_map: &PeerMap, serialized: &str, broker: &str) {
+    let mut to_remove = Vec::new();
+    let mut peers = peer_map.lock().unwrap();
+    for (addr, peer) in peers.iter_mut() {
+        if !peer.authenticated_brokers.contains(broker) {
+            continue;
+        }
+        match peer
+            .tx
+            .try_send(warp::filters::ws::Message::text(serialized.to_string()))
+        {
+            Ok(_) => peer.mark_success(),
+            Err(err) => {
+                if err.is_disconnected() {
+                    to_remove.push(*addr);
+                } else if peer.mark_full() {
+                    to_remove.push(*addr);
+                }
+            }
+        }
+    }
+    for addr in to_remove {
+        peers.remove(&addr);
+    }
+}
+
+/// Send a message to a specific peer by address.
+pub fn send_to_specific_peer(peer_map: &PeerMap, addr: SocketAddr, message: &str) {
+    let mut peers = peer_map.lock().unwrap();
+    if let Some(peer) = peers.get_mut(&addr) {
+        let _ = peer
+            .tx
+            .try_send(warp::filters::ws::Message::text(message.to_string()));
+    }
+}
+
 fn build_binary_mqtt_frame(
     source: &str,
     topic: &str,
@@ -234,7 +332,8 @@ fn build_binary_mqtt_frame(
     Some(frame)
 }
 
-/// Send full message payload ONLY to peers that have selected this broker+topic.
+/// Send full message payload ONLY to peers that have selected this broker+topic
+/// and are in the broker's `authenticated_brokers` set.
 pub fn send_message_to_subscribed_peers(
     peer_map: &PeerMap,
     source: &str,
@@ -262,6 +361,9 @@ pub fn send_message_to_subscribed_peers(
         if !watching {
             continue;
         }
+        if !peer.authenticated_brokers.contains(source) {
+            continue;
+        }
         match peer
             .tx
             .try_send(warp::filters::ws::Message::binary(binary_frame.clone()))
@@ -283,6 +385,7 @@ pub fn send_message_to_subscribed_peers(
 
 /// Handle a `select_topic` request from a specific peer.
 /// Updates the peer's selected broker+topic and sends existing messages for that topic.
+/// Messages are only sent if the peer is authenticated for the broker (when auth is required).
 pub fn handle_select_topic(
     peer_map: &PeerMap,
     mqtt_map: &mqtt::BrokerMap,
@@ -311,15 +414,16 @@ pub fn handle_select_topic(
             Vec::new()
         };
 
-    // Phase 2: Update the peer's selection and get a sender clone
-    let sender = {
+    // Phase 2: Update the peer's selection and get a sender clone + auth check
+    let (sender, is_authenticated) = {
         let mut peers = peer_map.lock().unwrap();
         if let Some(peer) = peers.get_mut(&addr) {
             peer.selected_broker = broker.map(|s| s.to_string());
             peer.selected_topic = topic.map(|s| s.to_string());
-            Some(peer.tx.clone())
+            let authed = broker.is_some_and(|b| peer.authenticated_brokers.contains(b));
+            (Some(peer.tx.clone()), authed)
         } else {
-            None
+            (None, false)
         }
     };
 
@@ -335,6 +439,20 @@ pub fn handle_select_topic(
     };
     if let Ok(serialized) = serde_json::to_string(&clear_msg) {
         let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
+    }
+
+    // If not authenticated for this broker, skip sending messages
+    if !is_authenticated {
+        // Send sync complete so the frontend doesn't hang
+        let done = jsonrpc::JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "topic_sync_complete",
+            params: serde_json::json!({}),
+        };
+        if let Ok(serialized) = serde_json::to_string(&done) {
+            let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
+        }
+        return;
     }
 
     // Phase 4: Stream existing messages for the topic (newest first)
@@ -399,7 +517,7 @@ pub fn send_rate_sample_to_peers(
         Err(_) => return,
     };
 
-    send_serialized_to_peers(peer_map, &serialized, "rate_history_sample");
+    send_serialized_to_authenticated_peers(peer_map, &serialized, source);
 }
 
 pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: bool) {
@@ -419,6 +537,49 @@ pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: boo
     };
 
     send_serialized_to_peers(peer_map, &serialized, "mqtt_connection_status");
+}
+
+/// Send topic summaries for a single broker to a specific peer.
+/// Called after a peer successfully authenticates for a broker.
+pub fn send_broker_topic_summaries(
+    peer_map: &PeerMap,
+    mqtt_map: &mqtt::BrokerMap,
+    addr: SocketAddr,
+    broker_name: &str,
+) {
+    let summary = {
+        let ml = mqtt_map.lock().unwrap();
+        if let Some(broker) = ml.get(broker_name) {
+            let mut topics_map = serde_json::Map::new();
+            for (topic, messages) in &broker.topics {
+                let latest_ts = messages.back().map(|m| m.timestamp.as_str()).unwrap_or("");
+                topics_map.insert(
+                    topic.clone(),
+                    serde_json::json!({
+                        "count": messages.len(),
+                        "latest_timestamp": latest_ts,
+                    }),
+                );
+            }
+            Some(serde_json::json!({
+                "source": broker.broker,
+                "topics": topics_map,
+            }))
+        } else {
+            None
+        }
+    };
+
+    if let Some(summary) = summary {
+        let msg = jsonrpc::JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "topic_summaries",
+            params: summary,
+        };
+        if let Ok(serialized) = serde_json::to_string(&msg) {
+            send_to_specific_peer(peer_map, addr, &serialized);
+        }
+    }
 }
 
 pub fn send_configs(sender: &mut Sender<warp::filters::ws::Message>, config_path: &str) {
@@ -447,11 +608,11 @@ pub fn send_commands(sender: &mut Sender<warp::filters::ws::Message>, commands_p
 
         if let Ok(serialized) = serde_json::to_string(&jsonrpc) {
             match sender.try_send(warp::filters::ws::Message::text(serialized)) {
-                Ok(_) => { /* Implement Logging */ }
+                Ok(_) => {}
                 Err(err) => println!("Error sending message: {err:?}"),
             }
         } else {
-            eprintln!("Failed to serialize commands jsonjpc")
+            eprintln!("Failed to serialize commands jsonrpc")
         }
     } else {
         eprintln!("Failed to read commands file from {commands_path}");
@@ -479,11 +640,11 @@ pub fn send_pipelines(sender: &mut Sender<warp::filters::ws::Message>, pipelines
 
         if let Ok(serialized) = serde_json::to_string(&jsonrpc) {
             match sender.try_send(warp::filters::ws::Message::text(serialized)) {
-                Ok(_) => { /* Implement Logging */ }
+                Ok(_) => {}
                 Err(err) => println!("Error sending message: {err:?}"),
             }
         } else {
-            eprintln!("Failed to serialize commands jsonjpc")
+            eprintln!("Failed to serialize pipelines jsonrpc")
         }
     }
 }
@@ -502,6 +663,7 @@ pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
                     "total_bytes": broker.total_bytes,
                     "total_messages": broker.total_messages,
                     "rate_history": broker.rate_history,
+                    "requires_auth": broker.requires_auth,
                 })
             })
             .collect();
@@ -546,13 +708,18 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
                     "total_bytes": broker.total_bytes,
                     "total_messages": broker.total_messages,
                     "rate_history": broker.rate_history,
+                    "requires_auth": broker.requires_auth,
                 })
             })
             .collect();
 
-        // Collect topic summaries: (broker_name, topic_name, count, latest_timestamp)
+        // Collect topic summaries only for non-auth brokers.
+        // Protected brokers get their summaries after authenticate_broker.
         let mut topic_sums: Vec<serde_json::Value> = Vec::new();
         for broker in binding.values() {
+            if broker.requires_auth {
+                continue;
+            }
             let mut topics_map = serde_json::Map::new();
             for (topic, messages) in &broker.topics {
                 let latest_ts = messages.back().map(|m| m.timestamp.as_str()).unwrap_or("");
@@ -681,6 +848,7 @@ mod tests {
             let peer = peers.get_mut(&addr1).unwrap();
             peer.selected_broker = Some("broker:1883".to_string());
             peer.selected_topic = Some("test/topic".to_string());
+            peer.authenticated_brokers.insert("broker:1883".to_string());
         }
 
         let payload = bytes::Bytes::from("hello");
@@ -737,6 +905,7 @@ mod tests {
             for (_, peer) in peers.iter_mut() {
                 peer.selected_broker = Some("broker:1883".to_string());
                 peer.selected_topic = Some("topic".to_string());
+                peer.authenticated_brokers.insert("broker:1883".to_string());
             }
         }
         drop(rx_closed);
@@ -768,10 +937,9 @@ mod tests {
         let buf = make_notification_buf();
         let addr_full = make_addr(9001);
         let (tx_full, _rx_full) = channel(PEER_CHANNEL_CAPACITY);
-        peer_map
-            .lock()
-            .unwrap()
-            .insert(addr_full, PeerConnection::new(tx_full));
+        let mut peer = PeerConnection::new(tx_full);
+        peer.authenticated_brokers.insert("broker:1883".to_string());
+        peer_map.lock().unwrap().insert(addr_full, peer);
 
         let mut removed = false;
 
@@ -1059,7 +1227,16 @@ mod tests {
     fn test_flush_sends_batched_metas() {
         let peer_map = make_peer_map();
         let buf = make_notification_buf();
-        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        // Authenticate peer for the broker
+        peer_map
+            .lock()
+            .unwrap()
+            .get_mut(&addr)
+            .unwrap()
+            .authenticated_brokers
+            .insert("broker:1883".to_string());
 
         buffer_message_meta(&buf, "broker:1883", "t/1", "ts1", 5, 100, 1);
         buffer_message_meta(&buf, "broker:1883", "t/2", "ts2", 10, 200, 2);
@@ -1082,7 +1259,15 @@ mod tests {
     fn test_flush_sends_batched_evictions() {
         let peer_map = make_peer_map();
         let buf = make_notification_buf();
-        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        peer_map
+            .lock()
+            .unwrap()
+            .get_mut(&addr)
+            .unwrap()
+            .authenticated_brokers
+            .insert("broker:1883".to_string());
 
         buffer_evictions(
             &buf,
@@ -1237,7 +1422,10 @@ mod tests {
             map.insert(
                 "broker:1883".to_string(),
                 mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host(&crate::server::config::BrokerConfig::from_host("127.0.0.1:19995")).0,
+                    client: mqtt::connect_to_mqtt_host(
+                        &crate::server::config::BrokerConfig::from_host("127.0.0.1:19995"),
+                    )
+                    .0,
                     broker: "broker:1883".to_string(),
                     connected: true,
                     topics,
@@ -1247,9 +1435,19 @@ mod tests {
                     rate_history: Vec::new(),
                     rate_bytes_accumulator: 0,
                     rate_last_sample_ms: now_ms,
+                    requires_auth: false,
                 },
             );
         }
+
+        // Authenticate peer for the broker
+        peer_map
+            .lock()
+            .unwrap()
+            .get_mut(&addr)
+            .unwrap()
+            .authenticated_brokers
+            .insert("broker:1883".to_string());
 
         handle_select_topic(
             &peer_map,
@@ -1345,7 +1543,10 @@ mod tests {
             map.insert(
                 "broker:1883".to_string(),
                 mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host(&crate::server::config::BrokerConfig::from_host("127.0.0.1:19994")).0,
+                    client: mqtt::connect_to_mqtt_host(
+                        &crate::server::config::BrokerConfig::from_host("127.0.0.1:19994"),
+                    )
+                    .0,
                     broker: "broker:1883".to_string(),
                     connected: true,
                     topics: std::collections::HashMap::new(),
@@ -1355,6 +1556,7 @@ mod tests {
                     rate_history: Vec::new(),
                     rate_bytes_accumulator: 0,
                     rate_last_sample_ms: now_ms,
+                    requires_auth: false,
                 },
             );
         }
@@ -1384,7 +1586,17 @@ mod tests {
     #[test]
     fn test_send_rate_sample_to_peers() {
         let peer_map = make_peer_map();
-        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        // Authenticate the peer for this broker
+        {
+            let mut peers = peer_map.lock().unwrap();
+            peers
+                .get_mut(&addr)
+                .unwrap()
+                .authenticated_brokers
+                .insert("broker:1883".to_string());
+        }
 
         let sample = mqtt::RateHistoryEntry {
             timestamp: 1700000000000,
@@ -1441,7 +1653,15 @@ mod tests {
     fn test_flush_sends_evictions_before_metas() {
         let peer_map = make_peer_map();
         let buf = make_notification_buf();
-        let (_addr, mut rx) = insert_peer(&peer_map, 9001);
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        peer_map
+            .lock()
+            .unwrap()
+            .get_mut(&addr)
+            .unwrap()
+            .authenticated_brokers
+            .insert("b:1883".to_string());
 
         buffer_evictions(&buf, "b:1883", &[("t".to_string(), 1, 0)]);
         buffer_message_meta(&buf, "b:1883", "t", "ts", 5, 100, 1);
@@ -1478,7 +1698,10 @@ mod tests {
             map.insert(
                 "broker:1883".to_string(),
                 mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host(&crate::server::config::BrokerConfig::from_host("127.0.0.1:19993")).0,
+                    client: mqtt::connect_to_mqtt_host(
+                        &crate::server::config::BrokerConfig::from_host("127.0.0.1:19993"),
+                    )
+                    .0,
                     broker: "broker:1883".to_string(),
                     connected: true,
                     topics,
@@ -1488,6 +1711,7 @@ mod tests {
                     rate_history: Vec::new(),
                     rate_bytes_accumulator: 0,
                     rate_last_sample_ms: now_ms,
+                    requires_auth: false,
                 },
             );
         }
