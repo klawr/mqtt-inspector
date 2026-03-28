@@ -292,15 +292,13 @@ THE SOFTWARE.
 				return;
 			}
 			socketConnected = false;
-			console.log('WebSocket connection closed.');
 			scheduleReconnect();
 		};
 
-		currentSocket.onerror = (event) => {
+		currentSocket.onerror = () => {
 			if (socket !== currentSocket) {
 				return;
 			}
-			console.error('WebSocket error:', event);
 		};
 	}
 
@@ -331,7 +329,7 @@ THE SOFTWARE.
 		return (rate / 1000).toFixed(1) + 'k msg/s';
 	}
 
-	function formatDuration(ms: number): string {
+	function formatDurationShort(ms: number): string {
 		const seconds = Math.floor(ms / 1000);
 		if (seconds < 60) return `${seconds}s`;
 		const minutes = Math.floor(seconds / 60);
@@ -373,15 +371,10 @@ THE SOFTWARE.
 	$: theme = $selectedTheme.id as CarbonTheme;
 
 	function themeChanged(e: Event): void {
-		const newId = e?.target as unknown as { value: string };
-		if (!newId) {
-			return;
-		}
-		const newTheme = availableThemes.find((t) => t.id == newId.value);
-		if (!newTheme) {
-			return;
-		}
-		selectedTheme.set(newTheme);
+		const value = (e.target as HTMLInputElement)?.value;
+		if (!value) return;
+		const newTheme = availableThemes.find((t) => t.id === value);
+		if (newTheme) selectedTheme.set(newTheme);
 	}
 
 	let selectedTab = 1;
@@ -516,7 +509,9 @@ THE SOFTWARE.
 			<span style="opacity: 0.8;">| {formatRate(entry.bytesPerSecond || 0)}</span>
 			<span style="opacity: 0.8;">| {formatMsgCount(entry.backendTotalMessages)}</span>
 			<span style="opacity: 0.8;">| {formatMsgRate(entry.messagesPerSecond || 0)}</span>
-			<span style="opacity: 0.8;">| History: {formatDuration(getHistoryReachMs(entry) || 0)}</span>
+			<span style="opacity: 0.8;"
+				>| History: {formatDurationShort(getHistoryReachMs(entry) || 0)}</span
+			>
 		</div>
 	{/if}
 

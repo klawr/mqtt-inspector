@@ -37,7 +37,12 @@ export class Message {
 	private _payload: ArrayBuffer | null;
 	private _text: string | null;
 
-	constructor(timestamp: string, payload: ArrayBuffer | null, text: string | null, retain: boolean = false) {
+	constructor(
+		timestamp: string,
+		payload: ArrayBuffer | null,
+		text: string | null,
+		retain: boolean = false
+	) {
 		this.timestamp = timestamp;
 		this.retain = retain;
 		this._payload = payload;

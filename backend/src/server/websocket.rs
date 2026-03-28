@@ -167,25 +167,8 @@ pub fn flush_notification_buffer(buf: &NotificationBuf, peer_map: &PeerMap) {
 
 // ─── Notification buffer helpers (called from broker loops) ──────────
 
-pub fn buffer_message_meta(
-    buf: &NotificationBuf,
-    source: &str,
-    topic: &str,
-    timestamp: &str,
-    payload_size: usize,
-    total_bytes: usize,
-    topic_message_count: usize,
-    retain: bool,
-) {
-    buf.lock().unwrap().metas.push(PendingMeta {
-        source: source.to_string(),
-        topic: topic.to_string(),
-        timestamp: timestamp.to_string(),
-        payload_size,
-        total_bytes,
-        topic_message_count,
-        retain,
-    });
+pub fn buffer_message_meta(buf: &NotificationBuf, meta: PendingMeta) {
+    buf.lock().unwrap().metas.push(meta);
 }
 
 pub fn buffer_evictions(buf: &NotificationBuf, source: &str, evictions: &[(String, usize, usize)]) {
@@ -285,9 +268,7 @@ fn send_serialized_to_authenticated_peers(peer_map: &PeerMap, serialized: &str, 
         {
             Ok(_) => peer.mark_success(),
             Err(err) => {
-                if err.is_disconnected() {
-                    to_remove.push(*addr);
-                } else if peer.mark_full() {
+                if err.is_disconnected() || peer.mark_full() {
                     to_remove.push(*addr);
                 }
             }
@@ -713,9 +694,7 @@ pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
             {
                 Ok(_) => peer.mark_success(),
                 Err(err) => {
-                    if err.is_disconnected() {
-                        to_remove.push(*addr);
-                    } else if peer.mark_full() {
+                    if err.is_disconnected() || peer.mark_full() {
                         to_remove.push(*addr);
                     }
                 }
@@ -988,13 +967,15 @@ mod tests {
         for _ in 0..(PEER_CHANNEL_CAPACITY + PEER_MAX_CONSECUTIVE_FULL_SENDS * 4) {
             buffer_message_meta(
                 &buf,
-                "broker:1883",
-                "topic",
-                "2024-01-01T00:00:00Z",
-                1,
-                0,
-                1,
-                false,
+                PendingMeta {
+                    source: "broker:1883".to_string(),
+                    topic: "topic".to_string(),
+                    timestamp: "2024-01-01T00:00:00Z".to_string(),
+                    payload_size: 1,
+                    total_bytes: 0,
+                    topic_message_count: 1,
+                    retain: false,
+                },
             );
             flush_notification_buffer(&buf, &peer_map);
 
@@ -1165,13 +1146,15 @@ mod tests {
             for _ in 0..100 {
                 buffer_message_meta(
                     &buf1,
-                    "broker:1883",
-                    "topic",
-                    "2024-01-01T00:00:00Z",
-                    4,
-                    0,
-                    1,
-                    false,
+                    PendingMeta {
+                        source: "broker:1883".to_string(),
+                        topic: "topic".to_string(),
+                        timestamp: "2024-01-01T00:00:00Z".to_string(),
+                        payload_size: 4,
+                        total_bytes: 0,
+                        topic_message_count: 1,
+                        retain: false,
+                    },
                 );
                 flush_notification_buffer(&buf1, &pm1);
             }
@@ -1218,13 +1201,15 @@ mod tests {
             for _ in 0..100 {
                 buffer_message_meta(
                     &buf2,
-                    "broker:1883",
-                    "t",
-                    "2024-01-01T00:00:00Z",
-                    4,
-                    0,
-                    1,
-                    false,
+                    PendingMeta {
+                        source: "broker:1883".to_string(),
+                        topic: "t".to_string(),
+                        timestamp: "2024-01-01T00:00:00Z".to_string(),
+                        payload_size: 4,
+                        total_bytes: 0,
+                        topic_message_count: 1,
+                        retain: false,
+                    },
                 );
                 flush_notification_buffer(&buf2, &pm2);
             }
@@ -1291,8 +1276,30 @@ mod tests {
             .authenticated_brokers
             .insert("broker:1883".to_string());
 
-        buffer_message_meta(&buf, "broker:1883", "t/1", "ts1", 5, 100, 1, false);
-        buffer_message_meta(&buf, "broker:1883", "t/2", "ts2", 10, 200, 2, false);
+        buffer_message_meta(
+            &buf,
+            PendingMeta {
+                source: "broker:1883".to_string(),
+                topic: "t/1".to_string(),
+                timestamp: "ts1".to_string(),
+                payload_size: 5,
+                total_bytes: 100,
+                topic_message_count: 1,
+                retain: false,
+            },
+        );
+        buffer_message_meta(
+            &buf,
+            PendingMeta {
+                source: "broker:1883".to_string(),
+                topic: "t/2".to_string(),
+                timestamp: "ts2".to_string(),
+                payload_size: 10,
+                total_bytes: 200,
+                topic_message_count: 2,
+                retain: false,
+            },
+        );
 
         flush_notification_buffer(&buf, &peer_map);
 
@@ -1730,7 +1737,18 @@ mod tests {
             .insert("b:1883".to_string());
 
         buffer_evictions(&buf, "b:1883", &[("t".to_string(), 1, 0)]);
-        buffer_message_meta(&buf, "b:1883", "t", "ts", 5, 100, 1, false);
+        buffer_message_meta(
+            &buf,
+            PendingMeta {
+                source: "b:1883".to_string(),
+                topic: "t".to_string(),
+                timestamp: "ts".to_string(),
+                payload_size: 5,
+                total_bytes: 100,
+                topic_message_count: 1,
+                retain: false,
+            },
+        );
 
         flush_notification_buffer(&buf, &peer_map);
 

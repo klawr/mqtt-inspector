@@ -169,7 +169,7 @@ THE SOFTWARE.
 						</p>
 					</div>
 				</div>
-				<div style="height: calc(100% - 9em">
+				<div style="height: calc(100% - 9em)">
 					{#if compareMessage && selectedMessageCompare}
 						<MonacoDiff
 							bind:code={selectedMessage.text}

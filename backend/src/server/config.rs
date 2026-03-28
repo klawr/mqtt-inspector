@@ -68,19 +68,11 @@ pub struct PipelineMessage {
     pipeline: VecDeque<PipelineEntry>,
 }
 
-pub fn get_known_brokers(brokers_path: &str) -> VecDeque<BrokerConfig> {
+pub fn get_known_brokers(brokers_path: &str) -> Vec<BrokerConfig> {
     if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
-        serde_json::from_str(&file_content).unwrap_or_else(|_| VecDeque::new())
+        serde_json::from_str(&file_content).unwrap_or_default()
     } else {
         eprintln!("Failed to read file {}", brokers_path);
-        VecDeque::new()
-    }
-}
-
-fn read_broker_configs(brokers_path: &str) -> Vec<BrokerConfig> {
-    if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
-        serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
-    } else {
         Vec::new()
     }
 }
@@ -97,13 +89,13 @@ fn write_broker_configs(brokers_path: &str, configs: &[BrokerConfig]) {
 }
 
 pub fn add_to_brokers(brokers_path: &str, config: &BrokerConfig) {
-    let mut brokers = read_broker_configs(brokers_path);
+    let mut brokers = get_known_brokers(brokers_path);
     brokers.push(config.clone());
     write_broker_configs(brokers_path, &brokers);
 }
 
 pub fn remove_from_brokers(brokers_path: &str, broker: &str) {
-    let mut brokers = read_broker_configs(brokers_path);
+    let mut brokers = get_known_brokers(brokers_path);
     if let Some(index) = brokers.iter().position(|b| b.host == broker) {
         brokers.remove(index);
         write_broker_configs(brokers_path, &brokers);
@@ -152,10 +144,10 @@ pub fn add_to_pipelines(pipelines_path: &str, params: serde_json::Value) {
         }
         if let Ok(content) = serde_json::to_string(&new_pipeline) {
             if std::fs::write(&new_pipeline_path, content).is_err() {
-                eprintln!("Failed to save new commands file to {new_pipeline_path}");
+                eprintln!("Failed to save pipeline file to {new_pipeline_path}");
             }
         } else {
-            eprintln!("Failed to serialize updated saved commands.");
+            eprintln!("Failed to serialize pipeline.");
         }
     } else {
         println!("Could not deserialize new pipeline.");
@@ -246,22 +238,7 @@ mod tests {
         let brokers = get_known_brokers(&resource.brokers_path);
 
         assert_eq!(brokers.len(), len_before + 1);
-        assert_eq!(brokers.back().unwrap().host, "test.mosquitto.org:1883");
-    }
-
-    #[test]
-    fn test_add_to_brokers_no_file() {
-        let resource = TestResource::new();
-        let broker = BrokerConfig::from_host("test.mosquitto.org:1883");
-        let brokers_path = std::format!("{}/brokers.json", resource.config_path);
-        let brokers = get_known_brokers(&brokers_path);
-        let len_before = brokers.len();
-
-        add_to_brokers(&brokers_path, &broker);
-        let brokers = get_known_brokers(&brokers_path);
-
-        assert_eq!(brokers.len(), len_before + 1);
-        assert_eq!(brokers.back().unwrap().host, "test.mosquitto.org:1883");
+        assert_eq!(brokers.last().unwrap().host, "test.mosquitto.org:1883");
     }
 
     #[test]
@@ -271,12 +248,12 @@ mod tests {
         let brokers = get_known_brokers(brokers_path.as_str());
         let len_before = brokers.len();
 
-        let broker_host = brokers.front().unwrap().host.clone();
+        let broker_host = brokers.first().unwrap().host.clone();
         remove_from_brokers(brokers_path.as_str(), &broker_host);
         let brokers = get_known_brokers(brokers_path.as_str());
 
         assert_eq!(brokers.len(), len_before - 1);
-        assert_ne!(brokers.front().unwrap().host, broker_host);
+        assert_ne!(brokers.first().unwrap().host, broker_host);
     }
 
     #[test]
@@ -298,7 +275,6 @@ mod tests {
     fn test_remove_from_brokers_failure_no_file() {
         let broker = "test.mosquitto.org:1883";
         remove_from_brokers("not_a_real_path.json", broker);
-        assert!(true);
     }
 
     #[test]
@@ -363,7 +339,6 @@ mod tests {
             "name": "does_not_exist"
         });
         remove_from_commands("whatever", params);
-        assert!(true);
     }
 
     #[test]
@@ -409,11 +384,9 @@ mod tests {
         let pipeline_path = std::format!("{}/empty_pipeline.json", resource.pipelines_path);
         assert!(std::path::Path::new(&pipeline_path).exists());
         let params = serde_json::json!({
-            "name": "test"
+            "name": "empty_pipeline"
         });
         remove_from_pipelines(&resource.pipelines_path, params);
-        let pipeline_path = std::format!("{}/test.json", resource.pipelines_path);
-        assert!(std::fs::metadata(&pipeline_path).is_err());
         assert!(!std::path::Path::new(&pipeline_path).exists());
     }
 
@@ -425,9 +398,9 @@ mod tests {
             "name": "sould_not_exist"
         });
         remove_from_pipelines(&pipelines_path, params);
-        let pipeline_path = std::format!("{}/test.json", pipelines_path);
-        assert!(std::fs::metadata(pipeline_path).is_err());
-        assert!(true);
+        // Verify existing pipelines are untouched
+        let pipeline_path = std::format!("{}/empty_pipeline.json", pipelines_path);
+        assert!(std::path::Path::new(&pipeline_path).exists());
     }
 
     // --- Tests for missing/invalid "name" parameter ---

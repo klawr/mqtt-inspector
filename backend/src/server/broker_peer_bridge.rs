@@ -181,13 +181,15 @@ fn loop_forever(
                 // Buffer lightweight meta (will be flushed in batch)
                 websocket::buffer_message_meta(
                     notification_buf,
-                    &hostname,
-                    &p.topic,
-                    &timestamp,
-                    payload.len(),
-                    total_bytes,
-                    topic_message_count,
-                    retain,
+                    websocket::PendingMeta {
+                        source: hostname.clone(),
+                        topic: p.topic.clone(),
+                        timestamp: timestamp.clone(),
+                        payload_size: payload.len(),
+                        total_bytes,
+                        topic_message_count,
+                        retain,
+                    },
                 );
                 // Send full payload ONLY to peers watching this topic
                 websocket::send_message_to_subscribed_peers(
@@ -207,7 +209,6 @@ fn loop_forever(
                         broker.connected = true;
                     }
                 }
-                // Small update for the peers already connected
                 websocket::send_broker_status_to_peers(peer_map, &hostname, true);
                 println!("Connection event: {:?} for {:?}", a.code, hostname);
             }
@@ -225,13 +226,15 @@ fn loop_forever(
                 let timestamp = chrono::Utc::now().to_rfc3339();
                 websocket::buffer_message_meta(
                     notification_buf,
-                    &hostname,
-                    "$ERROR",
-                    &timestamp,
-                    payload.len(),
-                    0,
-                    0,
-                    false,
+                    websocket::PendingMeta {
+                        source: hostname.clone(),
+                        topic: "$ERROR".to_string(),
+                        timestamp: timestamp.clone(),
+                        payload_size: payload.len(),
+                        total_bytes: 0,
+                        topic_message_count: 0,
+                        retain: false,
+                    },
                 );
                 websocket::send_message_to_subscribed_peers(
                     peer_map, &hostname, "$ERROR", &payload, 0, &timestamp, false,
@@ -255,7 +258,6 @@ fn loop_forever(
                         broker.connected = false;
                     }
                 }
-                // Small update for the peers already connected
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
@@ -351,7 +353,17 @@ pub fn deserialize_json_rpc_and_process(
                 if let Some(peer_addr) = addr {
                     let mut peers = peer_map.lock().unwrap();
                     if let Some(peer) = peers.get_mut(&peer_addr) {
-                        peer.authenticated_brokers.insert(broker_key);
+                        peer.authenticated_brokers.insert(broker_key.clone());
+                    }
+                    drop(peers);
+                    // Notify the frontend so it marks the broker as authenticated
+                    let result = jsonrpc::JsonRpcNotification {
+                        jsonrpc: "2.0",
+                        method: "broker_auth_result",
+                        params: serde_json::json!({ "broker": broker_key, "success": true }),
+                    };
+                    if let Ok(serialized) = serde_json::to_string(&result) {
+                        websocket::send_to_specific_peer(peer_map, peer_addr, &serialized);
                     }
                 }
             } else {

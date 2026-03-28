@@ -153,7 +153,13 @@ test('requestTopicSelection with broker but null topic', () => {
 
 test('requestPublishMqttMessage handles special characters in payload', () => {
 	const socket = new MockWebSocket();
-	requestPublishMqttMessage('host', 'topic', '{"key":"value"}', false, socket as unknown as WebSocket);
+	requestPublishMqttMessage(
+		'host',
+		'topic',
+		'{"key":"value"}',
+		false,
+		socket as unknown as WebSocket
+	);
 
 	const parsed = JSON.parse(socket.messages[0]);
 	expect(parsed.params.payload).toBe('{"key":"value"}');

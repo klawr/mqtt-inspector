@@ -21,7 +21,6 @@ THE SOFTWARE.
 
 <script lang="ts">
 	import { Modal, PasswordInput, InlineNotification } from 'carbon-components-svelte';
-	import { createEventDispatcher } from 'svelte';
 	import { requestBrokerAuthentication } from '$lib/socket';
 
 	export let open = false;
@@ -31,13 +30,10 @@ THE SOFTWARE.
 	let password = '';
 	let error = '';
 
-	const dispatch = createEventDispatcher<{ submitted: { broker: string } }>();
-
 	function submit() {
 		if (!password || !broker || !socket || socket.readyState !== WebSocket.OPEN) return;
 		error = '';
 		requestBrokerAuthentication(broker, password, socket);
-		dispatch('submitted', { broker });
 		password = '';
 	}
 

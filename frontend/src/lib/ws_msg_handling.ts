@@ -76,8 +76,7 @@ export type BrokerParam = {
 	requires_auth?: boolean;
 }[];
 export type MqttConnectionStatus = { source: string; connected: boolean };
-type PipelineParamEntry = { topic: string };
-export type PipelineParam = { id: string; name: string; pipeline: PipelineParamEntry[] };
+export type PipelineParam = { id: string; name: string; pipeline: { topic: string }[] };
 export type MQTTMessageParam = {
 	source: string;
 	topic: string;
@@ -465,7 +464,12 @@ export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 	// Find the leaf node and add message content
 	const leaf = findLeafBranch(entry.topics, message.topic);
 	if (leaf) {
-		const new_entry = new Message(message.timestamp, message.payload, null, message.retain ?? false);
+		const new_entry = new Message(
+			message.timestamp,
+			message.payload,
+			null,
+			message.retain ?? false
+		);
 		leaf.messages.unshift(new_entry);
 	}
 
@@ -495,7 +499,9 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 			group = { leaf, entries: [] };
 			groups.set(key, group);
 		}
-		group.entries.push(new Message(message.timestamp, message.payload, null, message.retain ?? false));
+		group.entries.push(
+			new Message(message.timestamp, message.payload, null, message.retain ?? false)
+		);
 	}
 
 	// Bulk-insert each group with a single splice (avoids O(n²) per-message unshift)

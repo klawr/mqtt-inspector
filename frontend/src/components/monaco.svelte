@@ -20,7 +20,7 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onMount } from 'svelte';
 	import { prettyPrint } from './messages';
 	import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 	import { selectedTheme, type Theme } from '../store';
@@ -67,18 +67,20 @@ THE SOFTWARE.
 	}
 
 	onMount(() => {
-		selectedTheme.subscribe((value) => {
+		const unsub = selectedTheme.subscribe((value) => {
 			theme = value;
 			if (!editor || !theme) {
 				return;
 			}
-			setEditor();
+			editor.updateOptions({
+				theme: !theme.dark ? 'vs-light' : 'vs-dark'
+			});
 		});
 		setEditor();
-	});
-
-	onDestroy(async () => {
-		editor?.dispose();
+		return () => {
+			unsub();
+			editor?.dispose();
+		};
 	});
 
 	$: if (editor && !isUpdatingFromEditor) {
