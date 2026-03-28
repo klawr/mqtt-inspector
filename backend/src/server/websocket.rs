@@ -1237,7 +1237,7 @@ mod tests {
             map.insert(
                 "broker:1883".to_string(),
                 mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host("127.0.0.1:19995").0,
+                    client: mqtt::connect_to_mqtt_host(&crate::server::config::BrokerConfig::from_host("127.0.0.1:19995")).0,
                     broker: "broker:1883".to_string(),
                     connected: true,
                     topics,
@@ -1345,7 +1345,7 @@ mod tests {
             map.insert(
                 "broker:1883".to_string(),
                 mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host("127.0.0.1:19994").0,
+                    client: mqtt::connect_to_mqtt_host(&crate::server::config::BrokerConfig::from_host("127.0.0.1:19994")).0,
                     broker: "broker:1883".to_string(),
                     connected: true,
                     topics: std::collections::HashMap::new(),
@@ -1478,7 +1478,7 @@ mod tests {
             map.insert(
                 "broker:1883".to_string(),
                 mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host("127.0.0.1:19993").0,
+                    client: mqtt::connect_to_mqtt_host(&crate::server::config::BrokerConfig::from_host("127.0.0.1:19993")).0,
                     broker: "broker:1883".to_string(),
                     connected: true,
                     topics,

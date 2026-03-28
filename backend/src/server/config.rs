@@ -22,6 +22,33 @@
 
 use std::collections::VecDeque;
 
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct BrokerConfig {
+    pub host: String,
+    #[serde(default)]
+    pub use_tls: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+impl BrokerConfig {
+    /// The display key used to identify this broker throughout the app (host:port).
+    pub fn key(&self) -> &str {
+        &self.host
+    }
+
+    pub fn from_host(host: &str) -> Self {
+        Self {
+            host: host.to_string(),
+            use_tls: false,
+            username: None,
+            password: None,
+        }
+    }
+}
+
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct CommandMessage {
     name: String,
@@ -40,50 +67,45 @@ pub struct PipelineMessage {
     pipeline: VecDeque<PipelineEntry>,
 }
 
-pub fn get_known_brokers(brokers_path: &str) -> VecDeque<String> {
-    if let Ok(file_content) = &std::fs::read_to_string(brokers_path) {
-        serde_json::from_str(file_content).unwrap_or_else(|_| VecDeque::new())
+pub fn get_known_brokers(brokers_path: &str) -> VecDeque<BrokerConfig> {
+    if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
+        serde_json::from_str(&file_content).unwrap_or_else(|_| VecDeque::new())
     } else {
-        eprintln!("Failed to read file {}", &brokers_path);
+        eprintln!("Failed to read file {}", brokers_path);
         VecDeque::new()
     }
 }
 
-pub fn add_to_brokers(brokers_path: &str, broker: &str) {
-    let mut brokers: Vec<String> = if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
+fn read_broker_configs(brokers_path: &str) -> Vec<BrokerConfig> {
+    if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
         serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
     } else {
-        eprintln!("Failed to read file {brokers_path}");
         Vec::new()
-    };
-
-    brokers.push(broker.to_string());
-    if let Ok(content) = serde_json::to_string(&brokers) {
-        if std::fs::write(brokers_path, content).is_err() {
-            eprintln!("Failed to save new brokers file to {brokers_path}");
-        }
-    } else {
-        eprintln!("Failed to serialize updated saved brokers.");
     }
 }
 
-pub fn remove_from_brokers(brokers_path: &str, broker: &str) {
-    let mut brokers: Vec<String> = if let Ok(file_content) = std::fs::read_to_string(brokers_path) {
-        serde_json::from_str(&file_content).unwrap_or_else(|_| Vec::new())
-    } else {
-        eprintln!("Failed to read file {brokers_path}");
-        Vec::new()
-    };
-
-    if let Some(index) = brokers.iter().position(|b| b == broker) {
-        brokers.remove(index);
-        if let Ok(content) = serde_json::to_string(&brokers) {
+fn write_broker_configs(brokers_path: &str, configs: &[BrokerConfig]) {
+    match serde_json::to_string_pretty(configs) {
+        Ok(content) => {
             if std::fs::write(brokers_path, content).is_err() {
-                eprintln!("Failed to save new brokers file to {brokers_path}");
+                eprintln!("Failed to save brokers file to {brokers_path}");
             }
-        } else {
-            eprintln!("Failed to serialize updated saved brokers.");
         }
+        Err(_) => eprintln!("Failed to serialize broker configs."),
+    }
+}
+
+pub fn add_to_brokers(brokers_path: &str, config: &BrokerConfig) {
+    let mut brokers = read_broker_configs(brokers_path);
+    brokers.push(config.clone());
+    write_broker_configs(brokers_path, &brokers);
+}
+
+pub fn remove_from_brokers(brokers_path: &str, broker: &str) {
+    let mut brokers = read_broker_configs(brokers_path);
+    if let Some(index) = brokers.iter().position(|b| b.host == broker) {
+        brokers.remove(index);
+        write_broker_configs(brokers_path, &brokers);
     } else {
         eprintln!("Broker {broker} not found in {brokers_path}");
     }
@@ -201,8 +223,8 @@ mod tests {
         let brokers =
             get_known_brokers(std::format!("{}/brokers.json", resource.config_path).as_str());
         assert_eq!(brokers.len(), 2);
-        assert_eq!(brokers[0], "localhost:1883");
-        assert_eq!(brokers[1], "127.0.0.1:1234");
+        assert_eq!(brokers[0].host, "localhost:1883");
+        assert_eq!(brokers[1].host, "127.0.0.1:1234");
     }
 
     #[test]
@@ -215,30 +237,30 @@ mod tests {
     #[test]
     fn test_add_to_brokers() {
         let resource = TestResource::new();
-        let broker = "test.mosquitto.org:1883";
+        let broker = BrokerConfig::from_host("test.mosquitto.org:1883");
         let brokers = get_known_brokers(&resource.brokers_path);
         let len_before = brokers.len();
 
-        add_to_brokers(&resource.brokers_path, broker);
+        add_to_brokers(&resource.brokers_path, &broker);
         let brokers = get_known_brokers(&resource.brokers_path);
 
         assert_eq!(brokers.len(), len_before + 1);
-        assert_eq!(brokers.back().unwrap(), "test.mosquitto.org:1883");
+        assert_eq!(brokers.back().unwrap().host, "test.mosquitto.org:1883");
     }
 
     #[test]
     fn test_add_to_brokers_no_file() {
         let resource = TestResource::new();
-        let broker = "test.mosquitto.org:1883";
+        let broker = BrokerConfig::from_host("test.mosquitto.org:1883");
         let brokers_path = std::format!("{}/brokers.json", resource.config_path);
         let brokers = get_known_brokers(&brokers_path);
         let len_before = brokers.len();
 
-        add_to_brokers(&brokers_path, broker);
+        add_to_brokers(&brokers_path, &broker);
         let brokers = get_known_brokers(&brokers_path);
 
         assert_eq!(brokers.len(), len_before + 1);
-        assert_eq!(brokers.back().unwrap(), "test.mosquitto.org:1883");
+        assert_eq!(brokers.back().unwrap().host, "test.mosquitto.org:1883");
     }
 
     #[test]
@@ -248,12 +270,12 @@ mod tests {
         let brokers = get_known_brokers(brokers_path.as_str());
         let len_before = brokers.len();
 
-        let broker = brokers.front().unwrap();
-        remove_from_brokers(brokers_path.as_str(), broker);
-        let brokers: VecDeque<String> = get_known_brokers(brokers_path.as_str());
+        let broker_host = brokers.front().unwrap().host.clone();
+        remove_from_brokers(brokers_path.as_str(), &broker_host);
+        let brokers = get_known_brokers(brokers_path.as_str());
 
         assert_eq!(brokers.len(), len_before - 1);
-        assert_ne!(brokers.front().unwrap(), broker);
+        assert_ne!(brokers.front().unwrap().host, broker_host);
     }
 
     #[test]

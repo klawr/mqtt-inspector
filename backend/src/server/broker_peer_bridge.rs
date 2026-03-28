@@ -261,8 +261,8 @@ pub fn connect_to_known_brokers(
 ) {
     config::get_known_brokers(broker_path)
         .iter()
-        .for_each(|broker| {
-            connect_to_broker(broker, peer_map, mqtt_map, notification_buf);
+        .for_each(|broker_config| {
+            connect_to_broker(broker_config, peer_map, mqtt_map, notification_buf);
         });
 }
 
@@ -294,9 +294,32 @@ pub fn deserialize_json_rpc_and_process(
                     return;
                 }
             };
-            connect_to_broker(&hostname, peer_map, mqtt_map, notification_buf);
+            let use_tls = message
+                .params
+                .get("use_tls")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let username = message
+                .params
+                .get("username")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let password = message
+                .params
+                .get("password")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let broker_config = config::BrokerConfig {
+                host: hostname,
+                use_tls,
+                username,
+                password,
+            };
+            connect_to_broker(&broker_config, peer_map, mqtt_map, notification_buf);
             let broker_path = std::format!("{}/brokers.json", &config_path);
-            config::add_to_brokers(&broker_path, &hostname);
+            config::add_to_brokers(&broker_path, &broker_config);
             websocket::broadcast_brokers(peer_map, mqtt_map)
         }
         "remove" => {
@@ -371,19 +394,19 @@ pub fn deserialize_json_rpc_and_process(
 }
 
 fn connect_to_broker(
-    mqtt_host: &str,
+    broker_config: &config::BrokerConfig,
     peer_map: &websocket::PeerMap,
     mqtt_map: &mqtt::BrokerMap,
     notification_buf: &websocket::NotificationBuf,
 ) {
-    let mqtt_host_clone = mqtt_host.trim_matches('"').to_string();
+    let config_clone = broker_config.clone();
     let mqtt_map_clone = mqtt_map.clone();
     let peer_map_clone = peer_map.clone();
     let buf_clone = notification_buf.clone();
 
     std::thread::spawn(move || {
         connect_to_mqtt_client_and_loop_forever(
-            &mqtt_host_clone,
+            &config_clone,
             &mqtt_map_clone,
             &peer_map_clone,
             &buf_clone,
@@ -392,18 +415,19 @@ fn connect_to_broker(
 }
 
 fn connect_to_mqtt_client_and_loop_forever(
-    mqtt_host: &str,
+    broker_config: &config::BrokerConfig,
     mqtt_map: &mqtt::BrokerMap,
     peer_map: &websocket::PeerMap,
     notification_buf: &websocket::NotificationBuf,
 ) {
+    let mqtt_host = broker_config.key();
     let mut mqtt_lock = mqtt_map.lock().unwrap();
 
     if mqtt_lock.contains_key(mqtt_host) {
         println!("MQTT-Client for {mqtt_host} already exists.");
     } else {
         println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
-        let (client, connection) = mqtt::connect_to_mqtt_host(mqtt_host);
+        let (client, connection) = mqtt::connect_to_mqtt_host(broker_config);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let broker = mqtt::MqttBroker {
             client,

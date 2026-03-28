@@ -69,11 +69,19 @@ export function requestPipelineRemoval(pipeline: string, socket: WebSocket) {
 	socket.send(message);
 }
 
-export function requestMqttBrokerConnection(hostname: string, socket: WebSocket) {
+export function requestMqttBrokerConnection(
+	hostname: string,
+	socket: WebSocket,
+	options?: { use_tls?: boolean; username?: string; password?: string }
+) {
+	const params: Record<string, unknown> = { hostname };
+	if (options?.use_tls) params.use_tls = true;
+	if (options?.username) params.username = options.username;
+	if (options?.password) params.password = options.password;
 	const message = JSON.stringify({
 		jsonrpc: '2.0',
 		method: 'connect',
-		params: { hostname }
+		params
 	});
 	socket.send(message);
 }

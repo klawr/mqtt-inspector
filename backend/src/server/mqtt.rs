@@ -25,7 +25,9 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use rumqttc::{MqttOptions, QoS};
+use rumqttc::{MqttOptions, QoS, Transport};
+
+use super::config::BrokerConfig;
 
 #[derive(serde::Serialize)]
 pub struct MqttMessage {
@@ -88,15 +90,29 @@ pub fn max_message_size() -> usize {
 
 pub type BrokerMap = Arc<Mutex<HashMap<String, MqttBroker>>>;
 
-pub fn connect_to_mqtt_host(host: &str) -> (rumqttc::Client, rumqttc::Connection) {
+pub fn connect_to_mqtt_host(config: &BrokerConfig) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
-    println!("Connecting to Mqtt broker at {host} with id {id}");
+    let host = &config.host;
+    println!(
+        "Connecting to Mqtt broker at {host} (tls={}) with id {id}",
+        config.use_tls
+    );
     let hostname_ip = host.trim_matches('"').split(':').collect::<Vec<&str>>();
     let hostname = hostname_ip[0];
     let port = hostname_ip[1].parse::<u16>().unwrap();
     let mut mqttoptions = MqttOptions::new(id, hostname, port);
     mqttoptions.set_keep_alive(std::time::Duration::from_secs(30));
     mqttoptions.set_max_packet_size(max_message_size(), max_message_size());
+
+    if config.use_tls {
+        mqttoptions.set_transport(Transport::tls_with_default_config());
+    }
+
+    if let (Some(username), Some(password)) = (&config.username, &config.password) {
+        if !username.is_empty() {
+            mqttoptions.set_credentials(username, password);
+        }
+    }
 
     let (mut client, connection) = rumqttc::Client::new(mqttoptions, 1000);
     client.subscribe("#", QoS::AtMostOnce).unwrap();
@@ -194,7 +210,8 @@ mod tests {
     #[test]
     fn test_broker_map_insert_and_lookup() {
         let mqtt_map = make_broker_map();
-        let (client, _connection) = connect_to_mqtt_host("127.0.0.1:18830");
+        let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18830");
+        let (client, _connection) = connect_to_mqtt_host(&cfg);
         let broker = MqttBroker {
             client,
             broker: "127.0.0.1:18830".to_string(),
@@ -218,7 +235,8 @@ mod tests {
     #[test]
     fn test_broker_map_remove() {
         let mqtt_map = make_broker_map();
-        let (client, _connection) = connect_to_mqtt_host("127.0.0.1:18831");
+        let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18831");
+        let (client, _connection) = connect_to_mqtt_host(&cfg);
         let broker = MqttBroker {
             client,
             broker: "127.0.0.1:18831".to_string(),
@@ -304,7 +322,8 @@ mod tests {
 
     #[test]
     fn test_broker_eviction_order_fifo() {
-        let (client, _conn) = connect_to_mqtt_host("127.0.0.1:18832");
+        let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18832");
+        let (client, _conn) = connect_to_mqtt_host(&cfg);
         let mut broker = MqttBroker {
             client,
             broker: "test".to_string(),
@@ -363,7 +382,8 @@ mod tests {
 
     #[test]
     fn test_broker_topics_multiple_messages_per_topic() {
-        let (client, _conn) = connect_to_mqtt_host("127.0.0.1:18833");
+        let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18833");
+        let (client, _conn) = connect_to_mqtt_host(&cfg);
         let mut broker = MqttBroker {
             client,
             broker: "test".to_string(),
@@ -399,7 +419,8 @@ mod tests {
 
     #[test]
     fn test_broker_topics_eviction_removes_oldest() {
-        let (client, _conn) = connect_to_mqtt_host("127.0.0.1:18834");
+        let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18834");
+        let (client, _conn) = connect_to_mqtt_host(&cfg);
         let mut broker = MqttBroker {
             client,
             broker: "test".to_string(),

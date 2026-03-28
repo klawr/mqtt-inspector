@@ -21,7 +21,7 @@ THE SOFTWARE.
 
 <script lang="ts">
 	import { requestMqttBrokerConnection } from '$lib/socket';
-	import { Modal, TextInput } from 'carbon-components-svelte';
+	import { Modal, TextInput, Toggle, PasswordInput } from 'carbon-components-svelte';
 
 	export let open = false;
 	export let socket: WebSocket;
@@ -30,10 +30,23 @@ THE SOFTWARE.
 	const ip_default = '127.0.0.1';
 	let port: string | undefined = undefined;
 	const port_default = '1883';
+	let use_tls = false;
+	let username: string | undefined = undefined;
+	let password: string | undefined = undefined;
+
+	$: if (use_tls && (port === undefined || port === '1883')) {
+		port = '8883';
+	} else if (!use_tls && port === '8883') {
+		port = '1883';
+	}
 
 	function submit() {
 		const hostname = `${ip?.trim() || ip_default}:${port?.trim() || port_default}`;
-		requestMqttBrokerConnection(hostname, socket);
+		requestMqttBrokerConnection(hostname, socket, {
+			use_tls,
+			username: username?.trim(),
+			password
+		});
 		open = false;
 	}
 </script>
@@ -50,4 +63,16 @@ THE SOFTWARE.
 >
 	<TextInput labelText="Ip" placeholder={ip_default} bind:value={ip} />
 	<TextInput labelText="Port" placeholder={port_default} bind:value={port} />
+	<div style="margin-top: 1rem;">
+		<Toggle labelText="Use TLS (mqtts)" bind:toggled={use_tls} labelA="Off" labelB="On" />
+	</div>
+	<div style="margin-top: 1rem;">
+		<TextInput labelText="Username" placeholder="optional" bind:value={username} />
+	</div>
+	<div style="margin-top: 0.5rem;">
+		<PasswordInput labelText="Password" placeholder="optional" bind:value={password} />
+	</div>
+	<p style="margin-top: 1rem; font-size: 0.75rem; color: var(--cds-text-helper);">
+		Credentials are stored in plain text in the backend config directory.
+	</p>
 </Modal>
