@@ -203,10 +203,18 @@ fn loop_forever(
                 );
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
-                {
+                let client = {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
                     if let Some(broker) = mqtt_lock.get_mut(&hostname) {
                         broker.connected = true;
+                        Some(broker.client.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(mut client) = client {
+                    if let Err(err) = client.subscribe("#", rumqttc::QoS::AtMostOnce) {
+                        println!("Failed to re-subscribe after ConnAck for {hostname}: {err}");
                     }
                 }
                 websocket::send_broker_status_to_peers(peer_map, &hostname, true);
@@ -249,17 +257,16 @@ fn loop_forever(
                 }
                 println!("MqttState error for {hostname:?}: {err}. Will retry.");
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
-                std::thread::sleep(std::time::Duration::from_secs(5));
             }
-            Err(_) => {
+            Err(err) => {
                 {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
                     if let Some(broker) = mqtt_lock.get_mut(&hostname) {
                         broker.connected = false;
                     }
                 }
+                println!("Connection error for {hostname:?}: {err}. Will retry.");
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
-                std::thread::sleep(std::time::Duration::from_secs(5));
             }
         }
     }
@@ -1208,5 +1215,195 @@ mod tests {
             &make_notification_buf(),
         );
         // No panic, no state change
+    }
+
+    // ─── Integration: reconnect after broker restart ─────────────────
+
+    /// Helper: find a free TCP port for mosquitto.
+    fn find_free_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// Helper: start mosquitto on `port`, returning the Child handle.
+    fn start_mosquitto(port: u16) -> std::process::Child {
+        std::process::Command::new("mosquitto")
+            .args(["-p", &port.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("mosquitto must be installed to run integration tests")
+    }
+
+    /// Helper: block until a TCP connection to `port` succeeds, or panic
+    /// after `timeout`.
+    fn wait_for_port(port: u16, timeout: std::time::Duration) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("mosquitto did not become ready on port {port}");
+    }
+
+    /// Verify that after a broker restart the backend automatically
+    /// reconnects **and** re-subscribes so messages keep flowing.
+    #[test]
+    fn test_resubscribe_after_broker_restart() {
+        let port = find_free_port();
+        let hostname = format!("127.0.0.1:{port}");
+
+        // 1. Start mosquitto
+        let mut mosquitto = start_mosquitto(port);
+        wait_for_port(port, std::time::Duration::from_secs(5));
+
+        // 2. Connect our backend
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let notification_buf = make_notification_buf();
+        let broker_config = config::BrokerConfig {
+            host: hostname.clone(),
+            use_tls: false,
+            username: None,
+            password: None,
+        };
+
+        connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
+
+        // Wait for the backend to connect and subscribe
+        let connected = (|| {
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let lock = mqtt_map.lock().unwrap();
+                if let Some(b) = lock.get(&hostname) {
+                    if b.connected {
+                        return true;
+                    }
+                }
+            }
+            false
+        })();
+        assert!(connected, "backend should connect to mosquitto");
+
+        // 3. Publish a message and verify the backend receives it
+        {
+            let (mut pub_client, mut pub_conn) = rumqttc::Client::new(
+                {
+                    let mut opts = rumqttc::MqttOptions::new("test-pub", "127.0.0.1", port);
+                    opts.set_keep_alive(std::time::Duration::from_secs(5));
+                    opts
+                },
+                10,
+            );
+            // Drive the connection briefly to establish it
+            std::thread::spawn(move || {
+                for notification in pub_conn.iter() {
+                    if notification.is_err() {
+                        break;
+                    }
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            pub_client
+                .publish("test/before", rumqttc::QoS::AtLeastOnce, false, b"hello1")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            let has_before = mqtt_map
+                .lock()
+                .unwrap()
+                .get(&hostname)
+                .map(|b| b.topics.contains_key("test/before"))
+                .unwrap_or(false);
+            assert!(has_before, "backend should have received test/before");
+            let _ = pub_client.disconnect();
+        }
+
+        // 4. Kill mosquitto (simulates a broker crash / restart)
+        mosquitto.kill().ok();
+        mosquitto.wait().ok();
+
+        // Wait until the backend notices the disconnect
+        let disconnected = (|| {
+            for _ in 0..100 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let lock = mqtt_map.lock().unwrap();
+                if let Some(b) = lock.get(&hostname) {
+                    if !b.connected {
+                        return true;
+                    }
+                }
+            }
+            false
+        })();
+        assert!(disconnected, "backend should detect broker disconnect");
+
+        // 5. Restart mosquitto on the same port
+        let mut mosquitto2 = start_mosquitto(port);
+        wait_for_port(port, std::time::Duration::from_secs(5));
+
+        // Wait for the backend to reconnect
+        let reconnected = (|| {
+            for _ in 0..100 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let lock = mqtt_map.lock().unwrap();
+                if let Some(b) = lock.get(&hostname) {
+                    if b.connected {
+                        return true;
+                    }
+                }
+            }
+            false
+        })();
+        assert!(reconnected, "backend should reconnect after broker restart");
+
+        // 6. Publish another message and verify the backend receives it
+        //    (this is the key assertion: if we did NOT re-subscribe on
+        //    ConnAck, this message would never arrive)
+        {
+            let (mut pub_client, mut pub_conn) = rumqttc::Client::new(
+                {
+                    let mut opts = rumqttc::MqttOptions::new("test-pub2", "127.0.0.1", port);
+                    opts.set_keep_alive(std::time::Duration::from_secs(5));
+                    opts
+                },
+                10,
+            );
+            std::thread::spawn(move || {
+                for notification in pub_conn.iter() {
+                    if notification.is_err() {
+                        break;
+                    }
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            pub_client
+                .publish("test/after", rumqttc::QoS::AtLeastOnce, false, b"hello2")
+                .unwrap();
+            // Give the backend time to receive via the re-established subscription
+            let received_after = (|| {
+                for _ in 0..50 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let lock = mqtt_map.lock().unwrap();
+                    if let Some(b) = lock.get(&hostname) {
+                        if b.topics.contains_key("test/after") {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })();
+            assert!(
+                received_after,
+                "backend should receive messages after broker restart (re-subscribe on ConnAck)"
+            );
+            let _ = pub_client.disconnect();
+        }
+
+        // Cleanup
+        mosquitto2.kill().ok();
+        mosquitto2.wait().ok();
     }
 }

@@ -329,6 +329,20 @@ pub fn send_message_to_subscribed_peers(
     timestamp: &str,
     retain: bool,
 ) {
+    // Fast path: check if any peer is watching this topic before building
+    // the binary frame (which requires JSON serialization + allocation).
+    let has_watcher = {
+        let peers = peer_map.lock().unwrap();
+        peers.values().any(|peer| {
+            peer.selected_broker.as_deref() == Some(source)
+                && peer.selected_topic.as_deref() == Some(topic)
+                && peer.authenticated_brokers.contains(source)
+        })
+    };
+    if !has_watcher {
+        return;
+    }
+
     let binary_frame = match build_binary_mqtt_frame(
         source,
         topic,
