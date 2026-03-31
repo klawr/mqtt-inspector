@@ -33,10 +33,12 @@ THE SOFTWARE.
 	export let socket: WebSocket;
 	export let selectedBroker: string;
 	export let broker: BrokerRepositoryEntry;
+	export let topic = '';
+	export let payload = '';
+	export let retain = false;
+	export let save_command_name = '';
+	export let selectedCommandId = '';
 
-	let topic = '';
-	let payload = '';
-	let retain = false;
 	$: topicIds = getAllTopicIds(broker.topics);
 
 	function send(e: Event) {
@@ -52,7 +54,6 @@ THE SOFTWARE.
 		e.stopPropagation();
 	}
 
-	let selectedCommandId = '';
 	function saved_message_selected(e: CustomEvent) {
 		const item = e.detail.selectedItem;
 		if (!item) {
@@ -88,8 +89,6 @@ THE SOFTWARE.
 		requestCommandAddition(save_command_name, topic, payload, socket);
 		save_command_name = '';
 	}
-
-	let save_command_name = '';
 </script>
 
 <OverwriteCommand
@@ -132,7 +131,9 @@ THE SOFTWARE.
 		<div style="margin-top: auto; margin-bottom: 0; flex: 2">
 			<ComboBox
 				bind:selectedId={selectedCommandId}
-				on:clear={() => (selectedCommandId = '')}
+				on:clear={() => {
+					selectedCommandId = '';
+				}}
 				on:select={saved_message_selected}
 				titleText="Saved commands"
 				placeholder="Search..."

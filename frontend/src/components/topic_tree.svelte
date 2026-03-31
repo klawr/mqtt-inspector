@@ -20,6 +20,7 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
+	import { onMount, tick } from 'svelte';
 	import { Button, ButtonSet, TreeView } from 'carbon-components-svelte';
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
 	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
@@ -28,11 +29,26 @@ THE SOFTWARE.
 
 	export let broker: BrokerRepositoryEntry;
 	let activeId = broker.selectedTopic?.id || '';
+	let lastShownId = '';
+
+	async function revealActiveTopic() {
+		if (!treeview || !activeId) {
+			return;
+		}
+		await tick();
+		treeview?.showNode(activeId);
+		lastShownId = activeId;
+	}
 
 	// Keep activeId in sync and expand tree when selectedTopic changes externally (e.g. URL restore)
 	$: if (broker.selectedTopic?.id && broker.selectedTopic.id !== activeId) {
 		activeId = broker.selectedTopic.id;
-		treeview?.showNode(activeId);
+	}
+
+	// When returning to the tree tab, the component is remounted and the tree is collapsed by default.
+	// Re-reveal the active node so the selected topic is visible.
+	$: if (treeview && activeId && activeId !== lastShownId) {
+		revealActiveTopic();
 	}
 
 	function select(
@@ -73,6 +89,10 @@ THE SOFTWARE.
 
 	let sanitizedTopics: TreeNode[] = [];
 	$: sanitizedTopics = sanitizeTree(broker.topics);
+
+	onMount(() => {
+		revealActiveTopic();
+	});
 </script>
 
 <ButtonSet>

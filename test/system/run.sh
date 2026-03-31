@@ -5,13 +5,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$SCRIPT_DIR/.venv"
 
-if [ ! -f "$VENV/bin/python" ] || ! "$VENV/bin/python" -c "import sys" 2>/dev/null; then
+if [ ! -f "$VENV/bin/python" ] || ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
     echo "[setup] Creating virtual environment …"
     rm -rf "$VENV"
     python3 -m venv "$VENV"
 fi
 
-"$VENV/bin/python" -m pip install --quiet paho-mqtt websocket-client psutil
+if ! "$VENV/bin/python" -c "import paho.mqtt.client, websocket, psutil" >/dev/null 2>&1; then
+    "$VENV/bin/python" -m pip install --quiet paho-mqtt websocket-client psutil
+fi
 
 # Auto-detect MQTT broker: prefer Docker (which can start its own), but if
 # Docker is unavailable fall back to the compose sidecar broker.

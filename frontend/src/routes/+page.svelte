@@ -409,6 +409,11 @@ THE SOFTWARE.
 	}
 
 	let selectedTab = 1;
+	let publishTopic = '';
+	let publishPayload = '';
+	let publishRetain = false;
+	let publishCommandName = '';
+	let publishSelectedCommandId = '';
 
 	$: brokerNeedsAuth = app.selectedBroker
 		? app.brokerRepository[app.selectedBroker]?.requiresAuth &&
@@ -679,6 +684,11 @@ THE SOFTWARE.
 				bind:selectedBroker={app.selectedBroker}
 				bind:socket
 				bind:broker={app.brokerRepository[app.selectedBroker]}
+				bind:topic={publishTopic}
+				bind:payload={publishPayload}
+				bind:retain={publishRetain}
+				bind:save_command_name={publishCommandName}
+				bind:selectedCommandId={publishSelectedCommandId}
 			/>
 		{:else if selectedTab === 4}
 			<RateHistoryChart

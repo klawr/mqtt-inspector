@@ -215,8 +215,8 @@
 				</select>
 			</label>
 			<p>
-				Showing {chartRateHistory.length} plotted of {filteredRateHistory.length} filtered ({rateHistory.length}
-				total) samples. Next sample in {countdown}s
+				Showing {chartRateHistory.length} of {rateHistory.length}
+				samples. Next sample in {countdown}s
 			</p>
 		</div>
 		<AreaChart data={rateChartData} options={rateOptions} />

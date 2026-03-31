@@ -5,7 +5,7 @@ and multiple simulated clients. They then generate heavy MQTT traffic and verify
 that:
 
 * The backend stays alive and responsive.
-* Memory usage remains bounded (eviction works).
+* Memory usage remains bounded overall; RSS is treated as a sanity bound, not an exact proxy for stored payload bytes.
 * WebSocket connections remain stable under load.
 * No deadlocks occur (the application keeps processing).
 
@@ -42,6 +42,7 @@ cd test/system
    - **Topic-switcher** — rotates `select_topic` every 5 s, exercises the clear→resync cycle.
 4. **Spawns publisher threads** that publish MQTT messages at the configured rate.
 5. **Monitors** backend process memory (RSS) and WebSocket liveness every second.
+   The RSS check allows a small grace margin and only fails if the process stays above the adjusted limit for several consecutive samples.
 6. After the configured duration, **stops everything** and prints a summary with
    pass/fail verdict.
 
@@ -54,6 +55,22 @@ cd test/system
 | `--rate` | `STRESS_RATE` | 10 | Messages per second per publisher |
 | `--msg-size` | `STRESS_MSG_SIZE` | 1024 | Payload size in bytes |
 | `--ws-clients` | `STRESS_WS_CLIENTS` | 3 | Number of WebSocket clients |
-| `--max-broker-mb` | `STRESS_MAX_BROKER_MB` | 4 | Backend memory cap per broker (MB) |
+| `--max-broker-mb` | `STRESS_MAX_BROKER_MB` | 128 | Backend payload cap per broker (MB) |
 | `--topics` | `STRESS_TOPICS` | 50 | Subtopics per publisher (total topics = publishers × topics) |
-| `--backend-rss-limit` | `STRESS_RSS_LIMIT` | 512 | Fail if backend RSS exceeds this (MB) |
+| `--backend-rss-limit` | `STRESS_RSS_LIMIT` | 512 | Nominal backend RSS sanity bound (MB) |
+| `--backend-rss-grace-percent` | `STRESS_RSS_GRACE_PERCENT` | 25 | Allowed RSS overshoot above the nominal limit |
+| `--backend-rss-sustain-seconds` | `STRESS_RSS_SUSTAIN_SECONDS` | 5 | Consecutive seconds above the adjusted limit before failing |
+
+## Interpreting the memory check
+
+The backend enforces payload eviction using `MQTT_INSPECTOR_MAX_BROKER_MB`, but
+the stress test samples whole-process RSS. Those two numbers are related, not
+identical:
+
+* RSS includes allocator overhead, fragmentation, thread stacks, buffers, and other process memory.
+* Rust allocations are not guaranteed to return pages to the OS immediately after eviction.
+* A brief RSS overshoot does not necessarily indicate unbounded growth or broken eviction.
+
+For that reason, the harness now treats RSS as a **boundedness** check: it fails
+only when RSS stays above the nominal limit plus grace for several consecutive
+seconds.

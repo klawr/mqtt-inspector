@@ -37,13 +37,25 @@ REQUIRED = ["paho-mqtt", "websocket-client", "psutil"]
 def _ensure_venv():
     """Create venv & install deps if needed."""
     python = VENV_DIR / "bin" / "python"
-    if python.exists():
-        return str(python)
-
-    print("[setup] Creating virtual environment …")
-    subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
     pip = str(VENV_DIR / "bin" / "pip")
-    subprocess.check_call([pip, "install", "--quiet"] + REQUIRED)
+
+    if not python.exists() or not Path(pip).exists():
+        print("[setup] Creating virtual environment …")
+        subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+
+    deps_ready = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import paho.mqtt.client, psutil, websocket",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+    if not deps_ready:
+        subprocess.check_call([pip, "install", "--quiet"] + REQUIRED)
+
     return str(python)
 
 
@@ -402,12 +414,19 @@ def publisher_thread(
 # ---------------------------------------------------------------------------
 
 
-def _parse_text_message(data: str, counter: dict):
-    """Parse a text JSON-RPC notification and update counters."""
+def _decode_text_json(data: bytes) -> dict | None:
+    """Decode websocket text bytes into a JSON object, or None on parse errors."""
     try:
-        msg = json.loads(data)
+        text = data.decode("utf-8", errors="replace")
+        return json.loads(text)
     except json.JSONDecodeError:
-        return
+        return None
+
+
+def _parse_text_message(msg: dict, counter: dict) -> tuple[str, object]:
+    """Process a parsed JSON-RPC notification and return method/params."""
+    if not isinstance(msg, dict):
+        return "", {}
 
     method = msg.get("method", "")
     params = msg.get("params", {})
@@ -415,13 +434,11 @@ def _parse_text_message(data: str, counter: dict):
     if method == "mqtt_message_meta_batch":
         if isinstance(params, list):
             counter["meta_entries"] += len(params)
+            meta_by_broker = counter["meta_by_broker"]
             for entry in params:
                 source = entry.get("source", "")
                 if source:
-                    counter.setdefault("meta_by_broker", {})
-                    counter["meta_by_broker"][source] = (
-                        counter["meta_by_broker"].get(source, 0) + 1
-                    )
+                    meta_by_broker[source] = meta_by_broker.get(source, 0) + 1
         counter["meta_batches"] += 1
     elif method == "messages_evicted_batch":
         if isinstance(params, list):
@@ -434,10 +451,11 @@ def _parse_text_message(data: str, counter: dict):
     elif method == "mqtt_brokers":
         counter["broker_lists"] += 1
         if isinstance(params, list):
+            broker_auth_flags = counter["broker_auth_flags"]
             for b in params:
                 name = b.get("broker", "")
                 needs_auth = b.get("requires_auth", False)
-                counter.setdefault("broker_auth_flags", {})[name] = needs_auth
+                broker_auth_flags[name] = needs_auth
     elif method == "broker_auth_result":
         counter["auth_results"] += 1
         if params.get("success"):
@@ -446,6 +464,8 @@ def _parse_text_message(data: str, counter: dict):
             counter["auth_failures"] += 1
     elif method == "topic_summaries":
         counter["topic_summary_msgs"] += 1
+
+    return method, params
 
 
 def ws_observer_thread(client_id: int, url: str, counter: dict, errors: list, label: str = "observer"):
@@ -468,7 +488,9 @@ def ws_observer_thread(client_id: int, url: str, counter: dict, errors: list, la
                 if not data:
                     continue
                 if opcode == websocket.ABNF.OPCODE_TEXT:
-                    _parse_text_message(data.decode("utf-8", errors="replace"), counter)
+                    msg = _decode_text_json(data)
+                    if msg is not None:
+                        _parse_text_message(msg, counter)
                 elif opcode == websocket.ABNF.OPCODE_BINARY:
                     # Observers should NOT receive binary frames (no topic selected)
                     counter["observer_unexpected_binary"] += 1
@@ -519,8 +541,10 @@ def ws_subscriber_thread(
                     continue
 
                 if opcode == websocket.ABNF.OPCODE_TEXT:
-                    text = data.decode("utf-8", errors="replace")
-                    _parse_text_message(text, counter)
+                    msg = _decode_text_json(data)
+                    if msg is None:
+                        continue
+                    _parse_text_message(msg, counter)
 
                     # After broker list + first meta, send select_topic
                     if not selected:
@@ -599,8 +623,10 @@ def ws_topic_switch_thread(
                     continue
 
                 if opcode == websocket.ABNF.OPCODE_TEXT:
-                    text = data.decode("utf-8", errors="replace")
-                    _parse_text_message(text, counter)
+                    msg = _decode_text_json(data)
+                    if msg is None:
+                        continue
+                    _parse_text_message(msg, counter)
 
                     # Periodically switch topics (wait for broker list + meta)
                     now = time.monotonic()
@@ -688,15 +714,13 @@ def ws_auth_authenticated_observer_thread(
                 if not data:
                     continue
                 if opcode == websocket.ABNF.OPCODE_TEXT:
-                    text = data.decode("utf-8", errors="replace")
-                    _parse_text_message(text, counter)
+                    msg = _decode_text_json(data)
+                    if msg is None:
+                        continue
+                    method, params = _parse_text_message(msg, counter)
                     if not authenticated:
-                        try:
-                            msg = json.loads(text)
-                        except json.JSONDecodeError:
-                            continue
-                        if msg.get("method") == "broker_auth_result":
-                            p = msg.get("params", {})
+                        if method == "broker_auth_result":
+                            p = params if isinstance(params, dict) else {}
                             if p.get("broker") == protected_broker and p.get("success"):
                                 authenticated = True
                                 print(f"  [ws-auth-obs-{client_id}] authenticated to {protected_broker}")
@@ -756,16 +780,14 @@ def ws_auth_subscriber_thread(
                     continue
 
                 if opcode == websocket.ABNF.OPCODE_TEXT:
-                    text = data.decode("utf-8", errors="replace")
-                    _parse_text_message(text, counter)
+                    msg = _decode_text_json(data)
+                    if msg is None:
+                        continue
+                    method, params = _parse_text_message(msg, counter)
 
                     if not authenticated:
-                        try:
-                            msg = json.loads(text)
-                        except json.JSONDecodeError:
-                            continue
-                        if msg.get("method") == "broker_auth_result":
-                            p = msg.get("params", {})
+                        if method == "broker_auth_result":
+                            p = params if isinstance(params, dict) else {}
                             if p.get("broker") == protected_broker and p.get("success"):
                                 authenticated = True
                                 print(f"  [ws-auth-sub-{client_id}] authenticated to {protected_broker}")
@@ -811,7 +833,7 @@ def ws_auth_subscriber_thread(
 # ---------------------------------------------------------------------------
 
 
-def monitor_thread(pid: int, samples: list, rss_limit_mb: int, errors: list):
+def monitor_thread(pid: int, samples: list, errors: list):
     """Sample backend RSS every second."""
     try:
         proc = psutil.Process(pid)
@@ -824,14 +846,58 @@ def monitor_thread(pid: int, samples: list, rss_limit_mb: int, errors: list):
             mem = proc.memory_info()
             rss_mb = mem.rss / (1024 * 1024)
             samples.append(rss_mb)
-            if rss_mb > rss_limit_mb:
-                errors.append(
-                    f"RSS {rss_mb:.1f} MB exceeded limit {rss_limit_mb} MB"
-                )
         except psutil.NoSuchProcess:
             errors.append("Backend process died during test")
             break
         _stop_event.wait(1.0)
+
+
+def _longest_rss_streak_over_limit(samples: list[float], limit_mb: float) -> int:
+    """Return the longest consecutive run of samples above *limit_mb*."""
+    longest = 0
+    current = 0
+    for rss_mb in samples:
+        if rss_mb > limit_mb:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+def _validate_rss_bound(
+    samples: list[float],
+    rss_limit_mb: int,
+    rss_grace_percent: int,
+    rss_sustain_seconds: int,
+    errors: list[str],
+):
+    """Treat RSS as a boundedness sanity check, not an exact payload ceiling."""
+    if not samples:
+        return
+
+    effective_limit_mb = rss_limit_mb * (1 + (rss_grace_percent / 100.0))
+    peak_rss_mb = max(samples)
+    longest_streak = _longest_rss_streak_over_limit(samples, effective_limit_mb)
+
+    if longest_streak >= rss_sustain_seconds:
+        errors.append(
+            "RSS stayed above the adjusted limit for "
+            f"{longest_streak}s (peak {peak_rss_mb:.1f} MB, nominal limit "
+            f"{rss_limit_mb} MB, adjusted limit {effective_limit_mb:.1f} MB)."
+        )
+    elif peak_rss_mb > effective_limit_mb:
+        print(
+            "  [note] RSS briefly exceeded the adjusted limit "
+            f"({peak_rss_mb:.1f} MB > {effective_limit_mb:.1f} MB) but did not "
+            f"stay there for {rss_sustain_seconds}s."
+        )
+    elif peak_rss_mb > rss_limit_mb:
+        print(
+            "  [note] RSS exceeded the nominal limit "
+            f"({peak_rss_mb:.1f} MB > {rss_limit_mb} MB) but stayed within the "
+            f"configured {rss_grace_percent}% grace."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -850,6 +916,18 @@ def parse_args():
     p.add_argument("--ws-clients", type=int, default=int(os.environ.get("STRESS_WS_CLIENTS", "3")))
     p.add_argument("--max-broker-mb", type=int, default=int(os.environ.get("STRESS_MAX_BROKER_MB", "128")))
     p.add_argument("--backend-rss-limit", type=int, default=int(os.environ.get("STRESS_RSS_LIMIT", "512")))
+    p.add_argument(
+        "--backend-rss-grace-percent",
+        type=int,
+        default=int(os.environ.get("STRESS_RSS_GRACE_PERCENT", "25")),
+        help="Allowed RSS overshoot above --backend-rss-limit before sustained failures count",
+    )
+    p.add_argument(
+        "--backend-rss-sustain-seconds",
+        type=int,
+        default=int(os.environ.get("STRESS_RSS_SUSTAIN_SECONDS", "5")),
+        help="Fail only if RSS stays above the adjusted limit for this many seconds",
+    )
     p.add_argument("--skip-build", action="store_true", help="Skip cargo build")
     p.add_argument("--mqtt-host", default=None,
                    help="Use an existing MQTT broker instead of starting one via Docker")
@@ -857,7 +935,10 @@ def parse_args():
                    help="Port of the external MQTT broker (default: 1883)")
     p.add_argument("--topics", type=int, default=int(os.environ.get("STRESS_TOPICS", "50")),
                    help="Number of subtopics per publisher (default: 50)")
-    return p.parse_args()
+    args = p.parse_args()
+    args.backend_rss_grace_percent = max(0, args.backend_rss_grace_percent)
+    args.backend_rss_sustain_seconds = max(1, args.backend_rss_sustain_seconds)
+    return args
 
 
 def _teardown(
@@ -944,6 +1025,7 @@ def main_stress(args):
     print(f"  WS clients      : {args.ws_clients}  (observer / subscriber / switcher)")
     print(f"  Max broker MB   : {args.max_broker_mb}")
     print(f"  RSS limit       : {args.backend_rss_limit} MB")
+    print(f"  RSS grace       : {args.backend_rss_grace_percent}% for {args.backend_rss_sustain_seconds}s")
     print("=" * 70)
 
     # ---- Start infrastructure ----
@@ -1010,7 +1092,7 @@ def main_stress(args):
         # ---- Start monitor ----
         mon = threading.Thread(
             target=monitor_thread,
-            args=(backend_proc.pid, rss_samples, args.backend_rss_limit, errors),
+            args=(backend_proc.pid, rss_samples, errors),
             daemon=True,
         )
         mon.start()
@@ -1112,6 +1194,15 @@ def main_stress(args):
             f"  [note] No evictions observed with {sent:,} messages sent "
             f"and {args.max_broker_mb} MB cap. This may be normal for low volume."
         )
+
+    # 8. RSS boundedness sanity check
+    _validate_rss_bound(
+        rss_samples,
+        args.backend_rss_limit,
+        args.backend_rss_grace_percent,
+        args.backend_rss_sustain_seconds,
+        errors,
+    )
 
     # ---- Report ----
     _print_report(counter, rss_samples, errors)
