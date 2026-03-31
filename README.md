@@ -1,4 +1,4 @@
-# mqtt-inspector
+# <img src="frontend/static/favicon.svg" alt="mqtt-inspector icon" width="32" height="32" align="absmiddle" /> mqtt-inspector
 
 mqtt-inspector helps you watch MQTT traffic in real time.
 

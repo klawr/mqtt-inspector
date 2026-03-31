@@ -75,6 +75,7 @@ THE SOFTWARE.
 	import Login from '../components/dialogs/login.svelte';
 	import { selectedTheme, availableThemes } from '../store';
 	import { goto } from '$app/navigation';
+	import AppNavIcon from '../components/app_nav_icon.svelte';
 	import { findbranchwithid } from '$lib/helper';
 	import { requestTopicSelection } from '$lib/socket';
 
@@ -497,7 +498,13 @@ THE SOFTWARE.
 <RemoveBroker bind:app bind:socket bind:open={removeMqttBrokerModalOpen} />
 <Login bind:this={loginRef} bind:open={loginOpen} broker={loginBroker} {socket} />
 
-<Header platformName="MQTT-Inspector" bind:isSideNavOpen persistentHamburgerMenu={true}>
+<Header
+	platformName="mqtt-inspector"
+	bind:isSideNavOpen
+	persistentHamburgerMenu={true}
+	iconMenu={AppNavIcon}
+	iconClose={AppNavIcon}
+>
 	<svelte:fragment slot="skip-to-content">
 		<SkipToContent />
 	</svelte:fragment>
@@ -548,10 +555,10 @@ THE SOFTWARE.
 					)}) — oldest messages are being evicted"
 				/>
 			{/if}
-			<span style="opacity: 0.8;">| {formatRate(entry.bytesPerSecond || 0)}</span>
-			<span style="opacity: 0.8;">| {formatMsgCount(entry.backendTotalMessages)}</span>
-			<span style="opacity: 0.8;">| {formatMsgRate(entry.messagesPerSecond || 0)}</span>
-			<span style="opacity: 0.8;"
+			<span>| {formatRate(entry.bytesPerSecond || 0)}</span>
+			<span>| {formatMsgCount(entry.backendTotalMessages)}</span>
+			<span>| {formatMsgRate(entry.messagesPerSecond || 0)}</span>
+			<span
 				>| History: {formatDurationShort(getHistoryReachMs(app.selectedBroker, entry) || 0)}</span
 			>
 		</div>
