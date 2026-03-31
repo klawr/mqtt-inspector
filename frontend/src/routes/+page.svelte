@@ -418,6 +418,7 @@ THE SOFTWARE.
 	// Track topic selection and notify backend when it changes
 	let lastSelectedBroker: string | null = null;
 	let lastSelectedTopicId: string | null = null;
+	let lastUrlSyncState = '';
 	$: {
 		const currentBroker = app.selectedBroker || null;
 		const currentTopicId = currentBroker
@@ -438,26 +439,31 @@ THE SOFTWARE.
 		}
 	}
 	$: {
-		const params = new URLSearchParams($page.url.search);
-		if (app.selectedBroker) {
-			params.set('broker', app.selectedBroker);
-		}
-		if (selectedTab !== 0) {
-			params.set('tab', selectedTab.toString());
-		}
 		const currentTopic =
 			app.selectedBroker && app.brokerRepository[app.selectedBroker]?.selectedTopic?.id;
-		if (currentTopic) {
-			params.set('topic', currentTopic);
-		} else if (pendingTopic) {
-			params.set('topic', pendingTopic);
-		} else {
-			params.delete('topic');
-		}
-		const url = `${$page.url.pathname}?${params.toString()}`;
-		const current = `${$page.url.pathname}${$page.url.search}`;
-		if (url !== current) {
-			goto(url);
+		const routeState = `${app.selectedBroker}|${selectedTab}|${currentTopic ?? pendingTopic ?? ''}`;
+		if (routeState !== lastUrlSyncState) {
+			lastUrlSyncState = routeState;
+
+			const params = new URLSearchParams($page.url.search);
+			if (app.selectedBroker) {
+				params.set('broker', app.selectedBroker);
+			}
+			if (selectedTab !== 0) {
+				params.set('tab', selectedTab.toString());
+			}
+			if (currentTopic) {
+				params.set('topic', currentTopic);
+			} else if (pendingTopic) {
+				params.set('topic', pendingTopic);
+			} else {
+				params.delete('topic');
+			}
+			const url = `${$page.url.pathname}?${params.toString()}`;
+			const current = `${$page.url.pathname}${$page.url.search}`;
+			if (url !== current) {
+				goto(url);
+			}
 		}
 	}
 

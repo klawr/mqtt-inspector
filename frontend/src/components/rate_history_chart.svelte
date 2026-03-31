@@ -109,8 +109,7 @@
 				let cumulated = 0;
 				let thresholdIndex = -1;
 				for (let i = chartRateHistory.length - 1; i > 0; i--) {
-					const dt =
-						(chartRateHistory[i].timestamp - chartRateHistory[i - 1].timestamp) / 1000;
+					const dt = (chartRateHistory[i].timestamp - chartRateHistory[i - 1].timestamp) / 1000;
 					const bytes = chartRateHistory[i].bytesPerSecond * dt;
 					cumulated += bytes;
 					if (cumulated >= maxBrokerBytes) {
@@ -216,7 +215,8 @@
 				</select>
 			</label>
 			<p>
-				Showing {chartRateHistory.length} plotted of {filteredRateHistory.length} filtered ({rateHistory.length} total) samples. Next sample in {countdown}s
+				Showing {chartRateHistory.length} plotted of {filteredRateHistory.length} filtered ({rateHistory.length}
+				total) samples. Next sample in {countdown}s
 			</p>
 		</div>
 		<AreaChart data={rateChartData} options={rateOptions} />

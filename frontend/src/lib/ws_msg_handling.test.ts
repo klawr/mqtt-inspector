@@ -474,7 +474,7 @@ test('processRateHistorySample appends entry and updates bytesPerSecond', () => 
 	expect(entry.bytesPerSecond).toBe(1234.5);
 });
 
-test('processRateHistorySample creates new array reference', () => {
+test('processRateHistorySample appends sample in place', () => {
 	const app = new AppState();
 	app.brokerRepository = {
 		'broker1:1883': {
@@ -500,8 +500,8 @@ test('processRateHistorySample creates new array reference', () => {
 	);
 	const newRef = app.brokerRepository['broker1:1883'].rateHistory;
 
-	// Must be a different array reference for Svelte reactivity
-	expect(newRef).not.toBe(oldRef);
+	// Keep the same array reference and mutate incrementally for better performance.
+	expect(newRef).toBe(oldRef);
 	expect(newRef).toHaveLength(1);
 });
 

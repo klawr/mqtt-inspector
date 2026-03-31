@@ -444,8 +444,8 @@ export function processMQTTMessageMeta(message: MQTTMessageMetaParam, app: AppSt
 	// Update topic tree counts
 	entry.topics = addToTopicTreeMeta(message.topic, entry.topics);
 
-	// Update the selected topic reference if it belongs to this broker
-	if (app.brokerRepository[app.selectedBroker]?.selectedTopic) {
+	// Update selected topic reference only when this message affects selected broker.
+	if (app.selectedBroker === message.source && app.brokerRepository[app.selectedBroker]?.selectedTopic) {
 		const sel = app.brokerRepository[app.selectedBroker].selectedTopic;
 		if (sel) {
 			app.brokerRepository[app.selectedBroker].selectedTopic =
@@ -527,9 +527,7 @@ export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 			null,
 			message.retain ?? false
 		);
-		leaf.messages = mergeMessagesNewestFirst(sortMessagesNewestFirst([...leaf.messages]), [
-			new_entry
-		]);
+		leaf.messages = mergeMessagesNewestFirst(leaf.messages, [new_entry]);
 	}
 
 	// Update the selectedTopic reference
@@ -565,10 +563,7 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 
 	// Bulk-insert each group with a single splice (avoids O(n²) per-message unshift)
 	for (const { leaf, entries } of groups.values()) {
-		leaf.messages = mergeMessagesNewestFirst(
-			sortMessagesNewestFirst([...leaf.messages]),
-			sortMessagesNewestFirst(entries)
-		);
+		leaf.messages = mergeMessagesNewestFirst(leaf.messages, sortMessagesNewestFirst(entries));
 	}
 
 	// Update selectedTopic reference once per broker (not per message)
@@ -639,8 +634,11 @@ export function processRateHistorySample(params: RateHistorySampleParam, app: Ap
 		totalBytes: params.sample.total_bytes
 	};
 	entry.bytesPerSecond = params.sample.bytes_per_second;
-	// Prune entries older than 7 days and create a new array for Svelte reactivity
+	// Prune entries older than 7 days incrementally to keep per-sample work low.
 	const cutoff = Date.now() - RATE_HISTORY_MAX_AGE_MS;
-	entry.rateHistory = [...entry.rateHistory.filter((e) => e.timestamp >= cutoff), newEntry];
+	while (entry.rateHistory.length > 0 && entry.rateHistory[0].timestamp < cutoff) {
+		entry.rateHistory.shift();
+	}
+	entry.rateHistory.push(newEntry);
 	return app;
 }
