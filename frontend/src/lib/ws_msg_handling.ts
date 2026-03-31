@@ -24,8 +24,15 @@ import { findbranchwithid } from './helper';
 import { Message } from './state';
 import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
 
+/** Sliding-window rate tracker state per broker. */
+type RateWindowState = {
+	samples: { t: number; b: number }[];
+	start: number;
+	sumBytes: number;
+};
+
 /** Sliding-window rate tracker: per-broker list of (timestamp_ms, byteCount) samples. */
-const rateWindows: Record<string, { t: number; b: number }[]> = {};
+const rateWindows: Record<string, RateWindowState> = {};
 const RATE_WINDOW_MS = 3000;
 
 function updateRates(
@@ -33,21 +40,33 @@ function updateRates(
 	bytesReceived: number
 ): { bytesPerSecond: number; messagesPerSecond: number } {
 	const now = Date.now();
-	if (!rateWindows[broker]) rateWindows[broker] = [];
-	rateWindows[broker].push({ t: now, b: bytesReceived });
-	// prune entries older than the window
-	const cutoff = now - RATE_WINDOW_MS;
-	const idx = rateWindows[broker].findIndex((e) => e.t >= cutoff);
-	if (idx > 0) {
-		rateWindows[broker].splice(0, idx);
-	} else if (idx === -1) {
-		rateWindows[broker].length = 0;
+	if (!rateWindows[broker]) {
+		rateWindows[broker] = { samples: [], start: 0, sumBytes: 0 };
 	}
-	const totalBytes = rateWindows[broker].reduce((sum, e) => sum + e.b, 0);
+	const window = rateWindows[broker];
+	window.samples.push({ t: now, b: bytesReceived });
+	window.sumBytes += bytesReceived;
+
+	// Prune entries older than the window using a moving head index.
+	const cutoff = now - RATE_WINDOW_MS;
+	while (window.start < window.samples.length && window.samples[window.start].t < cutoff) {
+		window.sumBytes -= window.samples[window.start].b;
+		window.start += 1;
+	}
+
+	if (window.start > 1024 && window.start * 2 > window.samples.length) {
+		window.samples = window.samples.slice(window.start);
+		window.start = 0;
+	}
+
+	if (window.sumBytes < 0) {
+		window.sumBytes = 0;
+	}
+
 	const seconds = RATE_WINDOW_MS / 1000;
 	return {
-		bytesPerSecond: totalBytes / seconds,
-		messagesPerSecond: rateWindows[broker].length / seconds
+		bytesPerSecond: window.sumBytes / seconds,
+		messagesPerSecond: (window.samples.length - window.start) / seconds
 	};
 }
 

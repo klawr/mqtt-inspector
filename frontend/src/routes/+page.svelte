@@ -340,11 +340,35 @@ THE SOFTWARE.
 		return `${days}d ${hours % 24}h`;
 	}
 
-	function getHistoryReachMs(entry: import('$lib/state').BrokerRepositoryEntry): number {
+	type HistoryReachCacheEntry = {
+		historyLength: number;
+		lastTimestamp: number;
+		maxBrokerBytes: number;
+		reachMs: number;
+	};
+	const historyReachCache = new Map<string, HistoryReachCacheEntry>();
+
+	function getHistoryReachMs(
+		broker: string,
+		entry: import('$lib/state').BrokerRepositoryEntry
+	): number {
 		const rateHistory = entry.rateHistory;
 		if (rateHistory.length === 0) {
 			return 0;
 		}
+
+		const historyLength = rateHistory.length;
+		const lastTimestamp = rateHistory[historyLength - 1].timestamp;
+		const cached = historyReachCache.get(broker);
+		if (
+			cached &&
+			cached.historyLength === historyLength &&
+			cached.lastTimestamp === lastTimestamp &&
+			cached.maxBrokerBytes === app.maxBrokerBytes
+		) {
+			return cached.reachMs;
+		}
+
 		const maxBrokerBytes = app.maxBrokerBytes;
 		let oldestAvailableDate: Date = new Date(rateHistory[0].timestamp);
 		if (rateHistory.length > 1) {
@@ -364,7 +388,14 @@ THE SOFTWARE.
 			}
 		}
 
-		return Date.now() - oldestAvailableDate.getTime();
+		const reachMs = Date.now() - oldestAvailableDate.getTime();
+		historyReachCache.set(broker, {
+			historyLength,
+			lastTimestamp,
+			maxBrokerBytes,
+			reachMs
+		});
+		return reachMs;
 	}
 
 	let theme: CarbonTheme;
@@ -510,7 +541,7 @@ THE SOFTWARE.
 			<span style="opacity: 0.8;">| {formatMsgCount(entry.backendTotalMessages)}</span>
 			<span style="opacity: 0.8;">| {formatMsgRate(entry.messagesPerSecond || 0)}</span>
 			<span style="opacity: 0.8;"
-				>| History: {formatDurationShort(getHistoryReachMs(entry) || 0)}</span
+				>| History: {formatDurationShort(getHistoryReachMs(app.selectedBroker, entry) || 0)}</span
 			>
 		</div>
 	{/if}
