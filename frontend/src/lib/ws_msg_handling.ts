@@ -63,6 +63,42 @@ function findLeafBranch(topics: Treebranch[], topicPath: string): Treebranch | n
 	return found;
 }
 
+function getTimestampMs(timestamp: string): number {
+	return new Date(timestamp).getTime();
+}
+
+function sortMessagesNewestFirst<T extends { timestamp: string }>(messages: T[]): T[] {
+	return messages.sort((left, right) => getTimestampMs(right.timestamp) - getTimestampMs(left.timestamp));
+}
+
+function mergeMessagesNewestFirst(existing: Message[], incoming: Message[]): Message[] {
+	const merged: Message[] = [];
+	let incomingIndex = 0;
+	let existingIndex = 0;
+
+	while (incomingIndex < incoming.length && existingIndex < existing.length) {
+		if (
+			getTimestampMs(incoming[incomingIndex].timestamp) >=
+			getTimestampMs(existing[existingIndex].timestamp)
+		) {
+			merged.push(incoming[incomingIndex]);
+			incomingIndex += 1;
+		} else {
+			merged.push(existing[existingIndex]);
+			existingIndex += 1;
+		}
+	}
+
+	if (incomingIndex < incoming.length) {
+		merged.push(...incoming.slice(incomingIndex));
+	}
+	if (existingIndex < existing.length) {
+		merged.push(...existing.slice(existingIndex));
+	}
+
+	return merged;
+}
+
 export type CommandParam = { id: string; name: string; topic: string; payload: string };
 export type BrokerParam = {
 	broker: string;
@@ -470,7 +506,10 @@ export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 			null,
 			message.retain ?? false
 		);
-		leaf.messages.unshift(new_entry);
+		leaf.messages = mergeMessagesNewestFirst(
+			sortMessagesNewestFirst([...leaf.messages]),
+			[new_entry]
+		);
 	}
 
 	// Update the selectedTopic reference
@@ -506,9 +545,10 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 
 	// Bulk-insert each group with a single splice (avoids O(n²) per-message unshift)
 	for (const { leaf, entries } of groups.values()) {
-		// Reverse to newest-first (messages arrive oldest-first from backend)
-		entries.reverse();
-		leaf.messages.splice(0, 0, ...entries);
+		leaf.messages = mergeMessagesNewestFirst(
+			sortMessagesNewestFirst([...leaf.messages]),
+			sortMessagesNewestFirst(entries)
+		);
 	}
 
 	// Update selectedTopic reference once per broker (not per message)

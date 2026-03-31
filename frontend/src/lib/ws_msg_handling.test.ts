@@ -347,6 +347,97 @@ test('processMQTTMessages applies batched messages in order', () => {
 	);
 });
 
+test('processMQTTMessage keeps selected topic messages sorted newest-first', () => {
+	const app = new AppState();
+	app.brokerRepository['broker1'] = {
+		topics: [
+			{
+				id: 'topic1',
+				text: 'topic1 (2 messages)',
+				children: undefined,
+				number_of_messages: 2,
+				original_text: 'topic1',
+				messages: [new Message('2022-01-01T00:00:02.000Z', null, 'newest')]
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 11,
+		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
+		rateHistory: []
+	};
+
+	processMQTTMessage(
+		{
+			source: 'broker1',
+			topic: 'topic1',
+			payload: new TextEncoder().encode('older').buffer,
+			timestamp: '2022-01-01T00:00:01.000Z'
+		},
+		app
+	);
+
+	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual([
+		'newest',
+		'older'
+	]);
+});
+
+test('processMQTTMessages merges incoming history with existing messages in timestamp order', () => {
+	const app = new AppState();
+	app.brokerRepository['broker1'] = {
+		topics: [
+			{
+				id: 'topic1',
+				text: 'topic1 (4 messages)',
+				children: undefined,
+				number_of_messages: 4,
+				original_text: 'topic1',
+				messages: [
+					new Message('2022-01-01T00:00:03.000Z', null, 'latest-existing'),
+					new Message('2022-01-01T00:00:01.000Z', null, 'old-existing')
+				]
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 11,
+		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
+		rateHistory: []
+	};
+
+	processMQTTMessages(
+		[
+			{
+				source: 'broker1',
+				topic: 'topic1',
+				payload: new TextEncoder().encode('between').buffer,
+				timestamp: '2022-01-01T00:00:02.000Z'
+			},
+			{
+				source: 'broker1',
+				topic: 'topic1',
+				payload: new TextEncoder().encode('oldest').buffer,
+				timestamp: '2022-01-01T00:00:00.000Z'
+			}
+		],
+		app
+	);
+
+	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual([
+		'latest-existing',
+		'between',
+		'old-existing',
+		'oldest'
+	]);
+});
+
 test('processSettings updates maxBrokerBytes on AppState', () => {
 	const app = new AppState();
 	const result = processSettings(

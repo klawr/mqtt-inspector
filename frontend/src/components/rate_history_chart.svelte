@@ -9,6 +9,17 @@
 	export let brokerName: string;
 	export let maxBrokerBytes: number;
 
+	const timeRanges = [
+		{ id: 'history', label: 'Since history', ms: null },
+		{ id: 'all', label: 'All samples', ms: null },
+		{ id: '15m', label: 'Last 15 min', ms: 15 * 60 * 1000 },
+		{ id: '1h', label: 'Last 1 hour', ms: 60 * 60 * 1000 },
+		{ id: '6h', label: 'Last 6 hours', ms: 6 * 60 * 60 * 1000 },
+		{ id: '24h', label: 'Last 24 hours', ms: 24 * 60 * 60 * 1000 },
+		{ id: '7d', label: 'Last 7 days', ms: 7 * 24 * 60 * 60 * 1000 }
+	];
+	let selectedRangeId = 'history';
+
 	// Countdown timer: seconds until next sample
 	let countdown = 10;
 	const timer = setInterval(() => {
@@ -31,36 +42,63 @@
 
 	// Memoize all chart data — only recompute when rateHistory actually
 	// gains new entries, NOT on every parent re-render from mqtt_message.
-	let prevLen = -1;
+	let previousChartKey = '';
 	let rateChartData: { group: string; date: Date; value: number }[] = [];
 	let storedChartData: { group: string; date: Date; value: number }[] = [];
 	let rateOptions: Record<string, unknown> = {};
 	let storedOptions: Record<string, unknown> = {};
 	let showCharts = false;
+	$: selectedRange = timeRanges.find((range) => range.id === selectedRangeId) ?? timeRanges[0];
+
+	// Compute the oldest timestamp within the broker's retained history by
+	// accumulating bytesPerSecond * dt backwards until we exceed maxBrokerBytes.
+	$: historyStartTimestamp = (() => {
+		if (rateHistory.length <= 1) return null;
+		let cumulated = 0;
+		for (let i = rateHistory.length - 1; i > 0; i--) {
+			const dt = (rateHistory[i].timestamp - rateHistory[i - 1].timestamp) / 1000;
+			cumulated += rateHistory[i].bytesPerSecond * dt;
+			if (cumulated >= maxBrokerBytes) {
+				return rateHistory[i - 1].timestamp;
+			}
+		}
+		return null; // all data fits within broker capacity
+	})();
+
+	$: filteredRateHistory = (() => {
+		if (selectedRangeId === 'history') {
+			return historyStartTimestamp !== null
+				? rateHistory.filter((entry) => entry.timestamp >= historyStartTimestamp!)
+				: rateHistory;
+		}
+		if (selectedRange.ms === null) return rateHistory;
+		return rateHistory.filter((entry) => entry.timestamp >= Date.now() - selectedRange.ms!);
+	})();
 
 	$: {
-		const len = rateHistory.length;
-		if (len !== prevLen) {
-			prevLen = len;
-			showCharts = len > 0;
+		const chartKey = `${selectedRangeId}:${filteredRateHistory.length}:${filteredRateHistory.at(-1)?.timestamp ?? 0}`;
+		if (chartKey !== previousChartKey) {
+			previousChartKey = chartKey;
+			showCharts = filteredRateHistory.length > 0;
 
-			const maxRate = rateHistory.reduce((max, e) => Math.max(max, e.bytesPerSecond), 0);
+			const maxRate = filteredRateHistory.reduce((max, e) => Math.max(max, e.bytesPerSecond), 0);
 			const rateUnit = getUnit(maxRate);
 
 			const maxStoredVal = Math.max(
 				maxBrokerBytes,
-				rateHistory.reduce((max, e) => Math.max(max, e.totalBytes), 0)
+				filteredRateHistory.reduce((max, e) => Math.max(max, e.totalBytes), 0)
 			);
 			const storedUnit = getUnit(maxStoredVal);
 
 			// Calculate indicator using bytesPerSecond and timestamps if totalBytes is capped
 			let oldestAvailableDate: Date | null = null;
-			if (rateHistory.length > 1) {
+			if (filteredRateHistory.length > 1) {
 				let cumulated = 0;
 				let thresholdIndex = -1;
-				for (let i = rateHistory.length - 1; i > 0; i--) {
-					const dt = (rateHistory[i].timestamp - rateHistory[i - 1].timestamp) / 1000;
-					const bytes = rateHistory[i].bytesPerSecond * dt;
+				for (let i = filteredRateHistory.length - 1; i > 0; i--) {
+					const dt =
+						(filteredRateHistory[i].timestamp - filteredRateHistory[i - 1].timestamp) / 1000;
+					const bytes = filteredRateHistory[i].bytesPerSecond * dt;
 					cumulated += bytes;
 					if (cumulated >= maxBrokerBytes) {
 						thresholdIndex = i - 1;
@@ -68,17 +106,17 @@
 					}
 				}
 				if (thresholdIndex !== -1) {
-					oldestAvailableDate = new Date(rateHistory[thresholdIndex].timestamp);
+					oldestAvailableDate = new Date(filteredRateHistory[thresholdIndex].timestamp);
 				}
 			}
 
-			rateChartData = rateHistory.map((entry) => ({
+			rateChartData = filteredRateHistory.map((entry) => ({
 				group: brokerName,
 				date: new Date(entry.timestamp),
 				value: Math.round((entry.bytesPerSecond / rateUnit.divisor) * 100) / 100
 			}));
 
-			storedChartData = rateHistory.map((entry) => ({
+			storedChartData = filteredRateHistory.map((entry) => ({
 				group: 'Stored',
 				date: new Date(entry.timestamp),
 				value: Math.round((entry.totalBytes / storedUnit.divisor) * 100) / 100
@@ -155,9 +193,19 @@
 
 {#if showCharts}
 	<div class="charts-container">
-		<p style="opacity: 0.5; font-size: 0.8rem; text-align: right; margin: 0;">
-			Next sample in {countdown}s
-		</p>
+		<div class="chart-toolbar">
+			<label>
+				<span>Timerange</span>
+				<select bind:value={selectedRangeId}>
+					{#each timeRanges as range}
+						<option value={range.id}>{range.label}</option>
+					{/each}
+				</select>
+			</label>
+			<p>
+				Showing {filteredRateHistory.length} of {rateHistory.length} samples. Next sample in {countdown}s
+			</p>
+		</div>
 		<AreaChart data={rateChartData} options={rateOptions} />
 		<AreaChart data={storedChartData} options={storedOptions} />
 	</div>
@@ -174,6 +222,37 @@
 		flex-direction: column;
 		gap: 1.5rem;
 	}
+
+	.chart-toolbar {
+		display: flex;
+		justify-content: space-between;
+		align-items: end;
+		gap: 1rem;
+		flex-wrap: wrap;
+	}
+
+	.chart-toolbar label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		font-size: 0.85rem;
+	}
+
+	.chart-toolbar select {
+		min-width: 12rem;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--cds-border-subtle, #c6c6c6);
+		background: var(--cds-field, #262626);
+		color: inherit;
+		font: inherit;
+	}
+
+	.chart-toolbar p {
+		margin: 0;
+		opacity: 0.65;
+		font-size: 0.8rem;
+	}
+
 	.empty-state {
 		display: flex;
 		flex-direction: column;

@@ -41,11 +41,12 @@ THE SOFTWARE.
 		TrashCan
 	} from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
-	import { findbranchwithid, formatDuration, getAllTopics, shouldFilterItem } from '$lib/helper';
+	import { findbranchwithid, formatDuration, getAllTopicIds } from '$lib/helper';
 	import RemovePipeline from './dialogs/remove_pipeline.svelte';
 	import OverwritePipeline from './dialogs/overwrite_pipeline.svelte';
 	import CleanPipelineRows from './cleanPipelineRows.svelte';
 	import { requestPipelineAddition } from '$lib/socket';
+	import TopicSelector from './topic_selector.svelte';
 
 	export let pipelines: SavedPipeline[];
 	export let broker: BrokerRepositoryEntry;
@@ -143,11 +144,10 @@ THE SOFTWARE.
 		selectedRow = `row-${newIndex}-value`;
 	}
 
-	let searchTopics: { text: string; id: string }[] = [];
-	$: {
-		searchTopics = getAllTopics(broker.topics).map((topic) => {
-			return { text: topic.id, id: topic.id };
-		});
+	$: topicIds = getAllTopicIds(broker.topics);
+
+	function applyNextStepText(topicId: string) {
+		nextStepText = topicId;
 	}
 </script>
 
@@ -210,7 +210,7 @@ THE SOFTWARE.
 						<StructuredListCell>
 							<div style="width: 0">
 								<StructuredListInput id="row-{index}" value="row-{index}-value" />
-								{#if (selectedRow === `row-${index}-value` && !broker.selectedTopic?.id) || broker.selectedTopic?.id === item.topic}
+								{#if selectedRow === `row-${index}-value`}
 									<CheckmarkFilled />
 								{/if}
 							</div>
@@ -235,14 +235,13 @@ THE SOFTWARE.
 	</div>
 	<div style="display: flex">
 		<div style="flex: 10;">
-			<ComboBox
+			<TopicSelector
+				bind:value={nextStepText}
+				{topicIds}
+				labelText="Add topic"
 				placeholder="Add topic to pipeline..."
-				items={searchTopics}
-				value={nextStepText}
-				on:select={(e) => {
-					nextStepText = e.detail.selectedItem?.id || '';
-				}}
-				{shouldFilterItem}
+				on:select={(event) => applyNextStepText(event.detail.value)}
+				on:submit={(event) => applyNextStepText(event.detail.value)}
 			/>
 		</div>
 		<div style="flex: 1">
@@ -260,26 +259,20 @@ THE SOFTWARE.
 			on:click={() => moveSelectedRow(-1)}
 			icon={ArrowUp}
 			iconDescription="Move selected row up"
-			disabled={!selectedRow ||
-				(!!broker.selectedTopic?.id &&
-					broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+			disabled={!selectedRow}
 		/>
 		<Button
 			on:click={() => moveSelectedRow(1)}
 			icon={ArrowDown}
 			iconDescription="Move selected row down"
-			disabled={!selectedRow ||
-				(!!broker.selectedTopic?.id &&
-					broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+			disabled={!selectedRow}
 		/>
 		<Button
 			kind="danger"
 			on:click={removeSelectedRow}
 			icon={TrashCan}
 			iconDescription="Remove selected row"
-			disabled={!selectedRow ||
-				(!!broker.selectedTopic?.id &&
-					broker.pipeline[+selectedRow.split('-')[1]]?.topic !== broker.selectedTopic?.id)}
+			disabled={!selectedRow}
 		/>
 		<Button kind="danger" on:click={cleanAllRows} icon={Clean} iconDescription="Clean all rows" />
 	</div>

@@ -22,6 +22,11 @@
 
 import type { Treebranch } from './state';
 
+export type TopicSuggestion = {
+	id: string;
+	text: string;
+};
+
 export function findbranchwithid(
 	id: string,
 	tree: Treebranch[] | undefined
@@ -41,21 +46,45 @@ export function findbranchwithid(
 	}
 }
 
-export function getAllTopics(branch: Treebranch[], topics: Treebranch[] = []) {
+export function getAllTopicIds(branch: Treebranch[], topicIds: string[] = []) {
 	branch.forEach((topic) => {
-		topics.push(topic);
+		topicIds.push(topic.id);
 		if (topic.children) {
-			getAllTopics(topic.children, topics);
+			getAllTopicIds(topic.children, topicIds);
 		}
 	});
-	return topics;
+	return topicIds;
 }
 
-export function shouldFilterItem(item: { text: string }, value: string) {
-	if (!value) return true;
+export function getTopicSuggestions(
+	topicIds: string[],
+	value: string | null | undefined,
+	limit: number = 100
+): TopicSuggestion[] {
+	const needle = (value ?? '').trim().toLowerCase();
+	if (limit <= 0) {
+		return [];
+	}
 
-	const text = item.text.toLowerCase();
-	return text.toLowerCase().includes(value);
+	if (!needle) {
+		return topicIds.slice(0, limit).map((topicId) => ({ id: topicId, text: topicId }));
+	}
+
+	const prefixMatches: TopicSuggestion[] = [];
+	const substringMatches: TopicSuggestion[] = [];
+
+	for (const topicId of topicIds) {
+		const normalizedTopicId = topicId.toLowerCase();
+		if (normalizedTopicId.startsWith(needle)) {
+			prefixMatches.push({ id: topicId, text: topicId });
+			continue;
+		}
+		if (normalizedTopicId.includes(needle)) {
+			substringMatches.push({ id: topicId, text: topicId });
+		}
+	}
+
+	return [...prefixMatches, ...substringMatches].slice(0, limit);
 }
 
 export function formatDuration(ms: number): string {

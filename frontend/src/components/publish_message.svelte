@@ -24,17 +24,20 @@ THE SOFTWARE.
 	import { requestCommandAddition, requestPublishMqttMessage } from '$lib/socket';
 	import { Add, TrashCan } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
+	import { getAllTopicIds } from '$lib/helper';
 	import OverwriteCommand from './dialogs/overwrite_command.svelte';
 	import Monaco from './monaco.svelte';
+	import TopicSelector from './topic_selector.svelte';
 
 	export let savedCommands: Command[];
 	export let socket: WebSocket;
 	export let selectedBroker: string;
 	export let broker: BrokerRepositoryEntry;
 
-	let topic: string;
-	let payload: string;
+	let topic = '';
+	let payload = '';
 	let retain = false;
+	$: topicIds = getAllTopicIds(broker.topics);
 
 	function send(e: Event) {
 		stopPropagation(e);
@@ -49,7 +52,7 @@ THE SOFTWARE.
 		e.stopPropagation();
 	}
 
-	let selectedCommandId: string;
+	let selectedCommandId = '';
 	function saved_message_selected(e: CustomEvent) {
 		const item = e.detail.selectedItem;
 		if (!item) {
@@ -100,7 +103,12 @@ THE SOFTWARE.
 <Tile light on:click={stopPropagation} style="height: calc(100vh - 5em)">
 	<div style="display: flex; width: 100%">
 		<div style="flex: 4">
-			<TextInput on:click={stopPropagation} labelText="Topic" bind:value={topic} />
+			<TopicSelector
+				bind:value={topic}
+				{topicIds}
+				labelText="Topic"
+				placeholder="Select or type a topic"
+			/>
 		</div>
 		<div style="margin-top: auto; margin-bottom: 0; flex: 3">
 			<Button disabled={!broker.selectedTopic?.id} on:click={setTopicToSelectedTopic} size="field"

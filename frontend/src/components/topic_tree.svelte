@@ -20,10 +20,11 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { Button, ButtonSet, ComboBox, TreeView } from 'carbon-components-svelte';
+	import { Button, ButtonSet, TreeView } from 'carbon-components-svelte';
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
 	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
-	import { findbranchwithid, getAllTopics, shouldFilterItem } from '$lib/helper';
+	import { findbranchwithid, getAllTopicIds } from '$lib/helper';
+	import TopicSelector from './topic_selector.svelte';
 
 	export let broker: BrokerRepositoryEntry;
 	let activeId = broker.selectedTopic?.id || '';
@@ -45,23 +46,16 @@ THE SOFTWARE.
 
 	let treeview: TreeView;
 
-	let searchTopic: Treebranch | undefined;
-	function selectSearchTopic(e: CustomEvent) {
-		searchTopic = e.detail.selectedItem;
-		if (!searchTopic) {
+	let searchValue = '';
+	function revealTopic(topicId: string) {
+		if (!topicId) {
 			return;
 		}
-		treeview.showNode(searchTopic.id);
-		broker.selectedTopic = findbranchwithid(searchTopic.id, broker.topics) || null;
-		searchTopic = undefined;
+		treeview?.showNode(topicId);
+		broker.selectedTopic = findbranchwithid(topicId, broker.topics) || null;
 	}
 
-	let searchTopics: { text: string; id: string }[] = [];
-	$: {
-		searchTopics = getAllTopics(broker.topics).map((topic) => {
-			return { text: topic.id, id: topic.id };
-		});
-	}
+	$: topicIds = getAllTopicIds(broker.topics);
 
 	function sanitizeTree(nodes: Treebranch[]): TreeNode[] {
 		return nodes.map((node) => {
@@ -86,13 +80,14 @@ THE SOFTWARE.
 	<Button size="small" on:click={treeview?.collapseAll}>Collapse all</Button>
 </ButtonSet>
 
-<ComboBox
+<TopicSelector
+	bind:value={searchValue}
+	{topicIds}
 	placeholder="Search for a topic..."
-	selectedId={searchTopic?.id}
-	items={searchTopics}
-	value={searchTopic?.text}
-	on:select={selectSearchTopic}
-	{shouldFilterItem}
+	labelText="Topic search"
+	allowCustomValue={false}
+	on:select={(event) => revealTopic(event.detail.value)}
+	on:submit={(event) => revealTopic(event.detail.value)}
 />
 
 <div class="overflow-auto treeview-col">
