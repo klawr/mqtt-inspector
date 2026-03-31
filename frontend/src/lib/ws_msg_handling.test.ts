@@ -380,10 +380,9 @@ test('processMQTTMessage keeps selected topic messages sorted newest-first', () 
 		app
 	);
 
-	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual([
-		'newest',
-		'older'
-	]);
+	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual(
+		['newest', 'older']
+	);
 });
 
 test('processMQTTMessages merges incoming history with existing messages in timestamp order', () => {
@@ -430,12 +429,9 @@ test('processMQTTMessages merges incoming history with existing messages in time
 		app
 	);
 
-	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual([
-		'latest-existing',
-		'between',
-		'old-existing',
-		'oldest'
-	]);
+	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual(
+		['latest-existing', 'between', 'old-existing', 'oldest']
+	);
 });
 
 test('processSettings updates maxBrokerBytes on AppState', () => {

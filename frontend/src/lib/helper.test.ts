@@ -1,10 +1,5 @@
 import { test, expect } from 'vitest';
-import {
-	findbranchwithid,
-	formatDuration,
-	getAllTopicIds,
-	getTopicSuggestions
-} from './helper';
+import { findbranchwithid, formatDuration, getAllTopicIds, getTopicSuggestions } from './helper';
 import { type Treebranch } from './state';
 
 const tree: Treebranch[] = [

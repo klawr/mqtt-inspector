@@ -68,7 +68,9 @@ function getTimestampMs(timestamp: string): number {
 }
 
 function sortMessagesNewestFirst<T extends { timestamp: string }>(messages: T[]): T[] {
-	return messages.sort((left, right) => getTimestampMs(right.timestamp) - getTimestampMs(left.timestamp));
+	return messages.sort(
+		(left, right) => getTimestampMs(right.timestamp) - getTimestampMs(left.timestamp)
+	);
 }
 
 function mergeMessagesNewestFirst(existing: Message[], incoming: Message[]): Message[] {
@@ -506,10 +508,9 @@ export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 			null,
 			message.retain ?? false
 		);
-		leaf.messages = mergeMessagesNewestFirst(
-			sortMessagesNewestFirst([...leaf.messages]),
-			[new_entry]
-		);
+		leaf.messages = mergeMessagesNewestFirst(sortMessagesNewestFirst([...leaf.messages]), [
+			new_entry
+		]);
 	}
 
 	// Update the selectedTopic reference
