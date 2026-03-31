@@ -415,6 +415,8 @@ THE SOFTWARE.
 	let publishRetain = false;
 	let publishCommandName = '';
 	let publishSelectedCommandId = '';
+	const defaultPageTitle = 'mqtt-inspector';
+	$: pageTitle = app.selectedBroker || defaultPageTitle;
 
 	$: brokerNeedsAuth = app.selectedBroker
 		? app.brokerRepository[app.selectedBroker]?.requiresAuth &&
@@ -491,6 +493,10 @@ THE SOFTWARE.
 		}
 	});
 </script>
+
+<svelte:head>
+	<title>{pageTitle}</title>
+</svelte:head>
 
 <Theme bind:theme />
 
