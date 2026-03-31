@@ -445,7 +445,10 @@ export function processMQTTMessageMeta(message: MQTTMessageMetaParam, app: AppSt
 	entry.topics = addToTopicTreeMeta(message.topic, entry.topics);
 
 	// Update selected topic reference only when this message affects selected broker.
-	if (app.selectedBroker === message.source && app.brokerRepository[app.selectedBroker]?.selectedTopic) {
+	if (
+		app.selectedBroker === message.source &&
+		app.brokerRepository[app.selectedBroker]?.selectedTopic
+	) {
 		const sel = app.brokerRepository[app.selectedBroker].selectedTopic;
 		if (sel) {
 			app.brokerRepository[app.selectedBroker].selectedTopic =
