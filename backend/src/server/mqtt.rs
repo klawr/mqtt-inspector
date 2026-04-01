@@ -105,7 +105,9 @@ pub fn connect_to_mqtt_host(config: &BrokerConfig) -> (rumqttc::Client, rumqttc:
     let port = hostname_ip[1].parse::<u16>().unwrap();
     let mut mqttoptions = MqttOptions::new(id, hostname, port);
     mqttoptions.set_keep_alive(std::time::Duration::from_secs(120));
-    mqttoptions.set_max_packet_size(max_message_size(), max_message_size());
+    // Allow receiving packets up to broker storage limit; oversized payloads are
+    // filtered in broker_peer_bridge before they are stored or forwarded.
+    mqttoptions.set_max_packet_size(max_broker_bytes(), max_message_size());
 
     if config.use_tls {
         mqttoptions.set_transport(Transport::tls_with_default_config());

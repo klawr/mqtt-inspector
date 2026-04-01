@@ -27,6 +27,8 @@ use super::websocket;
 
 use std::collections::HashMap;
 
+const RECONNECT_BACKOFF_MS: u64 = 1000;
+
 /// Constant-time string comparison to prevent timing attacks.
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
@@ -41,6 +43,74 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
+fn broker_exists(mqtt_map: &mqtt::BrokerMap, hostname: &str) -> bool {
+    mqtt_map.lock().unwrap().contains_key(hostname)
+}
+
+/// Evict oldest messages while preserving each topic's newest message.
+///
+/// This may stop before reaching `max_broker_bytes` if every topic has only
+/// one message left, because those newest-per-topic messages are protected.
+fn evict_while_preserving_topic_latest(
+    broker: &mut mqtt::MqttBroker,
+) -> Vec<(String, usize, usize)> {
+    let mut eviction_counts: HashMap<String, usize> = HashMap::new();
+
+    while broker.total_bytes > mqtt::max_broker_bytes() {
+        let queue_len = broker.eviction_order.len();
+        if queue_len == 0 {
+            break;
+        }
+
+        let mut evicted_one = false;
+
+        for _ in 0..queue_len {
+            let Some((topic_key, payload_len)) = broker.eviction_order.pop_front() else {
+                break;
+            };
+
+            let topic_len = broker
+                .topics
+                .get(&topic_key)
+                .map(std::collections::VecDeque::len);
+            match topic_len {
+                Some(len) if len > 1 => {
+                    if let Some(topic_vec) = broker.topics.get_mut(&topic_key) {
+                        topic_vec.pop_front();
+                        broker.total_bytes = broker.total_bytes.saturating_sub(payload_len);
+                        broker.total_messages = broker.total_messages.saturating_sub(1);
+                        *eviction_counts.entry(topic_key.clone()).or_insert(0) += 1;
+                        if topic_vec.is_empty() {
+                            broker.topics.remove(&topic_key);
+                        }
+                        evicted_one = true;
+                        break;
+                    }
+                }
+                Some(_) => {
+                    // Keep newest/only message for this topic.
+                    broker.eviction_order.push_back((topic_key, payload_len));
+                }
+                None => {
+                    // Stale eviction entry: topic was already removed.
+                }
+            }
+        }
+
+        if !evicted_one {
+            break;
+        }
+    }
+
+    eviction_counts
+        .into_iter()
+        .map(|(topic_key, count)| {
+            let new_count = broker.topics.get(&topic_key).map(|v| v.len()).unwrap_or(0);
+            (topic_key, count, new_count)
+        })
+        .collect()
+}
+
 fn loop_forever(
     mut connection: rumqttc::Connection,
     peer_map: &websocket::PeerMap,
@@ -51,6 +121,11 @@ fn loop_forever(
     let hostname = format!("{ip}:{port}");
 
     for notification in connection.iter() {
+        if !broker_exists(mqtt_map, &hostname) {
+            println!("Broker {hostname} no longer exists in map. Stopping connection loop.");
+            break;
+        }
+
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
                 let retain = p.retain;
@@ -91,44 +166,7 @@ fn loop_forever(
                     broker.total_messages += 1;
                     broker.eviction_order.push_back((topic_name, msg_bytes));
 
-                    // Evict oldest messages using the O(1) eviction queue
-                    // Track which topics had messages evicted (lazy allocation)
-                    let needs_eviction = broker.total_bytes > mqtt::max_broker_bytes();
-                    let mut eviction_counts: HashMap<String, usize> = if needs_eviction {
-                        HashMap::new()
-                    } else {
-                        HashMap::with_capacity(0)
-                    };
-                    while broker.total_bytes > mqtt::max_broker_bytes() {
-                        match broker.eviction_order.pop_front() {
-                            Some((topic_key, payload_len)) => {
-                                if let Some(topic_vec) = broker.topics.get_mut(&topic_key) {
-                                    if !topic_vec.is_empty() {
-                                        topic_vec.pop_front();
-                                        broker.total_bytes =
-                                            broker.total_bytes.saturating_sub(payload_len);
-                                        broker.total_messages =
-                                            broker.total_messages.saturating_sub(1);
-                                        *eviction_counts.entry(topic_key.clone()).or_insert(0) += 1;
-                                        if topic_vec.is_empty() {
-                                            broker.topics.remove(&topic_key);
-                                        }
-                                    }
-                                }
-                            }
-                            None => break,
-                        }
-                    }
-
-                    // Build eviction notification data: (topic, evicted_count, new_topic_count)
-                    let evictions: Vec<(String, usize, usize)> = eviction_counts
-                        .into_iter()
-                        .map(|(topic_key, count)| {
-                            let new_count =
-                                broker.topics.get(&topic_key).map(|v| v.len()).unwrap_or(0);
-                            (topic_key, count, new_count)
-                        })
-                        .collect();
+                    let evictions = evict_while_preserving_topic_latest(broker);
 
                     let topic_message_count =
                         broker.topics.get(&p.topic).map(|v| v.len()).unwrap_or(0);
@@ -257,6 +295,7 @@ fn loop_forever(
                 }
                 println!("MqttState error for {hostname:?}: {err}. Will retry.");
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
             }
             Err(err) => {
                 {
@@ -267,6 +306,7 @@ fn loop_forever(
                 }
                 println!("Connection error for {hostname:?}: {err}. Will retry.");
                 websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
             }
         }
     }
@@ -601,6 +641,12 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
             .unwrap()
             .iter_mut()
             .for_each(|(_addr, peer)| {
+                if peer.selected_broker.as_deref() == Some(mqtt_host) {
+                    peer.selected_broker = None;
+                    peer.selected_topic = None;
+                }
+                peer.authenticated_brokers.remove(mqtt_host);
+
                 let message = jsonrpc::JsonRpcNotification {
                     jsonrpc: "2.0",
                     method: "broker_removal",
@@ -1217,6 +1263,64 @@ mod tests {
         // No panic, no state change
     }
 
+    #[test]
+    fn test_eviction_keeps_newest_message_per_topic() {
+        let cfg = config::BrokerConfig::from_host("127.0.0.1:18839");
+        let (client, _conn) = mqtt::connect_to_mqtt_host(&cfg);
+
+        let mut broker = mqtt::MqttBroker {
+            client,
+            broker: "127.0.0.1:18839".to_string(),
+            connected: true,
+            topics: HashMap::new(),
+            total_bytes: mqtt::max_broker_bytes() + 3,
+            total_messages: 3,
+            eviction_order: std::collections::VecDeque::new(),
+            rate_history: Vec::new(),
+            rate_bytes_accumulator: 0,
+            rate_last_sample_ms: 0,
+            requires_auth: false,
+        };
+
+        let mut topic_a = std::collections::VecDeque::new();
+        topic_a.push_back(mqtt::MqttMessage {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            payload: bytes::Bytes::from_static(b"a-old"),
+            retain: false,
+        });
+        topic_a.push_back(mqtt::MqttMessage {
+            timestamp: "2026-01-01T00:00:01Z".to_string(),
+            payload: bytes::Bytes::from_static(b"a-new"),
+            retain: false,
+        });
+
+        let mut topic_b = std::collections::VecDeque::new();
+        topic_b.push_back(mqtt::MqttMessage {
+            timestamp: "2026-01-01T00:00:02Z".to_string(),
+            payload: bytes::Bytes::from_static(b"b-only"),
+            retain: false,
+        });
+
+        broker.topics.insert("t/a".to_string(), topic_a);
+        broker.topics.insert("t/b".to_string(), topic_b);
+        broker.eviction_order.push_back(("t/a".to_string(), 1));
+        broker.eviction_order.push_back(("t/b".to_string(), 1));
+        broker.eviction_order.push_back(("t/a".to_string(), 1));
+
+        let evictions = evict_while_preserving_topic_latest(&mut broker);
+
+        assert_eq!(broker.topics["t/a"].len(), 1);
+        assert_eq!(
+            broker.topics["t/a"].back().unwrap().timestamp,
+            "2026-01-01T00:00:01Z"
+        );
+        assert_eq!(broker.topics["t/b"].len(), 1);
+        assert_eq!(broker.total_messages, 2);
+        assert!(evictions
+            .iter()
+            .any(|(topic, count, new_count)| topic == "t/a" && *count == 1 && *new_count == 1));
+    }
+
     // ─── Integration: reconnect after broker restart ─────────────────
 
     /// Helper: find a free TCP port for mosquitto.
@@ -1405,5 +1509,121 @@ mod tests {
         // Cleanup
         mosquitto2.kill().ok();
         mosquitto2.wait().ok();
+    }
+
+    #[test]
+    fn test_oversized_incoming_message_is_ignored_and_connection_stays_up() {
+        let max_message_size = mqtt::max_message_size();
+        if max_message_size > 2 * 1024 * 1024 {
+            eprintln!(
+                "Skipping oversized payload integration test because max_message_size is too large: {max_message_size}"
+            );
+            return;
+        }
+
+        let port = find_free_port();
+        let hostname = format!("127.0.0.1:{port}");
+
+        let mut mosquitto = start_mosquitto(port);
+        wait_for_port(port, std::time::Duration::from_secs(5));
+
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let notification_buf = make_notification_buf();
+        let broker_config = config::BrokerConfig {
+            host: hostname.clone(),
+            use_tls: false,
+            username: None,
+            password: None,
+        };
+
+        connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
+
+        let connected = (|| {
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let lock = mqtt_map.lock().unwrap();
+                if let Some(b) = lock.get(&hostname) {
+                    if b.connected {
+                        return true;
+                    }
+                }
+            }
+            false
+        })();
+        assert!(connected, "backend should connect to mosquitto");
+
+        let (mut pub_client, mut pub_conn) = rumqttc::Client::new(
+            {
+                let mut opts = rumqttc::MqttOptions::new("test-big-pub", "127.0.0.1", port);
+                opts.set_keep_alive(std::time::Duration::from_secs(5));
+                opts
+            },
+            10,
+        );
+        std::thread::spawn(move || {
+            for notification in pub_conn.iter() {
+                if notification.is_err() {
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let too_large_payload = vec![b'x'; max_message_size + 1];
+        pub_client
+            .publish(
+                "test/too_large",
+                rumqttc::QoS::AtLeastOnce,
+                false,
+                too_large_payload,
+            )
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        {
+            let lock = mqtt_map.lock().unwrap();
+            let broker = lock.get(&hostname).unwrap();
+            assert!(
+                broker.connected,
+                "connection should remain up after oversized payload"
+            );
+            assert!(
+                !broker.topics.contains_key("test/too_large"),
+                "oversized payload should be ignored, not stored"
+            );
+        }
+
+        pub_client
+            .publish(
+                "test/after_large",
+                rumqttc::QoS::AtLeastOnce,
+                false,
+                b"small",
+            )
+            .unwrap();
+
+        let received_after = (|| {
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let lock = mqtt_map.lock().unwrap();
+                if let Some(b) = lock.get(&hostname) {
+                    if b.topics.contains_key("test/after_large") {
+                        return true;
+                    }
+                }
+            }
+            false
+        })();
+
+        assert!(
+            received_after,
+            "backend should continue receiving messages after oversized payload"
+        );
+
+        let _ = pub_client.disconnect();
+        mosquitto.kill().ok();
+        mosquitto.wait().ok();
     }
 }
