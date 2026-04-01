@@ -240,16 +240,16 @@ fn loop_forever(
                     },
                 );
                 // Send full payload ONLY to peers watching this topic
-                websocket::send_message_to_subscribed_peers(
-                    peer_map,
-                    &hostname,
-                    &p.topic,
-                    &payload,
-                    original_payload_len,
+                let message = websocket::SubscribedPeerMessage {
+                    source: &hostname,
+                    topic: &p.topic,
+                    payload: &payload,
+                    original_payload_size: original_payload_len,
                     total_bytes,
-                    &timestamp,
+                    timestamp: &timestamp,
                     retain,
-                );
+                };
+                websocket::send_message_to_subscribed_peers(peer_map, &message);
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
                 disconnect_candidate_since = None;

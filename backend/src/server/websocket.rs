@@ -70,6 +70,16 @@ pub struct NotificationBuffer {
 
 pub type NotificationBuf = Arc<Mutex<NotificationBuffer>>;
 
+pub struct SubscribedPeerMessage<'a> {
+    pub source: &'a str,
+    pub topic: &'a str,
+    pub payload: &'a bytes::Bytes,
+    pub original_payload_size: usize,
+    pub total_bytes: usize,
+    pub timestamp: &'a str,
+    pub retain: bool,
+}
+
 struct CachedBatchMessages {
     evictions: Option<warp::filters::ws::Message>,
     metas: Option<warp::filters::ws::Message>,
@@ -354,24 +364,15 @@ fn build_binary_mqtt_frame(
 
 /// Send full message payload ONLY to peers that have selected this broker+topic
 /// and are in the broker's `authenticated_brokers` set.
-pub fn send_message_to_subscribed_peers(
-    peer_map: &PeerMap,
-    source: &str,
-    topic: &str,
-    payload: &bytes::Bytes,
-    original_payload_size: usize,
-    total_bytes: usize,
-    timestamp: &str,
-    retain: bool,
-) {
+pub fn send_message_to_subscribed_peers(peer_map: &PeerMap, message: &SubscribedPeerMessage<'_>) {
     // Fast path: check if any peer is watching this topic before building
     // the binary frame (which requires JSON serialization + allocation).
     let has_watcher = {
         let peers = peer_map.lock().unwrap();
         peers.values().any(|peer| {
-            peer.selected_broker.as_deref() == Some(source)
-                && peer.selected_topic.as_deref() == Some(topic)
-                && peer.authenticated_brokers.contains(source)
+            peer.selected_broker.as_deref() == Some(message.source)
+                && peer.selected_topic.as_deref() == Some(message.topic)
+                && peer.authenticated_brokers.contains(message.source)
         })
     };
     if !has_watcher {
@@ -379,13 +380,13 @@ pub fn send_message_to_subscribed_peers(
     }
 
     let binary_frame = match build_binary_mqtt_frame(
-        source,
-        topic,
-        timestamp,
-        payload.as_ref(),
-        original_payload_size,
-        Some(total_bytes),
-        retain,
+        message.source,
+        message.topic,
+        message.timestamp,
+        message.payload.as_ref(),
+        message.original_payload_size,
+        Some(message.total_bytes),
+        message.retain,
     ) {
         Some(frame) => frame,
         None => return,
@@ -394,12 +395,12 @@ pub fn send_message_to_subscribed_peers(
     let mut to_remove = Vec::new();
     let mut peers = peer_map.lock().unwrap();
     for (addr, peer) in peers.iter_mut() {
-        let watching = peer.selected_broker.as_deref() == Some(source)
-            && peer.selected_topic.as_deref() == Some(topic);
+        let watching = peer.selected_broker.as_deref() == Some(message.source)
+            && peer.selected_topic.as_deref() == Some(message.topic);
         if !watching {
             continue;
         }
-        if !peer.authenticated_brokers.contains(source) {
+        if !peer.authenticated_brokers.contains(message.source) {
             continue;
         }
         match peer
@@ -933,16 +934,16 @@ mod tests {
         }
 
         let payload = bytes::Bytes::from("hello");
-        send_message_to_subscribed_peers(
-            &peer_map,
-            "broker:1883",
-            "test/topic",
-            &payload,
-            payload.len(),
-            100,
-            "2024-01-01T00:00:00Z",
-            false,
-        );
+        let message = SubscribedPeerMessage {
+            source: "broker:1883",
+            topic: "test/topic",
+            payload: &payload,
+            original_payload_size: payload.len(),
+            total_bytes: 100,
+            timestamp: "2024-01-01T00:00:00Z",
+            retain: false,
+        };
+        send_message_to_subscribed_peers(&peer_map, &message);
 
         // Peer 1 should receive (watching the topic)
         let msg = rx1.try_recv().unwrap();
@@ -963,16 +964,16 @@ mod tests {
         let (_addr, mut rx) = insert_peer(&peer_map, 9001);
 
         let payload = bytes::Bytes::from("hello");
-        send_message_to_subscribed_peers(
-            &peer_map,
-            "broker:1883",
-            "test/topic",
-            &payload,
-            payload.len(),
-            100,
-            "2024-01-01T00:00:00Z",
-            false,
-        );
+        let message = SubscribedPeerMessage {
+            source: "broker:1883",
+            topic: "test/topic",
+            payload: &payload,
+            original_payload_size: payload.len(),
+            total_bytes: 100,
+            timestamp: "2024-01-01T00:00:00Z",
+            retain: false,
+        };
+        send_message_to_subscribed_peers(&peer_map, &message);
 
         // No peer is watching, should not receive anything
         assert!(rx.try_recv().is_err());
@@ -996,16 +997,16 @@ mod tests {
         drop(rx_closed);
 
         let payload = bytes::Bytes::from("test");
-        send_message_to_subscribed_peers(
-            &peer_map,
-            "broker:1883",
-            "topic",
-            &payload,
-            payload.len(),
-            0,
-            "2024-01-01T00:00:00Z",
-            false,
-        );
+        let message = SubscribedPeerMessage {
+            source: "broker:1883",
+            topic: "topic",
+            payload: &payload,
+            original_payload_size: payload.len(),
+            total_bytes: 0,
+            timestamp: "2024-01-01T00:00:00Z",
+            retain: false,
+        };
+        send_message_to_subscribed_peers(&peer_map, &message);
 
         // Closed peer should be removed
         let peers = peer_map.lock().unwrap();
