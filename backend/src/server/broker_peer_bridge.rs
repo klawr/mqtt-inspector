@@ -309,7 +309,7 @@ fn loop_forever(
                     websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                     disconnect_notified = true;
                 }
-                break;
+                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
             }
             Err(err) => {
                 {
@@ -328,7 +328,7 @@ fn loop_forever(
                     websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                     disconnect_notified = true;
                 }
-                break;
+                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
             }
         }
     }

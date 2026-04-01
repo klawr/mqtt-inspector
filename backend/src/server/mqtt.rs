@@ -80,6 +80,7 @@ fn env_usize_mb(name: &str, default_mb: usize) -> usize {
 static MAX_BROKER_BYTES: OnceLock<usize> = OnceLock::new();
 static MAX_MESSAGE_SIZE: OnceLock<usize> = OnceLock::new();
 static MAX_INCOMING_PACKET_SIZE: OnceLock<usize> = OnceLock::new();
+const MIN_INCOMING_PACKET_SIZE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Maximum total payload bytes stored per broker. Default 128 MB.
 /// Set via MQTT_INSPECTOR_MAX_BROKER_MB environment variable.
@@ -101,11 +102,12 @@ pub fn max_incoming_packet_size() -> usize {
         if let Ok(v) = std::env::var("MQTT_INSPECTOR_MAX_INCOMING_PACKET_MB") {
             if let Ok(mb) = v.parse::<usize>() {
                 let configured = mb.saturating_mul(1024).saturating_mul(1024);
-                return std::cmp::max(configured, max_message_size());
+                let floor = std::cmp::max(max_message_size(), MIN_INCOMING_PACKET_SIZE_BYTES);
+                return std::cmp::max(configured, floor);
             }
         }
         let candidate = max_broker_bytes().saturating_mul(16);
-        let floor = max_message_size();
+        let floor = std::cmp::max(max_message_size(), MIN_INCOMING_PACKET_SIZE_BYTES);
         let cap = 1024 * 1024 * 1024;
         std::cmp::max(candidate, floor).min(cap)
     })
