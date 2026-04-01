@@ -135,6 +135,13 @@ THE SOFTWARE.
 			hour12: false
 		})}.${String(date.getMilliseconds())}`;
 	}
+
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+	}
 </script>
 
 {#if selectedTopic}
@@ -158,6 +165,9 @@ THE SOFTWARE.
 						Selected message: {curateDate(selectedMessage.timestamp)}
 						{#if selectedMessage.retain}
 							{' '}(retained)
+						{/if}
+						{#if selectedMessage.isTruncated}
+							{' '}(truncated: showing {formatBytes(selectedMessage.displayedPayloadSize)} of {formatBytes(selectedMessage.originalPayloadSize)})
 						{/if}
 					</h5>
 					<div style="display: flex; align-items: center; gap: 0.5em;">

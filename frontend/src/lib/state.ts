@@ -34,6 +34,8 @@ const decoder = new TextDecoder();
 export class Message {
 	timestamp: string;
 	retain: boolean;
+	displayedPayloadSize: number;
+	originalPayloadSize: number;
 	private _payload: ArrayBuffer | null;
 	private _text: string | null;
 
@@ -41,12 +43,19 @@ export class Message {
 		timestamp: string,
 		payload: ArrayBuffer | null,
 		text: string | null,
-		retain: boolean = false
+		retain: boolean = false,
+		originalPayloadSize?: number
 	) {
 		this.timestamp = timestamp;
 		this.retain = retain;
+		this.displayedPayloadSize = payload?.byteLength ?? 0;
+		this.originalPayloadSize = originalPayloadSize ?? this.displayedPayloadSize;
 		this._payload = payload;
 		this._text = text;
+	}
+
+	get isTruncated(): boolean {
+		return this.originalPayloadSize > this.displayedPayloadSize;
 	}
 
 	get text(): string {

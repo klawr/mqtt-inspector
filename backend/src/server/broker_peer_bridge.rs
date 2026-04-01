@@ -28,6 +28,7 @@ use super::websocket;
 use std::collections::HashMap;
 
 const RECONNECT_BACKOFF_MS: u64 = 1000;
+const DISCONNECT_NOTIFY_GRACE_MS: u64 = 1500;
 
 /// Constant-time string comparison to prevent timing attacks.
 fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -45,6 +46,17 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 
 fn broker_exists(mqtt_map: &mqtt::BrokerMap, hostname: &str) -> bool {
     mqtt_map.lock().unwrap().contains_key(hostname)
+}
+
+fn truncate_payload(payload: bytes::Bytes, max_len: usize) -> (bytes::Bytes, usize) {
+    let original_len = payload.len();
+    if original_len <= max_len {
+        return (payload, original_len);
+    }
+    (
+        bytes::Bytes::copy_from_slice(&payload[..max_len]),
+        original_len,
+    )
 }
 
 /// Evict oldest messages while preserving each topic's newest message.
@@ -119,6 +131,8 @@ fn loop_forever(
 ) {
     let (ip, port) = connection.eventloop.mqtt_options.broker_address();
     let hostname = format!("{ip}:{port}");
+    let mut disconnect_candidate_since: Option<std::time::Instant> = None;
+    let mut disconnect_notified = false;
 
     for notification in connection.iter() {
         if !broker_exists(mqtt_map, &hostname) {
@@ -128,15 +142,10 @@ fn loop_forever(
 
         match notification {
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
+                disconnect_candidate_since = None;
                 let retain = p.retain;
-                let payload = if p.payload.len() > mqtt::max_message_size() {
-                    bytes::Bytes::from(std::format!(
-                        "Payload size limit exceeded: {}.\nThe message is probably fine, but is is too large to be displayed.",
-                        p.payload.len()
-                    ))
-                } else {
-                    p.payload
-                };
+                let (payload, original_payload_len) =
+                    truncate_payload(p.payload, mqtt::max_message_size());
                 let timestamp = chrono::Utc::now().to_rfc3339();
                 let (total_bytes, new_sample, topic_message_count, evictions, rate_history_len) = {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
@@ -152,6 +161,7 @@ fn loop_forever(
                     let new_msg = mqtt::MqttMessage {
                         timestamp: timestamp.clone(),
                         payload: payload.clone(),
+                        original_payload_size: original_payload_len,
                         retain,
                     };
                     let topic_name = p.topic.clone();
@@ -223,7 +233,7 @@ fn loop_forever(
                         source: hostname.clone(),
                         topic: p.topic.clone(),
                         timestamp: timestamp.clone(),
-                        payload_size: payload.len(),
+                        payload_size: original_payload_len,
                         total_bytes,
                         topic_message_count,
                         retain,
@@ -235,12 +245,15 @@ fn loop_forever(
                     &hostname,
                     &p.topic,
                     &payload,
+                    original_payload_len,
                     total_bytes,
                     &timestamp,
                     retain,
                 );
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
+                disconnect_candidate_since = None;
+                disconnect_notified = false;
                 let client = {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
                     if let Some(broker) = mqtt_lock.get_mut(&hostname) {
@@ -267,24 +280,9 @@ fn loop_forever(
             Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
-                let payload = bytes::Bytes::from(std::format!("Payload size limit exceeded: {p}."));
-                println!("Payload size limit exceeded: {p}");
-                let timestamp = chrono::Utc::now().to_rfc3339();
-                websocket::buffer_message_meta(
-                    notification_buf,
-                    websocket::PendingMeta {
-                        source: hostname.clone(),
-                        topic: "$ERROR".to_string(),
-                        timestamp: timestamp.clone(),
-                        payload_size: payload.len(),
-                        total_bytes: 0,
-                        topic_message_count: 0,
-                        retain: false,
-                    },
+                println!(
+                    "Payload exceeded MQTT packet limit on {hostname}: {p} bytes. Ignoring and continuing."
                 );
-                websocket::send_message_to_subscribed_peers(
-                    peer_map, &hostname, "$ERROR", &payload, 0, &timestamp, false,
-                )
             }
             Err(rumqttc::ConnectionError::MqttState(err)) => {
                 {
@@ -294,7 +292,15 @@ fn loop_forever(
                     }
                 }
                 println!("MqttState error for {hostname:?}: {err}. Will retry.");
-                websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+                let now = std::time::Instant::now();
+                let candidate_since = disconnect_candidate_since.get_or_insert(now);
+                if !disconnect_notified
+                    && now.duration_since(*candidate_since).as_millis()
+                        >= DISCONNECT_NOTIFY_GRACE_MS as u128
+                {
+                    websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+                    disconnect_notified = true;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
             }
             Err(err) => {
@@ -305,7 +311,15 @@ fn loop_forever(
                     }
                 }
                 println!("Connection error for {hostname:?}: {err}. Will retry.");
-                websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+                let now = std::time::Instant::now();
+                let candidate_since = disconnect_candidate_since.get_or_insert(now);
+                if !disconnect_notified
+                    && now.duration_since(*candidate_since).as_millis()
+                        >= DISCONNECT_NOTIFY_GRACE_MS as u128
+                {
+                    websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+                    disconnect_notified = true;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
             }
         }
@@ -318,7 +332,9 @@ fn loop_forever(
             broker.connected = false;
         }
     }
-    websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+    if !disconnect_notified {
+        websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+    }
 }
 
 pub fn connect_to_known_brokers(
@@ -1286,11 +1302,13 @@ mod tests {
         topic_a.push_back(mqtt::MqttMessage {
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             payload: bytes::Bytes::from_static(b"a-old"),
+            original_payload_size: 5,
             retain: false,
         });
         topic_a.push_back(mqtt::MqttMessage {
             timestamp: "2026-01-01T00:00:01Z".to_string(),
             payload: bytes::Bytes::from_static(b"a-new"),
+            original_payload_size: 5,
             retain: false,
         });
 
@@ -1298,6 +1316,7 @@ mod tests {
         topic_b.push_back(mqtt::MqttMessage {
             timestamp: "2026-01-01T00:00:02Z".to_string(),
             payload: bytes::Bytes::from_static(b"b-only"),
+            original_payload_size: 6,
             retain: false,
         });
 
@@ -1339,6 +1358,15 @@ mod tests {
             .expect("mosquitto must be installed to run integration tests")
     }
 
+    fn mosquitto_available() -> bool {
+        std::process::Command::new("mosquitto")
+            .arg("-h")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    }
+
     /// Helper: block until a TCP connection to `port` succeeds, or panic
     /// after `timeout`.
     fn wait_for_port(port: u16, timeout: std::time::Duration) {
@@ -1356,6 +1384,11 @@ mod tests {
     /// reconnects **and** re-subscribes so messages keep flowing.
     #[test]
     fn test_resubscribe_after_broker_restart() {
+        if !mosquitto_available() {
+            eprintln!("Skipping integration test: mosquitto not available");
+            return;
+        }
+
         let port = find_free_port();
         let hostname = format!("127.0.0.1:{port}");
 
@@ -1512,7 +1545,12 @@ mod tests {
     }
 
     #[test]
-    fn test_oversized_incoming_message_is_ignored_and_connection_stays_up() {
+    fn test_oversized_incoming_message_is_truncated_and_connection_stays_up() {
+        if !mosquitto_available() {
+            eprintln!("Skipping integration test: mosquitto not available");
+            return;
+        }
+
         let max_message_size = mqtt::max_message_size();
         if max_message_size > 2 * 1024 * 1024 {
             eprintln!(
@@ -1590,8 +1628,17 @@ mod tests {
                 "connection should remain up after oversized payload"
             );
             assert!(
-                !broker.topics.contains_key("test/too_large"),
-                "oversized payload should be ignored, not stored"
+                broker.topics.contains_key("test/too_large"),
+                "oversized payload topic should still be visible"
+            );
+            assert_eq!(
+                broker.topics["test/too_large"]
+                    .back()
+                    .unwrap()
+                    .payload
+                    .len(),
+                mqtt::max_message_size(),
+                "oversized payload should be truncated to max_message_size"
             );
         }
 

@@ -139,6 +139,7 @@ export type MQTTMessageParam = {
 	topic: string;
 	payload: ArrayBuffer;
 	timestamp: string;
+	original_payload_size?: number;
 	total_bytes?: number;
 	retain?: boolean;
 };
@@ -528,7 +529,8 @@ export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
 			message.timestamp,
 			message.payload,
 			null,
-			message.retain ?? false
+			message.retain ?? false,
+			message.original_payload_size
 		);
 		leaf.messages = mergeMessagesNewestFirst(leaf.messages, [new_entry]);
 	}
@@ -560,7 +562,13 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 			groups.set(key, group);
 		}
 		group.entries.push(
-			new Message(message.timestamp, message.payload, null, message.retain ?? false)
+			new Message(
+				message.timestamp,
+				message.payload,
+				null,
+				message.retain ?? false,
+				message.original_payload_size
+			)
 		);
 	}
 

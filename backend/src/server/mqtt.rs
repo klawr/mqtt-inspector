@@ -33,6 +33,7 @@ use super::config::BrokerConfig;
 pub struct MqttMessage {
     pub timestamp: String,
     pub payload: bytes::Bytes,
+    pub original_payload_size: usize,
     pub retain: bool,
 }
 
@@ -78,6 +79,7 @@ fn env_usize_mb(name: &str, default_mb: usize) -> usize {
 
 static MAX_BROKER_BYTES: OnceLock<usize> = OnceLock::new();
 static MAX_MESSAGE_SIZE: OnceLock<usize> = OnceLock::new();
+static MAX_INCOMING_PACKET_SIZE: OnceLock<usize> = OnceLock::new();
 
 /// Maximum total payload bytes stored per broker. Default 128 MB.
 /// Set via MQTT_INSPECTOR_MAX_BROKER_MB environment variable.
@@ -89,6 +91,24 @@ pub fn max_broker_bytes() -> usize {
 /// Set via MQTT_INSPECTOR_MAX_MESSAGE_MB environment variable.
 pub fn max_message_size() -> usize {
     *MAX_MESSAGE_SIZE.get_or_init(|| env_usize_mb("MQTT_INSPECTOR_MAX_MESSAGE_MB", 1))
+}
+
+/// Maximum incoming MQTT packet size accepted by the client.
+/// Set via MQTT_INSPECTOR_MAX_INCOMING_PACKET_MB.
+/// If unset: 16x broker storage limit, capped at 1 GB.
+pub fn max_incoming_packet_size() -> usize {
+    *MAX_INCOMING_PACKET_SIZE.get_or_init(|| {
+        if let Ok(v) = std::env::var("MQTT_INSPECTOR_MAX_INCOMING_PACKET_MB") {
+            if let Ok(mb) = v.parse::<usize>() {
+                let configured = mb.saturating_mul(1024).saturating_mul(1024);
+                return std::cmp::max(configured, max_message_size());
+            }
+        }
+        let candidate = max_broker_bytes().saturating_mul(16);
+        let floor = max_message_size();
+        let cap = 1024 * 1024 * 1024;
+        std::cmp::max(candidate, floor).min(cap)
+    })
 }
 
 pub type BrokerMap = Arc<Mutex<HashMap<String, MqttBroker>>>;
@@ -105,9 +125,9 @@ pub fn connect_to_mqtt_host(config: &BrokerConfig) -> (rumqttc::Client, rumqttc:
     let port = hostname_ip[1].parse::<u16>().unwrap();
     let mut mqttoptions = MqttOptions::new(id, hostname, port);
     mqttoptions.set_keep_alive(std::time::Duration::from_secs(120));
-    // Allow receiving packets up to broker storage limit; oversized payloads are
-    // filtered in broker_peer_bridge before they are stored or forwarded.
-    mqttoptions.set_max_packet_size(max_broker_bytes(), max_message_size());
+    // Allow very large incoming and outgoing packets so the bridge can
+    // truncate for display without forcing reconnects on oversized payloads.
+    mqttoptions.set_max_packet_size(max_incoming_packet_size(), max_incoming_packet_size());
 
     if config.use_tls {
         mqttoptions.set_transport(Transport::tls_with_default_config());
@@ -136,7 +156,10 @@ pub fn publish_message(host: &str, topic: &str, payload: &str, retain: bool, mqt
             if let Err(err) =
                 client.publish(topic, rumqttc::QoS::AtLeastOnce, retain, payload.as_bytes())
             {
-                println!("Error publishing: {err:?}");
+                println!(
+                    "Error publishing {} bytes to {host} topic {topic}: {err:?}",
+                    payload.len()
+                );
             }
         }
         None => {
@@ -165,6 +188,7 @@ mod tests {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             payload: bytes::Bytes::from(vec![72, 101, 108, 108, 111]),
+            original_payload_size: 5,
             retain: false,
         };
         let serialized = serde_json::to_string(&msg).unwrap();
@@ -199,6 +223,7 @@ mod tests {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             payload: bytes::Bytes::new(),
+            original_payload_size: 0,
             retain: false,
         };
         let serialized = serde_json::to_string(&msg).unwrap();
@@ -302,6 +327,7 @@ mod tests {
         let msg = MqttMessage {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             payload,
+            original_payload_size: 1024 * 1024,
             retain: false,
         };
         assert_eq!(msg.payload.len(), 1024 * 1024);
@@ -393,6 +419,7 @@ mod tests {
             msgs.push_back(MqttMessage {
                 timestamp: format!("ts_{i}"),
                 payload: bytes::Bytes::from(format!("payload_{i}")),
+                original_payload_size: format!("payload_{i}").len(),
                 retain: false,
             });
         }
@@ -431,11 +458,13 @@ mod tests {
         msgs.push_back(MqttMessage {
             timestamp: "oldest".to_string(),
             payload: bytes::Bytes::from("a"),
+            original_payload_size: 1,
             retain: false,
         });
         msgs.push_back(MqttMessage {
             timestamp: "newest".to_string(),
             payload: bytes::Bytes::from("b"),
+            original_payload_size: 1,
             retain: false,
         });
         broker.topics.insert("t".to_string(), msgs);

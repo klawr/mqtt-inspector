@@ -36,6 +36,13 @@ use futures_channel::mpsc::channel;
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use warp::Filter;
 
+fn max_ws_publish_message_size() -> usize {
+    // Frontend publish payload is sent as JSON text over WS. Allow extra room
+    // for JSON overhead and escaped characters beyond raw payload bytes.
+    let mqtt_limit = mqtt::max_incoming_packet_size();
+    mqtt_limit.saturating_mul(2)
+}
+
 pub fn run_server(static_files: String, config_path: String) -> tokio::task::JoinHandle<()> {
     let mqtt_map = mqtt::BrokerMap::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 3030);
@@ -63,8 +70,11 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     println!("Listening for connections on {server_addr} using static files from {static_files} and config {config_path}");
 
     let ws = {
+        let ws_max = max_ws_publish_message_size();
         warp::path("ws")
-            .and(warp::ws())
+            .and(warp::ws().map(move |ws: warp::ws::Ws| {
+                ws.max_message_size(ws_max).max_frame_size(ws_max)
+            }))
             .and(warp::addr::remote())
             .and_then(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
                 let peer_map = std::sync::Arc::clone(&peer_map);

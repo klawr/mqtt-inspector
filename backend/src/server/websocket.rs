@@ -326,6 +326,7 @@ fn build_binary_mqtt_frame(
     topic: &str,
     timestamp: &str,
     payload: &[u8],
+    original_payload_size: usize,
     total_bytes: Option<usize>,
     retain: bool,
 ) -> Option<Vec<u8>> {
@@ -337,6 +338,7 @@ fn build_binary_mqtt_frame(
             "timestamp": timestamp,
             "topic": topic,
             "total_bytes": total_bytes,
+            "original_payload_size": original_payload_size,
             "retain": retain,
         }),
     };
@@ -357,6 +359,7 @@ pub fn send_message_to_subscribed_peers(
     source: &str,
     topic: &str,
     payload: &bytes::Bytes,
+    original_payload_size: usize,
     total_bytes: usize,
     timestamp: &str,
     retain: bool,
@@ -380,6 +383,7 @@ pub fn send_message_to_subscribed_peers(
         topic,
         timestamp,
         payload.as_ref(),
+        original_payload_size,
         Some(total_bytes),
         retain,
     ) {
@@ -428,7 +432,7 @@ pub fn handle_select_topic(
     topic: Option<&str>,
 ) {
     // Phase 1: Collect messages from the mqtt_map (if a topic is selected)
-    let messages: Vec<(String, bytes::Bytes, bool)> =
+    let messages: Vec<(String, bytes::Bytes, usize, bool)> =
         if let (Some(broker_name), Some(topic_name)) = (broker, topic) {
             let mqtt_lock = mqtt_map.lock().unwrap();
             if let Some(broker_data) = mqtt_lock.get(broker_name) {
@@ -436,7 +440,14 @@ pub fn handle_select_topic(
                     topic_msgs
                         .iter()
                         .rev() // newest first
-                        .map(|msg| (msg.timestamp.clone(), msg.payload.clone(), msg.retain))
+                        .map(|msg| {
+                            (
+                                msg.timestamp.clone(),
+                                msg.payload.clone(),
+                                msg.original_payload_size,
+                                msg.retain,
+                            )
+                        })
                         .collect()
                 } else {
                     Vec::new()
@@ -491,9 +502,17 @@ pub fn handle_select_topic(
 
     // Phase 4: Stream existing messages for the topic (newest first)
     if let (Some(source), Some(topic_name)) = (broker, topic) {
-        for (timestamp, payload, retain) in &messages {
+        for (timestamp, payload, original_payload_size, retain) in &messages {
             if let Some(frame) =
-                build_binary_mqtt_frame(source, topic_name, timestamp, payload, None, *retain)
+                build_binary_mqtt_frame(
+                    source,
+                    topic_name,
+                    timestamp,
+                    payload,
+                    *original_payload_size,
+                    None,
+                    *retain,
+                )
             {
                 if tx
                     .try_send(warp::filters::ws::Message::binary(frame))
@@ -921,6 +940,7 @@ mod tests {
             "broker:1883",
             "test/topic",
             &payload,
+            payload.len(),
             100,
             "2024-01-01T00:00:00Z",
             false,
@@ -950,6 +970,7 @@ mod tests {
             "broker:1883",
             "test/topic",
             &payload,
+            payload.len(),
             100,
             "2024-01-01T00:00:00Z",
             false,
@@ -982,6 +1003,7 @@ mod tests {
             "broker:1883",
             "topic",
             &payload,
+            payload.len(),
             0,
             "2024-01-01T00:00:00Z",
             false,
@@ -1489,6 +1511,7 @@ mod tests {
             "test/topic",
             "2024-01-01T00:00:00Z",
             b"hello",
+            5,
             Some(100),
             false,
         );
@@ -1501,6 +1524,7 @@ mod tests {
         assert_eq!(header["method"], "mqtt_message");
         assert_eq!(header["params"]["source"], "broker:1883");
         assert_eq!(header["params"]["topic"], "test/topic");
+        assert_eq!(header["params"]["original_payload_size"], 5);
         assert_eq!(header["params"]["total_bytes"], 100);
 
         // Payload starts after header
@@ -1514,6 +1538,7 @@ mod tests {
             "test/topic",
             "2024-01-01T00:00:00Z",
             b"",
+            0,
             None,
             false,
         );
@@ -1526,7 +1551,7 @@ mod tests {
 
     #[test]
     fn test_build_binary_mqtt_frame_total_bytes_none() {
-        let frame = build_binary_mqtt_frame("broker:1883", "t", "ts", b"data", None, false);
+        let frame = build_binary_mqtt_frame("broker:1883", "t", "ts", b"data", 4, None, false);
         assert!(frame.is_some());
         let frame = frame.unwrap();
         let header_len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
@@ -1542,6 +1567,7 @@ mod tests {
             "big/topic",
             "ts",
             &payload,
+            payload.len(),
             Some(1024 * 1024),
             false,
         );
@@ -1558,6 +1584,7 @@ mod tests {
             "日本語/テスト",
             "ts",
             b"payload",
+            7,
             None,
             false,
         );
@@ -1613,16 +1640,19 @@ mod tests {
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:01Z".to_string(),
                 payload: bytes::Bytes::from("msg1"),
+                original_payload_size: 4,
                 retain: false,
             });
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:02Z".to_string(),
                 payload: bytes::Bytes::from("msg2"),
+                original_payload_size: 4,
                 retain: false,
             });
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:03Z".to_string(),
                 payload: bytes::Bytes::from("msg3"),
+                original_payload_size: 4,
                 retain: false,
             });
             topics.insert("test/topic".to_string(), msgs);
@@ -1911,6 +1941,7 @@ mod tests {
             msgs.push_back(mqtt::MqttMessage {
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
                 payload: bytes::Bytes::from("data"),
+                original_payload_size: 4,
                 retain: false,
             });
             topics.insert("test/topic".to_string(), msgs);
