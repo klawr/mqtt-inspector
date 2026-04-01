@@ -123,5 +123,8 @@ THE SOFTWARE.
 	.overflow-auto {
 		overflow: auto;
 		height: calc(100vh - 9.35rem);
+		box-sizing: border-box;
+		padding-bottom: 1.5rem;
+		scroll-padding-bottom: 1.5rem;
 	}
 </style>

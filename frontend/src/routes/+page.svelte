@@ -515,103 +515,104 @@ THE SOFTWARE.
 		<SkipToContent />
 	</svelte:fragment>
 
-	<Button
-		kind={selectedTab === 1 ? 'primary' : 'secondary'}
-		disabled={brokerNeedsAuth}
-		on:click={() => {
-			selectedTab = 1;
-		}}>Treeview</Button
-	>
+	<div class="header-tabs" aria-label="Primary navigation">
+		<Button
+			kind={selectedTab === 1 ? 'primary' : 'secondary'}
+			disabled={brokerNeedsAuth}
+			on:click={() => {
+				selectedTab = 1;
+			}}>Treeview</Button
+		>
 
-	<Button
-		kind={selectedTab === 2 ? 'primary' : 'secondary'}
-		disabled={brokerNeedsAuth}
-		on:click={() => {
-			selectedTab = 2;
-		}}>Pipeline</Button
-	>
-	<Button
-		kind={selectedTab === 3 ? 'primary' : 'secondary'}
-		disabled={brokerNeedsAuth}
-		on:click={() => {
-			selectedTab = 3;
-		}}>Publish</Button
-	>
-	<Button
-		kind={selectedTab === 4 ? 'primary' : 'secondary'}
-		disabled={brokerNeedsAuth}
-		on:click={() => {
-			selectedTab = 4;
-		}}>Throughput</Button
-	>
-
-	<div
-		style="font-size: 0.75rem; opacity: 0.7; padding: 0 1em; white-space: nowrap; display: flex; align-items: center; gap: 0.4em;"
-	>
-		<span>{app.selectedBroker}</span>
+		<Button
+			kind={selectedTab === 2 ? 'primary' : 'secondary'}
+			disabled={brokerNeedsAuth}
+			on:click={() => {
+				selectedTab = 2;
+			}}>Pipeline</Button
+		>
+		<Button
+			kind={selectedTab === 3 ? 'primary' : 'secondary'}
+			disabled={brokerNeedsAuth}
+			on:click={() => {
+				selectedTab = 3;
+			}}>Publish</Button
+		>
+		<Button
+			kind={selectedTab === 4 ? 'primary' : 'secondary'}
+			disabled={brokerNeedsAuth}
+			on:click={() => {
+				selectedTab = 4;
+			}}>Throughput</Button
+		>
 	</div>
 
-	<div style="flex: 1" />
+	<div class="header-broker" title={app.selectedBroker}>
+		<span>{app.selectedBroker}</span>
+	</div>
+	<div class="header-spacer" />
 
-	{#if app.brokerRepository[app.selectedBroker]}
-		{@const entry = app.brokerRepository[app.selectedBroker]}
-		<div style="font-size: 1rem; opacity: 0.7; padding: 0 1em; white-space: nowrap;">
-			{formatBytes(entry.backendTotalBytes)}
-			{#if entry.backendTotalBytes >= app.maxBrokerBytes}
-				<InformationFilled
-					size={16}
-					title="Storage at maximum ({formatBytes(
-						app.maxBrokerBytes
-					)}) — oldest messages are being evicted"
-				/>
-			{/if}
-			<span>| {formatRate(entry.bytesPerSecond || 0)}</span>
-			<span>| {formatMsgCount(entry.backendTotalMessages)}</span>
-			<span>| {formatMsgRate(entry.messagesPerSecond || 0)}</span>
-			<span
-				>| History: {formatDurationShort(getHistoryReachMs(app.selectedBroker, entry) || 0)}</span
-			>
-		</div>
-	{/if}
+	<div class="header-meta">
+		{#if app.brokerRepository[app.selectedBroker]}
+			{@const entry = app.brokerRepository[app.selectedBroker]}
+			<div class="header-stats">
+				{formatBytes(entry.backendTotalBytes)}
+				{#if entry.backendTotalBytes >= app.maxBrokerBytes}
+					<InformationFilled
+						size={16}
+						title="Storage at maximum ({formatBytes(
+							app.maxBrokerBytes
+						)}) — oldest messages are being evicted"
+					/>
+				{/if}
+				<span>| {formatRate(entry.bytesPerSecond || 0)}</span>
+				<span>| {formatMsgCount(entry.backendTotalMessages)}</span>
+				<span>| {formatMsgRate(entry.messagesPerSecond || 0)}</span>
+				<span
+					>| History: {formatDurationShort(getHistoryReachMs(app.selectedBroker, entry) || 0)}</span
+				>
+			</div>
+		{/if}
 
-	{#if app.brokerRepository[app.selectedBroker]}
+		{#if app.brokerRepository[app.selectedBroker]}
+			<Button
+				iconDescription="Remove MQTT Broker"
+				tooltipPosition="bottom"
+				tooltipAlignment="end"
+				kind="danger-ghost"
+				icon={TrashCan}
+				on:click={() => {
+					removeMqttBrokerModalOpen = true;
+				}}
+			/>
+		{/if}
+
+		{#if socketConnected}
+			<Button
+				kind="ghost"
+				icon={Connect}
+				tooltipPosition="bottom"
+				tooltipAlignment="end"
+				iconDescription="WebSocket Connected"
+			/>
+		{:else}
+			<Button
+				on:click={initializeWebSocket}
+				kind="danger-ghost"
+				icon={Connect}
+				tooltipPosition="bottom"
+				tooltipAlignment="end"
+				iconDescription="WebSocket Disconnected"
+			/>
+		{/if}
 		<Button
-			iconDescription="Remove MQTT Broker"
+			icon={LogoGithub}
 			tooltipPosition="bottom"
 			tooltipAlignment="end"
-			kind="danger-ghost"
-			icon={TrashCan}
-			on:click={() => {
-				removeMqttBrokerModalOpen = true;
-			}}
-		/>
-	{/if}
-
-	{#if socketConnected}
-		<Button
-			kind="ghost"
-			icon={Connect}
-			tooltipPosition="bottom"
-			tooltipAlignment="end"
-			iconDescription="WebSocket Connected"
-		/>
-	{:else}
-		<Button
-			on:click={initializeWebSocket}
-			kind="danger-ghost"
-			icon={Connect}
-			tooltipPosition="bottom"
-			tooltipAlignment="end"
-			iconDescription="WebSocket Disconnected"
-		/>
-	{/if}
-	<Button
-		icon={LogoGithub}
-		tooltipPosition="bottom"
-		tooltipAlignment="end"
-		iconDescription="Fork me on GitHub!"
-		href="https://github.com/klawr/mqtt-inspector"
-	></Button>
+			iconDescription="Fork me on GitHub!"
+			href="https://github.com/klawr/mqtt-inspector"
+		></Button>
+	</div>
 </Header>
 
 <SideNav bind:isOpen={isSideNavOpen}>
@@ -736,12 +737,85 @@ THE SOFTWARE.
 		min-height: 0;
 	}
 
+	.header-tabs {
+		display: flex;
+		align-items: center;
+		min-width: 0;
+		overflow-x: auto;
+		overflow-y: hidden;
+		scrollbar-width: none;
+	}
+
+	.header-tabs::-webkit-scrollbar {
+		display: none;
+	}
+
+	.header-spacer {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+
+	.header-meta {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		min-width: 0;
+		flex: 0 1 auto;
+	}
+
+	.header-broker {
+		font-size: 0.75rem;
+		opacity: 0.7;
+		padding: 0 0.5rem;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 16rem;
+	}
+
+	.header-stats {
+		font-size: 0.875rem;
+		opacity: 0.7;
+		padding: 0 0.5rem;
+		white-space: nowrap;
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
 	@media (max-width: 75em) {
 		.treeview-flex {
 			flex-direction: column;
 		}
 		.treeview-col {
 			min-width: 100%;
+		}
+	}
+
+	@media (max-width: 90em) {
+		.header-stats {
+			display: none;
+		}
+	}
+
+	@media (max-width: 62em) {
+		.header-broker {
+			max-width: 10rem;
+		}
+
+		.header-tabs :global(.bx--btn) {
+			padding-left: 0.75rem;
+			padding-right: 0.75rem;
+		}
+	}
+
+	@media (max-width: 48em) {
+		.header-broker {
+			display: none;
+		}
+
+		.header-spacer {
+			flex-basis: 0;
 		}
 	}
 
