@@ -503,17 +503,15 @@ pub fn handle_select_topic(
     // Phase 4: Stream existing messages for the topic (newest first)
     if let (Some(source), Some(topic_name)) = (broker, topic) {
         for (timestamp, payload, original_payload_size, retain) in &messages {
-            if let Some(frame) =
-                build_binary_mqtt_frame(
-                    source,
-                    topic_name,
-                    timestamp,
-                    payload,
-                    *original_payload_size,
-                    None,
-                    *retain,
-                )
-            {
+            if let Some(frame) = build_binary_mqtt_frame(
+                source,
+                topic_name,
+                timestamp,
+                payload,
+                *original_payload_size,
+                None,
+                *retain,
+            ) {
                 if tx
                     .try_send(warp::filters::ws::Message::binary(frame))
                     .is_err()

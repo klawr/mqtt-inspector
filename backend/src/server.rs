@@ -69,60 +69,61 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     );
     println!("Listening for connections on {server_addr} using static files from {static_files} and config {config_path}");
 
-    let ws = {
-        let ws_max = max_ws_publish_message_size();
-        warp::path("ws")
-            .and(warp::ws().map(move |ws: warp::ws::Ws| {
-                ws.max_message_size(ws_max).max_frame_size(ws_max)
-            }))
-            .and(warp::addr::remote())
-            .and_then(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
-                let peer_map = std::sync::Arc::clone(&peer_map);
-                let mqtt_map = std::sync::Arc::clone(&mqtt_map);
-                let notification_buf = std::sync::Arc::clone(&notification_buf);
-                let config_path = config_path.clone();
-                async move {
-                    Ok::<_, warp::Rejection>(ws.on_upgrade(move |socket| async move {
-                        let (ws_tx, ws_rx) = socket.split();
-                        let (mut tx, rx) = channel(websocket::PEER_CHANNEL_CAPACITY);
+    let ws =
+        {
+            let ws_max = max_ws_publish_message_size();
+            warp::path("ws")
+                .and(warp::ws().map(move |ws: warp::ws::Ws| {
+                    ws.max_message_size(ws_max).max_frame_size(ws_max)
+                }))
+                .and(warp::addr::remote())
+                .and_then(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
+                    let peer_map = std::sync::Arc::clone(&peer_map);
+                    let mqtt_map = std::sync::Arc::clone(&mqtt_map);
+                    let notification_buf = std::sync::Arc::clone(&notification_buf);
+                    let config_path = config_path.clone();
+                    async move {
+                        Ok::<_, warp::Rejection>(ws.on_upgrade(move |socket| async move {
+                            let (ws_tx, ws_rx) = socket.split();
+                            let (mut tx, rx) = channel(websocket::PEER_CHANNEL_CAPACITY);
 
-                        if let Some(addr) = addr {
-                            println!("Received new WebSocket connection from {addr}");
-                            websocket::send_brokers(&mut tx, &mqtt_map);
-                            websocket::send_configs(&mut tx, &config_path);
+                            if let Some(addr) = addr {
+                                println!("Received new WebSocket connection from {addr}");
+                                websocket::send_brokers(&mut tx, &mqtt_map);
+                                websocket::send_configs(&mut tx, &config_path);
 
-                            let mut peer = websocket::PeerConnection::new(tx);
-                            websocket::auto_authenticate_peer(&mut peer, &mqtt_map);
-                            peer_map.lock().unwrap().insert(addr, peer);
-                        }
-                        let incoming = rx.map(Ok).forward(ws_tx);
-
-                        let handler = ws_rx.try_for_each(|msg| {
-                            if let Ok(text) = msg.to_str() {
-                                broker_peer_bridge::deserialize_json_rpc_and_process(
-                                    text,
-                                    &peer_map,
-                                    &mqtt_map,
-                                    &config_path,
-                                    addr,
-                                    &notification_buf,
-                                );
+                                let mut peer = websocket::PeerConnection::new(tx);
+                                websocket::auto_authenticate_peer(&mut peer, &mqtt_map);
+                                peer_map.lock().unwrap().insert(addr, peer);
                             }
+                            let incoming = rx.map(Ok).forward(ws_tx);
 
-                            futures_util::future::ok(())
-                        });
+                            let handler = ws_rx.try_for_each(|msg| {
+                                if let Ok(text) = msg.to_str() {
+                                    broker_peer_bridge::deserialize_json_rpc_and_process(
+                                        text,
+                                        &peer_map,
+                                        &mqtt_map,
+                                        &config_path,
+                                        addr,
+                                        &notification_buf,
+                                    );
+                                }
 
-                        pin_mut!(incoming, handler);
-                        futures_util::future::select(incoming, handler).await;
+                                futures_util::future::ok(())
+                            });
 
-                        if let Some(addr) = addr {
-                            println!("{addr} disconnected");
-                            peer_map.lock().unwrap().remove(&addr);
-                        }
-                    }))
-                }
-            })
-    };
+                            pin_mut!(incoming, handler);
+                            futures_util::future::select(incoming, handler).await;
+
+                            if let Some(addr) = addr {
+                                println!("{addr} disconnected");
+                                peer_map.lock().unwrap().remove(&addr);
+                            }
+                        }))
+                    }
+                })
+        };
 
     let routes = warp::get()
         .and(ws)

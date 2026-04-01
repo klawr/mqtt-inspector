@@ -545,13 +545,17 @@ THE SOFTWARE.
 		}}>Throughput</Button
 	>
 
+	<div
+		style="font-size: 0.75rem; opacity: 0.7; padding: 0 1em; white-space: nowrap; display: flex; align-items: center; gap: 0.4em;"
+	>
+		<span>{app.selectedBroker}</span>
+	</div>
+
 	<div style="flex: 1" />
 
 	{#if app.brokerRepository[app.selectedBroker]}
 		{@const entry = app.brokerRepository[app.selectedBroker]}
-		<div
-			style="font-size: 0.75rem; opacity: 0.7; padding: 0 1em; white-space: nowrap; display: flex; align-items: center; gap: 0.4em;"
-		>
+		<div style="font-size: 1rem; opacity: 0.7; padding: 0 1em; white-space: nowrap;">
 			{formatBytes(entry.backendTotalBytes)}
 			{#if entry.backendTotalBytes >= app.maxBrokerBytes}
 				<InformationFilled

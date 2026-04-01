@@ -167,7 +167,9 @@ THE SOFTWARE.
 							{' '}(retained)
 						{/if}
 						{#if selectedMessage.isTruncated}
-							{' '}(truncated: showing {formatBytes(selectedMessage.displayedPayloadSize)} of {formatBytes(selectedMessage.originalPayloadSize)})
+							{' '}(truncated: showing {formatBytes(selectedMessage.displayedPayloadSize)} of {formatBytes(
+								selectedMessage.originalPayloadSize
+							)})
 						{/if}
 					</h5>
 					<div style="display: flex; align-items: center; gap: 0.5em;">
