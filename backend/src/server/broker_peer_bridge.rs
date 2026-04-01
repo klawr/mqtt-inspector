@@ -273,6 +273,7 @@ fn loop_forever(
             }
             Ok(rumqttc::Event::Incoming(rumqttc::Packet::Disconnect)) => {
                 println!("Disconnect event for {hostname:?}");
+                break;
             }
             Ok(_) => {
                 // PingReq, PingResp, SubAck, etc. — no lock needed
@@ -281,8 +282,15 @@ fn loop_forever(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
                 println!(
-                    "Payload exceeded MQTT packet limit on {hostname}: {p} bytes. Ignoring and continuing."
+                    "Payload exceeded MQTT packet limit on {hostname}: {p} bytes. Reconnecting client."
                 );
+                {
+                    let mut mqtt_lock = mqtt_map.lock().unwrap();
+                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
+                        broker.connected = false;
+                    }
+                }
+                break;
             }
             Err(rumqttc::ConnectionError::MqttState(err)) => {
                 {
@@ -301,7 +309,7 @@ fn loop_forever(
                     websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                     disconnect_notified = true;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
+                break;
             }
             Err(err) => {
                 {
@@ -320,7 +328,7 @@ fn loop_forever(
                     websocket::send_broker_status_to_peers(peer_map, &hostname, false);
                     disconnect_notified = true;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
+                break;
             }
         }
     }
@@ -613,7 +621,7 @@ fn connect_to_mqtt_client_and_loop_forever(
         println!("MQTT-Client for {mqtt_host} already exists.");
     } else {
         println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
-        let (client, connection) = mqtt::connect_to_mqtt_host(broker_config);
+        let (client, mut connection) = mqtt::connect_to_mqtt_host(broker_config);
         let requires_auth = broker_config
             .password
             .as_ref()
@@ -636,7 +644,30 @@ fn connect_to_mqtt_client_and_loop_forever(
         mqtt_lock.insert(mqtt_host.to_string(), broker);
         drop(mqtt_lock);
 
-        loop_forever(connection, peer_map, mqtt_map, notification_buf);
+        loop {
+            loop_forever(connection, peer_map, mqtt_map, notification_buf);
+
+            if !broker_exists(mqtt_map, mqtt_host) {
+                println!("Broker {mqtt_host} was removed. Stopping reconnect loop.");
+                break;
+            }
+
+            println!(
+                "Connection loop ended for {mqtt_host}. Recreating MQTT client and reconnecting."
+            );
+            std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
+
+            let (new_client, new_connection) = mqtt::connect_to_mqtt_host(broker_config);
+            {
+                let mut mqtt_lock = mqtt_map.lock().unwrap();
+                let Some(broker) = mqtt_lock.get_mut(mqtt_host) else {
+                    break;
+                };
+                broker.client = new_client;
+                broker.connected = false;
+            }
+            connection = new_connection;
+        }
     }
 }
 
