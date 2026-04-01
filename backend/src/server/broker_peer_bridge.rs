@@ -282,15 +282,8 @@ fn loop_forever(
                 rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
             ))) => {
                 println!(
-                    "Payload exceeded MQTT packet limit on {hostname}: {p} bytes. Reconnecting client."
+                    "Payload exceeded MQTT packet limit on {hostname}: {p} bytes. Ignoring and continuing."
                 );
-                {
-                    let mut mqtt_lock = mqtt_map.lock().unwrap();
-                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
-                        broker.connected = false;
-                    }
-                }
-                break;
             }
             Err(rumqttc::ConnectionError::MqttState(err)) => {
                 {
