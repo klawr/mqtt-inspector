@@ -1567,5 +1567,4 @@ mod tests {
         mosquitto2.kill().ok();
         mosquitto2.wait().ok();
     }
-
 }
