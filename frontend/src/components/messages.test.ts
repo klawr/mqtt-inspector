@@ -49,22 +49,22 @@ test('prettyPrint should handle empty JSON strings', () => {
 });
 
 test('getTopicSwitchResetState should reset to latest message selection defaults', () => {
-  const state = getTopicSwitchResetState(5);
+	const state = getTopicSwitchResetState(5);
 
-  expect(state).toEqual({
-    selectedIndex: 0,
-    selectedIndexCompare: 1,
-    lockedIndex: false,
-    lockedIndexCompare: false,
-    compareMessage: false,
-    prevMessageCount: 5
-  });
+	expect(state).toEqual({
+		selectedIndex: 0,
+		selectedIndexCompare: 1,
+		lockedIndex: false,
+		lockedIndexCompare: false,
+		compareMessage: false,
+		prevMessageCount: 5
+	});
 });
 
 test('getTopicSwitchResetState should handle empty topics', () => {
-  const state = getTopicSwitchResetState(0);
+	const state = getTopicSwitchResetState(0);
 
-  expect(state.prevMessageCount).toBe(0);
-  expect(state.selectedIndex).toBe(0);
-  expect(state.lockedIndex).toBe(false);
+	expect(state.prevMessageCount).toBe(0);
+	expect(state.selectedIndex).toBe(0);
+	expect(state.lockedIndex).toBe(false);
 });
