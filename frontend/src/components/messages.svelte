@@ -22,6 +22,7 @@ THE SOFTWARE.
 <script lang="ts">
 	import type { Treebranch } from '$lib/state';
 	import { formatDuration } from '$lib/helper';
+	import { getTopicSwitchResetState } from './messages';
 	import {
 		Button,
 		Checkbox,
@@ -45,8 +46,28 @@ THE SOFTWARE.
 	let lockedIndexCompare = false;
 	let selectedIndex = 0;
 	let selectedMessage = selectedTopic?.messages[selectedIndex];
+	let selectedIndexCompare = 1;
+	let selectedMessageCompare = selectedTopic?.messages[selectedIndexCompare];
+	let previousTopicId = selectedTopic?.id ?? null;
 
 	$: messageCount = selectedTopic?.messages.length ?? 0;
+
+	// Switching topics should always focus the latest message of that topic.
+	$: {
+		const currentTopicId = selectedTopic?.id ?? null;
+		if (currentTopicId !== previousTopicId) {
+			const reset = getTopicSwitchResetState(selectedTopic?.messages.length ?? 0);
+			selectedIndex = reset.selectedIndex;
+			selectedMessage = selectedTopic?.messages[reset.selectedIndex];
+			lockedIndex = reset.lockedIndex;
+			compareMessage = reset.compareMessage;
+			selectedIndexCompare = reset.selectedIndexCompare;
+			selectedMessageCompare = selectedTopic?.messages[reset.selectedIndexCompare];
+			lockedIndexCompare = reset.lockedIndexCompare;
+			prevMessageCount = reset.prevMessageCount;
+			previousTopicId = currentTopicId;
+		}
+	}
 
 	// When locked and new messages arrive (prepended at index 0), keep pointing
 	// at the same message by shifting selectedIndex.
@@ -91,9 +112,6 @@ THE SOFTWARE.
 			selectedMessage = selectedTopic.messages[selectedIndex];
 		}
 	}
-
-	let selectedIndexCompare = 1;
-	let selectedMessageCompare = selectedTopic?.messages[selectedIndexCompare];
 
 	function selectMessage(index: number) {
 		if (index < 0) {
