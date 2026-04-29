@@ -34,7 +34,7 @@ THE SOFTWARE.
 	} from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 	import MonacoDiff from './monaco_diff.svelte';
-	import { ChevronLeft, ChevronRight, PageFirst } from 'carbon-icons-svelte';
+	import { ChevronLeft, ChevronRight, Copy, PageFirst } from 'carbon-icons-svelte';
 
 	export let selectedTopic: Treebranch | null; // Can't be null.
 	export let topicSyncing = false;
@@ -160,12 +160,60 @@ THE SOFTWARE.
 		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 	}
+
+	let copyStatusMessage = '';
+	let messageCopyStatusTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function fallbackCopyText(text: string): boolean {
+		try {
+			const textArea = document.createElement('textarea');
+			textArea.value = text;
+			textArea.setAttribute('readonly', '');
+			textArea.style.position = 'fixed';
+			textArea.style.opacity = '0';
+			document.body.appendChild(textArea);
+			textArea.focus();
+			textArea.select();
+			const copied = document.execCommand('copy');
+			document.body.removeChild(textArea);
+			return copied;
+		} catch {
+			return false;
+		}
+	}
+
+	async function copyText(target: 'topic' | 'message') {
+		const text = target === 'topic' ? selectedTopic?.id : selectedMessage?.text;
+		if (!text) return;
+
+		let copied = false;
+		try {
+			if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+				await navigator.clipboard.writeText(text);
+				copied = true;
+			}
+		} catch {
+			copied = false;
+		}
+
+		if (!copied) {
+			copied = fallbackCopyText(text);
+		}
+
+		if (target === 'message') {
+			copyStatusMessage = copied ? 'Copied' : 'Copy failed';
+			if (messageCopyStatusTimer) clearTimeout(messageCopyStatusTimer);
+			messageCopyStatusTimer = setTimeout(() => {
+				copyStatusMessage = '';
+			}, 1500);
+		}
+	}
 </script>
 
 {#if selectedTopic}
 	<div style="height: 5.25em;">
 		<h4>Selected topic:</h4>
-		<CodeSnippet light code={selectedTopic?.id}></CodeSnippet>
+		<CodeSnippet light code={selectedTopic?.id} on:copy={() => copyText('topic')}></CodeSnippet>
 	</div>
 
 	{#if topicSyncing && !selectedTopic?.messages.length}
@@ -193,6 +241,10 @@ THE SOFTWARE.
 					<div style="display: flex; align-items: center; gap: 0.5em;">
 						{#if topicSyncing}
 							<InlineLoading description="Syncing..." />
+						{/if}
+					<Button kind="ghost" size="sm" icon={Copy} iconDescription="Copy message" tooltipPosition="left" on:click={() => copyText('message')} />
+						{#if copyStatusMessage}
+							<span style="font-size: 0.75rem; color: var(--cds-text-secondary);">{copyStatusMessage}</span>
 						{/if}
 						<p>
 							{selectedIndex + 1} / {messageCount} messages
