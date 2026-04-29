@@ -242,9 +242,18 @@ THE SOFTWARE.
 						{#if topicSyncing}
 							<InlineLoading description="Syncing..." />
 						{/if}
-					<Button kind="ghost" size="sm" icon={Copy} iconDescription="Copy message" tooltipPosition="left" on:click={() => copyText('message')} />
+						<Button
+							kind="ghost"
+							size="sm"
+							icon={Copy}
+							iconDescription="Copy message"
+							tooltipPosition="left"
+							on:click={() => copyText('message')}
+						/>
 						{#if copyStatusMessage}
-							<span style="font-size: 0.75rem; color: var(--cds-text-secondary);">{copyStatusMessage}</span>
+							<span style="font-size: 0.75rem; color: var(--cds-text-secondary);"
+								>{copyStatusMessage}</span
+							>
 						{/if}
 						<p>
 							{selectedIndex + 1} / {messageCount} messages
