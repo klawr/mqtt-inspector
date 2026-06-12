@@ -215,11 +215,6 @@ fn loop_forever(
                     )
                 }; // mqtt_lock dropped here
                 if let Some(ref sample) = new_sample {
-                    println!(
-                        "Rate sample for {hostname}: {:.1} B/s, {} total bytes, history entry #{rate_history_len}",
-                        sample.bytes_per_second,
-                        sample.total_bytes,
-                    );
                     websocket::send_rate_sample_to_peers(peer_map, &hostname, sample);
                 }
                 // Buffer eviction notifications (will be flushed in batch)
@@ -279,12 +274,8 @@ fn loop_forever(
                 // PingReq, PingResp, SubAck, etc. — no lock needed
             }
             Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
-                rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(p),
-            ))) => {
-                println!(
-                    "Payload exceeded MQTT packet limit on {hostname}: {p} bytes. Ignoring and continuing."
-                );
-            }
+                rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(_),
+            ))) => {}
             Err(rumqttc::ConnectionError::MqttState(err)) => {
                 {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
