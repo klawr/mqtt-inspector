@@ -147,7 +147,7 @@ fn loop_forever(
                 let (payload, original_payload_len) =
                     truncate_payload(p.payload, mqtt::max_message_size());
                 let timestamp = chrono::Utc::now().to_rfc3339();
-                let (total_bytes, new_sample, topic_message_count, evictions, rate_history_len) = {
+                let (total_bytes, new_sample, topic_message_count, evictions, _rate_history_len) = {
                     let mut mqtt_lock = mqtt_map.lock().unwrap();
                     let broker = match mqtt_lock.get_mut(&hostname) {
                         Some(b) => b,
