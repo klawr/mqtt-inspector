@@ -1,0 +1,104 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release-plz:
+    runs-on: ubuntu-latest
+    outputs:
+      # Empty unless release-plz actually cut a release this run.
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # Bump version + changelog from conventional commits and commit straight to
+      # master. No release PR. [skip ci] keeps this commit from re-triggering CI.
+      - name: Bump version & changelog
+        run: release-plz update --manifest-path backend/Cargo.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit & push bump
+        run: |
+          if ! git diff --quiet || [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "chore: release [skip ci]"
+            git push
+          fi
+      # Tag the (now bumped) version and publish the GitHub release. Capture the
+      # released tag from the JSON output so the docker job knows what to build.
+      - name: Release
+        id: release
+        run: |
+          out="$(release-plz release --manifest-path backend/Cargo.toml --git-token "$GITHUB_TOKEN" -o json)"
+          echo "$out"
+          echo "tag=$(printf '%s' "$out" | jq -r '.releases[0].tag // ""')" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build the frontend + backend artifacts from the exact tag we just released.
+  build:
+    needs: release-plz
+    if: needs.release-plz.outputs.tag != ''
+    uses: ./.github/workflows/reusable-build.yaml
+    with:
+      ref: ${{ needs.release-plz.outputs.tag }}
+
+  # Package those artifacts into the docker image and push :latest + :<version>.
+  docker:
+    needs: [release-plz, build]
+    if: needs.release-plz.outputs.tag != ''
+    runs-on: ubuntu-22.04
+    container:
+      image: docker:23.0
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-plz.outputs.tag }}
+
+      - name: Download svelte artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: svelte-app
+          path: wwwroot
+
+      - name: Download rust artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-app
+          path: backend/target/release
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push docker image
+        env:
+          TAG: ${{ needs.release-plz.outputs.tag }}
+        run: |
+          docker build \
+            -t ghcr.io/klawr/mqtt-inspector:latest \
+            -t "ghcr.io/klawr/mqtt-inspector:${TAG}" .
+          docker push ghcr.io/klawr/mqtt-inspector:latest
+          docker push "ghcr.io/klawr/mqtt-inspector:${TAG}"
