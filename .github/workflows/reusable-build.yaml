@@ -1,12 +1,5 @@
 name: build
-on:
-  workflow_call:
-    inputs:
-      ref:
-        description: Git ref to build (defaults to the triggering ref)
-        type: string
-        required: false
-        default: ''
+on: workflow_call
 
 jobs:
   frontend:
@@ -15,9 +8,7 @@ jobs:
       image: node:18-alpine3.17
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
+        uses: actions/checkout@v2
 
       - name: Install dependencies
         run: |
@@ -51,9 +42,7 @@ jobs:
       image: mcr.microsoft.com/devcontainers/rust:1-1-bookworm
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
+        uses: actions/checkout@v2
 
       - name: Check formatting
         run: |

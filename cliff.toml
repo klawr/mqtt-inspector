@@ -1,0 +1,55 @@
+# git-cliff configuration.
+#
+# Versions and CHANGELOG.md are derived entirely from conventional commits and
+# version git tags — no cargo registry is involved. The canonical version lives
+# in backend/Cargo.toml; the docker image published to ghcr is tagged from it.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}\
+- {{ commit.message | split(pat="\\n") | first | trim | upper_first }}
+{% endfor %}\
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^doc", group = "Documentation" },
+  { message = "^chore: release", skip = true },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "Miscellaneous" },
+  { message = "^ci", skip = true },
+  { message = "^test", skip = true },
+]
+protect_breaking_commits = false
+filter_commits = false
+# Match both the historical `1.6.5` and the newer `v1.6.6` tag styles.
+tag_pattern = "v?[0-9]+\\.[0-9]+\\.[0-9]+"
+topo_order = false
+sort_commits = "oldest"
+
+[bump]
+# Past 1.0: standard semver — feat -> minor, breaking change -> major.
+features_always_bump_minor = true
+breaking_always_bump_major = true

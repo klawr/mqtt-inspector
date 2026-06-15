@@ -12,67 +12,79 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  release-plz:
+  # Lint, test and build the frontend + backend. This is the gate: nothing
+  # below runs unless it passes, so a broken commit is never released.
+  build:
+    uses: ./.github/workflows/reusable-build.yaml
+
+  # Derive the version from conventional commits + version git tags via
+  # git-cliff (no cargo registry), commit the bump straight to master (no PR),
+  # tag, and publish the GitHub release. Runs only if the build gate succeeded.
+  release:
+    needs: build
     runs-on: ubuntu-latest
     outputs:
-      # Empty unless release-plz actually cut a release this run.
+      # Empty unless a new version was actually released this run.
       tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
-          tool: release-plz
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      # Bump version + changelog from conventional commits and commit straight to
-      # master. No release PR. [skip ci] keeps this commit from re-triggering CI.
-      - name: Bump version & changelog
-        run: release-plz update --manifest-path backend/Cargo.toml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Commit & push bump
-        run: |
-          if ! git diff --quiet || [ -n "$(git status --porcelain)" ]; then
-            git add -A
-            git commit -m "chore: release [skip ci]"
-            git push
-          fi
-      # Tag the (now bumped) version and publish the GitHub release. Capture the
-      # released tag from the JSON output so the docker job knows what to build.
+          tool: git-cliff
       - name: Release
         id: release
-        run: |
-          out="$(release-plz release --manifest-path backend/Cargo.toml --git-token "$GITHUB_TOKEN" -o json)"
-          echo "$out"
-          echo "tag=$(printf '%s' "$out" | jq -r '.releases[0].tag // ""')" >> "$GITHUB_OUTPUT"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-  # Build the frontend + backend artifacts from the exact tag we just released.
-  build:
-    needs: release-plz
-    if: needs.release-plz.outputs.tag != ''
-    uses: ./.github/workflows/reusable-build.yaml
-    with:
-      ref: ${{ needs.release-plz.outputs.tag }}
+          # Next version from conventional commits since the last version tag.
+          # When nothing warrants a release, git-cliff returns the current
+          # version, so its tag already exists -> nothing to do.
+          next="v$(git cliff --bumped-version | sed 's/^v//')"
+          if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
+            echo "Tag $next already exists — no releasable changes; nothing to do."
+            exit 0
+          fi
+          echo "Releasing $next"
 
-  # Package those artifacts into the docker image and push :latest + :<version>.
+          # Bump the version in backend/Cargo.toml + backend/Cargo.lock in place
+          # — no Rust toolchain needed, which keeps this job lean.
+          ver="${next#v}"
+          ver="$ver" perl -0pi -e 's/(\[package\][^\[]*?\nversion = ")[^"]+(")/$1$ENV{ver}$2/' backend/Cargo.toml
+          ver="$ver" perl -0pi -e 's/(name = "backend"\nversion = ")[^"]+(")/$1$ENV{ver}$2/' backend/Cargo.lock
+
+          # Regenerate the changelog including the new version.
+          git cliff --bump -o CHANGELOG.md
+
+          # Commit + tag straight to master ([skip ci] avoids re-triggering).
+          git add -A
+          git commit -m "chore: release $next [skip ci]"
+          git tag "$next"
+          git push origin HEAD:master
+          git push origin "$next"
+
+          # GitHub release with notes for just this version.
+          git cliff --latest --strip header > RELEASE_NOTES.md
+          gh release create "$next" --title "$next" --notes-file RELEASE_NOTES.md --verify-tag
+
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+  # Package the already-built artifacts into the docker image and push
+  # :latest + :<version>. Only runs when a release was actually cut.
   docker:
-    needs: [release-plz, build]
-    if: needs.release-plz.outputs.tag != ''
+    needs: [build, release]
+    if: needs.release.outputs.tag != ''
     runs-on: ubuntu-22.04
     container:
       image: docker:23.0
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.release-plz.outputs.tag }}
 
       - name: Download svelte artifact
         uses: actions/download-artifact@v4
@@ -95,7 +107,7 @@ jobs:
 
       - name: Build and push docker image
         env:
-          TAG: ${{ needs.release-plz.outputs.tag }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
           docker build \
             -t ghcr.io/klawr/mqtt-inspector:latest \
