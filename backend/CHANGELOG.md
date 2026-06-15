@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.7](https://github.com/klawr/mqtt-inspector/compare/v1.6.6...v1.6.7) - 2026-06-15
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [1.6.6](https://github.com/klawr/mqtt-inspector/compare/v0.1.6...v1.6.6) - 2026-06-15
 
 ### Added
