@@ -1689,7 +1689,14 @@ mod tests {
         );
         authenticate(&peer_map, addr, "broker:1883");
 
-        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "test/topic", None);
+        handle_subscribe_topic(
+            &peer_map,
+            &mqtt_map,
+            addr,
+            "broker:1883",
+            "test/topic",
+            None,
+        );
 
         // 3 binary frames (newest first), then topic_sync_complete — NO clear.
         let mut payloads = Vec::new();
