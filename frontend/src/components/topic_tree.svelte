@@ -24,7 +24,8 @@ THE SOFTWARE.
 	import { Button, ButtonSet, TreeView } from 'carbon-components-svelte';
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
 	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
-	import { findbranchwithid, getAllTopicIds } from '$lib/helper';
+	import { getAllTopicIds } from '$lib/helper';
+	import { openTab, pinTab } from '$lib/tabs';
 	import TopicSelector from './topic_selector.svelte';
 
 	export let broker: BrokerRepositoryEntry;
@@ -57,7 +58,16 @@ THE SOFTWARE.
 			leaf: boolean;
 		}
 	) {
-		broker.selectedTopic = findbranchwithid(detail.id.toString(), broker.topics) || null;
+		openTab(broker, detail.id.toString(), { pin: false });
+		broker = broker; // trigger reactivity + bind:broker propagation
+	}
+
+	// Double-clicking a tree node pins its (already-selected) tab, mirroring VS Code.
+	function handleDblClick() {
+		if (broker.selectedTopic) {
+			pinTab(broker, broker.selectedTopic.id);
+			broker = broker;
+		}
 	}
 
 	let treeview: TreeView;
@@ -68,7 +78,8 @@ THE SOFTWARE.
 			return;
 		}
 		treeview?.showNode(topicId);
-		broker.selectedTopic = findbranchwithid(topicId, broker.topics) || null;
+		openTab(broker, topicId, { pin: false });
+		broker = broker; // trigger reactivity + bind:broker propagation
 	}
 
 	$: topicIds = getAllTopicIds(broker.topics);
@@ -110,7 +121,8 @@ THE SOFTWARE.
 	on:submit={(event) => revealTopic(event.detail.value)}
 />
 
-<div class="overflow-auto treeview-col">
+<!-- svelte-ignore a11y-no-static-element-interactions -->
+<div class="overflow-auto treeview-col" on:dblclick={handleDblClick}>
 	<TreeView
 		bind:this={treeview}
 		bind:children={sanitizedTopics}

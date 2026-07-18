@@ -81,6 +81,14 @@ export type Treebranch = {
 	messages: Message[];
 };
 
+/** An open topic tab in the message viewer. Mirrors VS Code editor tabs:
+ *  a `preview` tab is shown italic and is reused when another topic is selected,
+ *  until it is pinned (double-click) which turns `preview` off. */
+export type TopicTab = {
+	id: string;
+	preview: boolean;
+};
+
 type PipelineEntry = {
 	topic: string;
 };
@@ -106,6 +114,7 @@ export type RateHistoryEntry = {
 export type BrokerRepositoryEntry = {
 	topics: Treebranch[];
 	selectedTopic: Treebranch | null;
+	openTabs: TopicTab[];
 	pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
 	connected: boolean;
 	backendTotalBytes: number;

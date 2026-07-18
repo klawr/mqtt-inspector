@@ -507,7 +507,15 @@ pub fn deserialize_json_rpc_and_process(
             if let Some(peer_addr) = addr {
                 let broker = message.params["broker"].as_str();
                 let topic = message.params["topic"].as_str();
-                websocket::handle_select_topic(peer_map, mqtt_map, peer_addr, broker, topic);
+                let since_timestamp = message.params["since_timestamp"].as_str();
+                websocket::handle_select_topic(
+                    peer_map,
+                    mqtt_map,
+                    peer_addr,
+                    broker,
+                    topic,
+                    since_timestamp,
+                );
             }
         }
         "authenticate_broker" => {

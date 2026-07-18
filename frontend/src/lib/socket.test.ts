@@ -151,6 +151,27 @@ test('requestTopicSelection with broker but null topic', () => {
 	expect(parsed.params.topic).toBeNull();
 });
 
+test('requestTopicSelection omits since_timestamp when not provided', () => {
+	const socket = new MockWebSocket();
+	requestTopicSelection('broker:1883', 'test/topic', socket as unknown as WebSocket);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect('since_timestamp' in parsed.params).toBe(false);
+});
+
+test('requestTopicSelection includes since_timestamp for delta re-sync', () => {
+	const socket = new MockWebSocket();
+	requestTopicSelection(
+		'broker:1883',
+		'test/topic',
+		socket as unknown as WebSocket,
+		'2024-01-01T00:00:02Z'
+	);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.params.since_timestamp).toBe('2024-01-01T00:00:02Z');
+});
+
 test('requestPublishMqttMessage handles special characters in payload', () => {
 	const socket = new MockWebSocket();
 	requestPublishMqttMessage(

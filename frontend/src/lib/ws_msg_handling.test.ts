@@ -203,6 +203,7 @@ test('processBrokers updates BrokerRepository correctly', () => {
 		broker1: {
 			topics: [],
 			selectedTopic: null,
+			openTabs: [],
 			pipeline: [],
 			connected: true,
 			backendTotalBytes: 0,
@@ -216,6 +217,7 @@ test('processBrokers updates BrokerRepository correctly', () => {
 		broker2: {
 			topics: [],
 			selectedTopic: null,
+			openTabs: [],
 			pipeline: [],
 			connected: false,
 			backendTotalBytes: 0,

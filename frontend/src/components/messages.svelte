@@ -20,22 +20,22 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import type { Treebranch } from '$lib/state';
+	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
 	import { formatDuration } from '$lib/helper';
 	import { getTopicSwitchResetState } from './messages';
 	import {
 		Button,
 		Checkbox,
-		CodeSnippet,
 		InlineLoading,
 		ProgressIndicator,
-		ProgressStep,
-		Tile
+		ProgressStep
 	} from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 	import MonacoDiff from './monaco_diff.svelte';
+	import TopicTabs from './topic_tabs.svelte';
 	import { ChevronLeft, ChevronRight, Copy, PageFirst } from 'carbon-icons-svelte';
 
+	export let broker: BrokerRepositoryEntry;
 	export let selectedTopic: Treebranch | null; // Can't be null.
 	export let topicSyncing = false;
 
@@ -210,57 +210,19 @@ THE SOFTWARE.
 	}
 </script>
 
-{#if selectedTopic}
-	<div style="height: 5.25em;">
-		<h4>Selected topic:</h4>
-		<CodeSnippet light code={selectedTopic?.id} on:copy={() => copyText('topic')}></CodeSnippet>
-	</div>
+{#if broker.openTabs.length || selectedTopic}
+	<div class="editor-panel">
+		<TopicTabs bind:broker />
 
-	{#if topicSyncing && !selectedTopic?.messages.length}
-		<Tile
-			light
-			style="height: calc(100vh - 11em); display: flex; align-items: center; justify-content: center;"
-		>
-			<InlineLoading description="Loading messages..." />
-		</Tile>
-	{:else if selectedTopic?.messages.length}
-		<Tile light style="height: calc(100vh - 11em)">
+		{#if topicSyncing && !selectedTopic?.messages.length}
+			<div class="panel-body panel-body--center">
+				<InlineLoading description="Loading messages..." />
+			</div>
+		{:else if selectedTopic?.messages.length}
+			<!-- Editor is flush under the topic tabs (VS Code-style); the message meta
+			     info and navigation controls live below it. -->
 			{#if selectedMessage}
-				<div style="display: flex; justify-content: space-between; align-items: center;">
-					<h5>
-						Selected message: {curateDate(selectedMessage.timestamp)}
-						{#if selectedMessage.retain}
-							{' '}(retained)
-						{/if}
-						{#if selectedMessage.isTruncated}
-							{' '}(truncated: showing {formatBytes(selectedMessage.displayedPayloadSize)} of {formatBytes(
-								selectedMessage.originalPayloadSize
-							)})
-						{/if}
-					</h5>
-					<div style="display: flex; align-items: center; gap: 0.5em;">
-						{#if topicSyncing}
-							<InlineLoading description="Syncing..." />
-						{/if}
-						<Button
-							kind="ghost"
-							size="sm"
-							icon={Copy}
-							iconDescription="Copy message"
-							tooltipPosition="left"
-							on:click={() => copyText('message')}
-						/>
-						{#if copyStatusMessage}
-							<span style="font-size: 0.75rem; color: var(--cds-text-secondary);"
-								>{copyStatusMessage}</span
-							>
-						{/if}
-						<p>
-							{selectedIndex + 1} / {messageCount} messages
-						</p>
-					</div>
-				</div>
-				<div style="height: calc(100% - 9em)">
+				<div class="editor-wrap">
 					{#if compareMessage && selectedMessageCompare}
 						<MonacoDiff
 							bind:code={selectedMessage.text}
@@ -272,98 +234,173 @@ THE SOFTWARE.
 				</div>
 			{/if}
 
-			<div style="display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap;">
-				<div style="align-self: center; margin-right: 1em;">
-					<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
-				</div>
-
-				<div style="align-self: center; scale: 0.75; margin: -0.25em">
-					<Button
-						kind="secondary"
-						iconDescription="First Message"
-						tooltipPosition="top"
-						icon={PageFirst}
-						on:click={() => {
-							selectMessage(0);
-							lockedIndex = false;
-							lockedIndexCompare = false;
-						}}
-					/>
-					<Button
-						kind="secondary"
-						iconDescription="Next Message"
-						tooltipPosition="top"
-						icon={ChevronLeft}
-						on:click={() => {
-							selectMessage(selectedIndex - 1);
-						}}
-					/>
-					<Button
-						kind="secondary"
-						iconDescription="Previous Message"
-						tooltipPosition="top"
-						icon={ChevronRight}
-						on:click={() => selectMessage(selectedIndex + 1)}
-					/>
-				</div>
-
-				<div style="align-self: center; margin-right: 1em;">
-					<Checkbox labelText="Compare message" bind:checked={compareMessage} />
-				</div>
-
-				{#if compareMessage}
-					<div style="align-self: center; margin-right: 1em;">
-						<Checkbox labelText="Lock" bind:checked={lockedIndexCompare} />
+			<div class="panel-footer">
+				{#if selectedMessage}
+					<div class="message-meta">
+						<span style="font-size: 0.875rem; color: var(--cds-text-secondary);">
+							Selected message: {curateDate(selectedMessage.timestamp)}
+							{#if selectedMessage.retain}
+								{' '}(retained)
+							{/if}
+							{#if selectedMessage.isTruncated}
+								{' '}(truncated: showing {formatBytes(selectedMessage.displayedPayloadSize)} of {formatBytes(
+									selectedMessage.originalPayloadSize
+								)})
+							{/if}
+						</span>
+						<div style="display: flex; align-items: center; gap: 0.5em;">
+							{#if topicSyncing}
+								<InlineLoading description="Syncing..." />
+							{/if}
+							<Button
+								kind="ghost"
+								size="sm"
+								icon={Copy}
+								iconDescription="Copy message"
+								tooltipPosition="left"
+								on:click={() => copyText('message')}
+							/>
+							{#if copyStatusMessage}
+								<span style="font-size: 0.75rem; color: var(--cds-text-secondary);"
+									>{copyStatusMessage}</span
+								>
+							{/if}
+							<span style="font-size: 0.875rem; white-space: nowrap;">
+								{selectedIndex + 1} / {messageCount} messages
+							</span>
+						</div>
 					</div>
 				{/if}
-			</div>
 
-			{#if messageCount > 1}
-				<div
-					bind:this={navDiv}
-					bind:clientWidth={containerWidth}
-					style="padding-bottom: 1em;"
-					on:wheel={handleWheel}
-				>
-					<ProgressIndicator
-						class={compareMessage ? 'green-indicator' : ''}
-						currentIndex={selectedIndex - Math.max(0, windowStart)}
-					>
-						{#each visibleSlice as message, i}
-							{@const realIndex = Math.max(0, windowStart) + i}
-							<ProgressStep
-								label={getDeltaLabel(selectedTopic?.messages ?? [], realIndex)}
-								on:click={() => selectMessage(realIndex)}
-								title={curateDate(message.timestamp)}
-							/>
-						{/each}
-					</ProgressIndicator>
+				<div style="display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap;">
+					<div style="align-self: center; margin-right: 1em;">
+						<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
+					</div>
+
+					<div style="align-self: center; scale: 0.75; margin: -0.25em">
+						<Button
+							kind="secondary"
+							iconDescription="First Message"
+							tooltipPosition="top"
+							icon={PageFirst}
+							on:click={() => {
+								selectMessage(0);
+								lockedIndex = false;
+								lockedIndexCompare = false;
+							}}
+						/>
+						<Button
+							kind="secondary"
+							iconDescription="Next Message"
+							tooltipPosition="top"
+							icon={ChevronLeft}
+							on:click={() => {
+								selectMessage(selectedIndex - 1);
+							}}
+						/>
+						<Button
+							kind="secondary"
+							iconDescription="Previous Message"
+							tooltipPosition="top"
+							icon={ChevronRight}
+							on:click={() => selectMessage(selectedIndex + 1)}
+						/>
+					</div>
+
+					<div style="align-self: center; margin-right: 1em;">
+						<Checkbox labelText="Compare message" bind:checked={compareMessage} />
+					</div>
+
 					{#if compareMessage}
-						<div style="height: 1em" />
+						<div style="align-self: center; margin-right: 1em;">
+							<Checkbox labelText="Lock" bind:checked={lockedIndexCompare} />
+						</div>
+					{/if}
+				</div>
+
+				{#if messageCount > 1}
+					<div bind:this={navDiv} bind:clientWidth={containerWidth} on:wheel={handleWheel}>
 						<ProgressIndicator
-							class="red-indicator"
-							currentIndex={selectedIndexCompare - Math.max(0, windowStartCompare)}
+							class={compareMessage ? 'green-indicator' : ''}
+							currentIndex={selectedIndex - Math.max(0, windowStart)}
 						>
-							{#each visibleSliceCompare as message, i}
-								{@const realIndex = Math.max(0, windowStartCompare) + i}
+							{#each visibleSlice as message, i}
+								{@const realIndex = Math.max(0, windowStart) + i}
 								<ProgressStep
 									label={getDeltaLabel(selectedTopic?.messages ?? [], realIndex)}
-									on:click={() => selectMessageCompare(realIndex)}
+									on:click={() => selectMessage(realIndex)}
 									title={curateDate(message.timestamp)}
 								/>
 							{/each}
 						</ProgressIndicator>
-					{/if}
-					<style>
-						.green-indicator {
-							--cds-interactive-04: #4ec9b0;
-						}
-						.red-indicator {
-							--cds-interactive-04: #f44747;
-						}
-					</style>
-				</div>
-			{/if}
-		</Tile>
-	{/if}
+						{#if compareMessage}
+							<div style="height: 1em" />
+							<ProgressIndicator
+								class="red-indicator"
+								currentIndex={selectedIndexCompare - Math.max(0, windowStartCompare)}
+							>
+								{#each visibleSliceCompare as message, i}
+									{@const realIndex = Math.max(0, windowStartCompare) + i}
+									<ProgressStep
+										label={getDeltaLabel(selectedTopic?.messages ?? [], realIndex)}
+										on:click={() => selectMessageCompare(realIndex)}
+										title={curateDate(message.timestamp)}
+									/>
+								{/each}
+							</ProgressIndicator>
+						{/if}
+						<style>
+							.green-indicator {
+								--cds-interactive-04: #4ec9b0;
+							}
+							.red-indicator {
+								--cds-interactive-04: #f44747;
+							}
+						</style>
+					</div>
+				{/if}
+			</div>
+		{/if}
+	</div>
 {/if}
+
+<style>
+	.editor-panel {
+		display: flex;
+		flex-direction: column;
+		height: calc(100vh - 8em);
+		min-height: 0;
+		background: var(--cds-layer, #262626);
+		border: 1px solid var(--cds-border-subtle, #393939);
+	}
+
+	/* Monaco fills all remaining space, flush against the tab strip above it. */
+	.editor-wrap {
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+
+	.panel-body {
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+
+	.panel-body--center {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.panel-footer {
+		flex: 0 0 auto;
+		padding: 0.5em 1em 1em;
+	}
+
+	.message-meta {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.5em;
+		padding-bottom: 0.5em;
+	}
+</style>

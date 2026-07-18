@@ -41,7 +41,8 @@ THE SOFTWARE.
 		TrashCan
 	} from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, SavedPipeline } from '$lib/state';
-	import { findbranchwithid, formatDuration, getAllTopicIds } from '$lib/helper';
+	import { formatDuration, getAllTopicIds } from '$lib/helper';
+	import { openTab } from '$lib/tabs';
 	import RemovePipeline from './dialogs/remove_pipeline.svelte';
 	import OverwritePipeline from './dialogs/overwrite_pipeline.svelte';
 	import CleanPipelineRows from './cleanPipelineRows.svelte';
@@ -60,7 +61,8 @@ THE SOFTWARE.
 		}
 		const index = value.split('-')[1];
 		const selected = broker.pipeline[+index];
-		broker.selectedTopic = findbranchwithid(selected.topic, broker.topics) || null;
+		openTab(broker, selected.topic, { pin: false });
+		broker = broker; // trigger reactivity + bind:broker propagation
 	}
 
 	function reset() {

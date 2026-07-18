@@ -78,6 +78,7 @@ THE SOFTWARE.
 	import AppNavIcon from '../components/app_nav_icon.svelte';
 	import { findbranchwithid } from '$lib/helper';
 	import { requestTopicSelection } from '$lib/socket';
+	import { openTab } from '$lib/tabs';
 
 	let socket: WebSocket;
 	let app = new AppState();
@@ -213,7 +214,9 @@ THE SOFTWARE.
 							app.brokerRepository[app.selectedBroker].topics
 						);
 						if (found) {
-							app.brokerRepository[app.selectedBroker].selectedTopic = found;
+							// Restore the topic from the URL as a pinned tab (not a bare
+							// selection) so it is tracked like any other open tab.
+							openTab(app.brokerRepository[app.selectedBroker], found.id, { pin: true });
 							requestTopicSelection(app.selectedBroker, found.id, socket);
 						}
 						pendingTopic = null;
@@ -441,7 +444,11 @@ THE SOFTWARE.
 					loginBroker = currentBroker!;
 					loginOpen = true;
 				} else {
-					requestTopicSelection(currentBroker, currentTopicId, socket);
+					// If this topic already has cached messages (a revisited tab), ask the
+					// backend for a delta from the newest cached message instead of a full
+					// re-sync. Newest message is at index 0 (newest-first ordering).
+					const cachedNewest = entry?.selectedTopic?.messages[0]?.timestamp ?? null;
+					requestTopicSelection(currentBroker, currentTopicId, socket, cachedNewest);
 				}
 			}
 		}
@@ -670,12 +677,11 @@ THE SOFTWARE.
 					<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
 				</div>
 				<div class="treeview-col">
-					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length || topicSyncing}
-						<Messages
-							bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-							{topicSyncing}
-						/>
-					{/if}
+					<Messages
+						bind:broker={app.brokerRepository[app.selectedBroker]}
+						bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+						{topicSyncing}
+					/>
 				</div>
 			</div>
 		{:else if selectedTab === 2}
@@ -688,12 +694,11 @@ THE SOFTWARE.
 					/>
 				</div>
 				<div class="treeview-col">
-					{#if app.brokerRepository[app.selectedBroker].selectedTopic?.messages.length || topicSyncing}
-						<Messages
-							bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-							{topicSyncing}
-						/>
-					{/if}
+					<Messages
+						bind:broker={app.brokerRepository[app.selectedBroker]}
+						bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
+						{topicSyncing}
+					/>
 				</div>
 			</div>
 		{:else if selectedTab === 3}

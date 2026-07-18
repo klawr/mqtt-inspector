@@ -431,7 +431,13 @@ pub fn handle_select_topic(
     addr: SocketAddr,
     broker: Option<&str>,
     topic: Option<&str>,
+    since_timestamp: Option<&str>,
 ) {
+    // A delta re-sync streams only messages newer than what the client already
+    // has cached, and skips clearing the client's cache for this topic.
+    let is_delta = since_timestamp.is_some();
+    let since_dt = since_timestamp.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+
     // Phase 1: Collect messages from the mqtt_map (if a topic is selected)
     let messages: Vec<(String, bytes::Bytes, usize, bool)> =
         if let (Some(broker_name), Some(topic_name)) = (broker, topic) {
@@ -441,6 +447,14 @@ pub fn handle_select_topic(
                     topic_msgs
                         .iter()
                         .rev() // newest first
+                        .filter(|msg| match since_dt {
+                            // Keep only messages strictly newer than the cached one.
+                            // If a timestamp can't be parsed, keep it to avoid data loss.
+                            Some(since) => chrono::DateTime::parse_from_rfc3339(&msg.timestamp)
+                                .map(|ts| ts > since)
+                                .unwrap_or(true),
+                            None => true,
+                        })
                         .map(|msg| {
                             (
                                 msg.timestamp.clone(),
@@ -477,14 +491,16 @@ pub fn handle_select_topic(
         return;
     };
 
-    // Phase 3: Send topic_messages_clear
-    let clear_msg = jsonrpc::JsonRpcNotification {
-        jsonrpc: "2.0",
-        method: "topic_messages_clear",
-        params: serde_json::json!({}),
-    };
-    if let Ok(serialized) = serde_json::to_string(&clear_msg) {
-        let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
+    // Phase 3: Send topic_messages_clear (full re-sync only; a delta keeps the cache).
+    if !is_delta {
+        let clear_msg = jsonrpc::JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "topic_messages_clear",
+            params: serde_json::json!({}),
+        };
+        if let Ok(serialized) = serde_json::to_string(&clear_msg) {
+            let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
+        }
     }
 
     // If not authenticated for this broker, skip sending messages
@@ -1603,7 +1619,14 @@ mod tests {
         let (addr, mut rx) = insert_peer(&peer_map, 9001);
 
         // Select a topic on a broker that doesn't exist in mqtt_map
-        handle_select_topic(&peer_map, &mqtt_map, addr, Some("broker:1883"), Some("t/1"));
+        handle_select_topic(
+            &peer_map,
+            &mqtt_map,
+            addr,
+            Some("broker:1883"),
+            Some("t/1"),
+            None,
+        );
 
         // Should still receive topic_messages_clear + topic_sync_complete (no messages)
         let msg1 = rx.try_recv().unwrap();
@@ -1691,6 +1714,7 @@ mod tests {
             addr,
             Some("broker:1883"),
             Some("test/topic"),
+            None,
         );
 
         // First: topic_messages_clear
@@ -1718,6 +1742,84 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_select_topic_delta_skips_clear_and_only_sends_newer() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        {
+            let mut map = mqtt_map.lock().unwrap();
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let mut topics = std::collections::HashMap::new();
+            let mut msgs = std::collections::VecDeque::new();
+            for (ts, payload) in [
+                ("2024-01-01T00:00:01Z", "msg1"),
+                ("2024-01-01T00:00:02Z", "msg2"),
+                ("2024-01-01T00:00:03Z", "msg3"),
+            ] {
+                msgs.push_back(mqtt::MqttMessage {
+                    timestamp: ts.to_string(),
+                    payload: bytes::Bytes::from(payload),
+                    original_payload_size: 4,
+                    retain: false,
+                });
+            }
+            topics.insert("test/topic".to_string(), msgs);
+            map.insert(
+                "broker:1883".to_string(),
+                mqtt::MqttBroker {
+                    client: mqtt::connect_to_mqtt_host(
+                        &crate::server::config::BrokerConfig::from_host("127.0.0.1:19993"),
+                    )
+                    .0,
+                    broker: "broker:1883".to_string(),
+                    connected: true,
+                    topics,
+                    total_bytes: 12,
+                    total_messages: 3,
+                    eviction_order: std::collections::VecDeque::new(),
+                    rate_history: Vec::new(),
+                    rate_bytes_accumulator: 0,
+                    rate_last_sample_ms: now_ms,
+                    requires_auth: false,
+                },
+            );
+        }
+
+        peer_map
+            .lock()
+            .unwrap()
+            .get_mut(&addr)
+            .unwrap()
+            .authenticated_brokers
+            .insert("broker:1883".to_string());
+
+        // Client already has messages up to 00:00:02 → expect only msg3, no clear.
+        handle_select_topic(
+            &peer_map,
+            &mqtt_map,
+            addr,
+            Some("broker:1883"),
+            Some("test/topic"),
+            Some("2024-01-01T00:00:02Z"),
+        );
+
+        // First frame should be the single newer message (no topic_messages_clear).
+        let msg = rx.try_recv().unwrap();
+        assert!(msg.is_binary());
+        let bytes = msg.as_bytes();
+        let header_len = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+        let payload = String::from_utf8_lossy(&bytes[4 + header_len..]).to_string();
+        assert_eq!(payload, "msg3");
+
+        // Then topic_sync_complete, and nothing else.
+        let done = rx.try_recv().unwrap();
+        let parsed_done: serde_json::Value = serde_json::from_str(done.to_str().unwrap()).unwrap();
+        assert_eq!(parsed_done["method"], "topic_sync_complete");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn test_handle_select_topic_clears_selection_with_none() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
@@ -1732,7 +1834,7 @@ mod tests {
         }
 
         // Now clear it
-        handle_select_topic(&peer_map, &mqtt_map, addr, None, None);
+        handle_select_topic(&peer_map, &mqtt_map, addr, None, None, None);
 
         // Should receive clear + sync_complete
         let msg1 = rx.try_recv().unwrap();
@@ -1763,6 +1865,7 @@ mod tests {
             fake_addr,
             Some("broker:1883"),
             Some("t/1"),
+            None,
         );
     }
 
@@ -1803,6 +1906,7 @@ mod tests {
             addr,
             Some("broker:1883"),
             Some("nonexistent/topic"),
+            None,
         );
 
         // Should get clear + sync_complete, no binary frames

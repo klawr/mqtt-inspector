@@ -105,12 +105,19 @@ export function requestPublishMqttMessage(
 export function requestTopicSelection(
 	broker: string | null,
 	topic: string | null,
-	socket: WebSocket
+	socket: WebSocket,
+	sinceTimestamp?: string | null
 ) {
+	const params: Record<string, unknown> = { broker, topic };
+	if (sinceTimestamp) {
+		// Delta re-sync: the backend streams only messages newer than this, and
+		// skips clearing the frontend cache for this topic.
+		params.since_timestamp = sinceTimestamp;
+	}
 	const message = JSON.stringify({
 		jsonrpc: '2.0',
 		method: 'select_topic',
-		params: { broker, topic }
+		params
 	});
 
 	socket.send(message);

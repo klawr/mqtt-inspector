@@ -232,6 +232,7 @@ function ensureBrokerEntry(
 		brokerRepository[broker] = {
 			topics: [],
 			selectedTopic: null,
+			openTabs: [],
 			pipeline: [],
 			connected: true,
 			backendTotalBytes: 0,
@@ -253,6 +254,7 @@ export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepo
 			brokerRepository[param.broker] = {
 				topics: [],
 				selectedTopic: null,
+				openTabs: [],
 				pipeline: [],
 				connected: param.connected,
 				backendTotalBytes: param.total_bytes ?? 0,
@@ -480,11 +482,13 @@ export function processMessagesEvicted(params: MessagesEvictedParam, app: AppSta
 	const parts = params.topic.split('/');
 	decrementTopicTreeCounts(parts, 0, entry.topics, params.count);
 
-	// If the evicted topic is the currently selected one, remove oldest messages
-	const selectedTopic = entry.selectedTopic;
-	if (selectedTopic && selectedTopic.id === params.topic) {
-		for (let i = 0; i < params.count && selectedTopic.messages.length > 0; i++) {
-			selectedTopic.messages.pop(); // remove oldest (at the end)
+	// Trim the evicted topic's cached messages (any open tab, not just the active
+	// one) so inactive tab caches stay bounded. Messages are newest-first, so the
+	// oldest are at the end.
+	const evictedLeaf = findLeafBranch(entry.topics, params.topic);
+	if (evictedLeaf) {
+		for (let i = 0; i < params.count && evictedLeaf.messages.length > 0; i++) {
+			evictedLeaf.messages.pop(); // remove oldest (at the end)
 		}
 	}
 
