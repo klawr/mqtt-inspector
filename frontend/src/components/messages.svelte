@@ -235,85 +235,77 @@ THE SOFTWARE.
 			{/if}
 
 			<div class="panel-footer">
-				{#if selectedMessage}
-					<div class="message-meta">
-						<span style="font-size: 0.875rem; color: var(--cds-text-secondary);">
-							Selected message: {curateDate(selectedMessage.timestamp)}
-							{#if selectedMessage.retain}
-								{' '}(retained)
-							{/if}
-							{#if selectedMessage.isTruncated}
-								{' '}(truncated: showing {formatBytes(selectedMessage.displayedPayloadSize)} of {formatBytes(
-									selectedMessage.originalPayloadSize
-								)})
-							{/if}
-						</span>
-						<div style="display: flex; align-items: center; gap: 0.5em;">
-							{#if topicSyncing}
-								<InlineLoading description="Syncing..." />
-							{/if}
-							<Button
-								kind="ghost"
-								size="sm"
-								icon={Copy}
-								iconDescription="Copy message"
-								tooltipPosition="left"
-								on:click={() => copyText('message')}
-							/>
-							{#if copyStatusMessage}
-								<span style="font-size: 0.75rem; color: var(--cds-text-secondary);"
-									>{copyStatusMessage}</span
-								>
-							{/if}
-							<span style="font-size: 0.875rem; white-space: nowrap;">
-								{selectedIndex + 1} / {messageCount} messages
-							</span>
-						</div>
-					</div>
-				{/if}
-
-				<div style="display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap;">
-					<div style="align-self: center; margin-right: 1em;">
+				<div class="footer-row">
+					<div class="footer-controls">
 						<Checkbox labelText="Lock message" bind:checked={lockedIndex} />
-					</div>
-
-					<div style="align-self: center; scale: 0.75; margin: -0.25em">
-						<Button
-							kind="secondary"
-							iconDescription="First Message"
-							tooltipPosition="top"
-							icon={PageFirst}
-							on:click={() => {
-								selectMessage(0);
-								lockedIndex = false;
-								lockedIndexCompare = false;
-							}}
-						/>
-						<Button
-							kind="secondary"
-							iconDescription="Next Message"
-							tooltipPosition="top"
-							icon={ChevronLeft}
-							on:click={() => {
-								selectMessage(selectedIndex - 1);
-							}}
-						/>
-						<Button
-							kind="secondary"
-							iconDescription="Previous Message"
-							tooltipPosition="top"
-							icon={ChevronRight}
-							on:click={() => selectMessage(selectedIndex + 1)}
-						/>
-					</div>
-
-					<div style="align-self: center; margin-right: 1em;">
+						<div class="nav-buttons">
+							<Button
+								kind="secondary"
+								iconDescription="First Message"
+								tooltipPosition="top"
+								icon={PageFirst}
+								on:click={() => {
+									selectMessage(0);
+									lockedIndex = false;
+									lockedIndexCompare = false;
+								}}
+							/>
+							<Button
+								kind="secondary"
+								iconDescription="Next Message"
+								tooltipPosition="top"
+								icon={ChevronLeft}
+								on:click={() => {
+									selectMessage(selectedIndex - 1);
+								}}
+							/>
+							<Button
+								kind="secondary"
+								iconDescription="Previous Message"
+								tooltipPosition="top"
+								icon={ChevronRight}
+								on:click={() => selectMessage(selectedIndex + 1)}
+							/>
+						</div>
 						<Checkbox labelText="Compare message" bind:checked={compareMessage} />
-					</div>
-
-					{#if compareMessage}
-						<div style="align-self: center; margin-right: 1em;">
+						{#if compareMessage}
 							<Checkbox labelText="Lock" bind:checked={lockedIndexCompare} />
+						{/if}
+					</div>
+					{#if selectedMessage}
+						<div class="message-meta">
+							<span style="font-size: 0.875rem; color: var(--cds-text-secondary);">
+								Selected message: {curateDate(selectedMessage.timestamp)}
+								{#if selectedMessage.retain}
+									{' '}(retained)
+								{/if}
+								{#if selectedMessage.isTruncated}
+									{' '}(truncated: showing {formatBytes(selectedMessage.displayedPayloadSize)} of {formatBytes(
+										selectedMessage.originalPayloadSize
+									)})
+								{/if}
+							</span>
+							<div style="display: flex; align-items: center; gap: 0.5em;">
+								{#if topicSyncing}
+									<InlineLoading description="Syncing..." />
+								{/if}
+								<Button
+									kind="ghost"
+									size="sm"
+									icon={Copy}
+									iconDescription="Copy message"
+									tooltipPosition="left"
+									on:click={() => copyText('message')}
+								/>
+								{#if copyStatusMessage}
+									<span style="font-size: 0.75rem; color: var(--cds-text-secondary);"
+										>{copyStatusMessage}</span
+									>
+								{/if}
+								<span style="font-size: 0.875rem; white-space: nowrap;">
+									{selectedIndex + 1} / {messageCount} messages
+								</span>
+							</div>
 						</div>
 					{/if}
 				</div>
@@ -368,7 +360,9 @@ THE SOFTWARE.
 	.editor-panel {
 		display: flex;
 		flex-direction: column;
-		height: calc(100vh - 8em);
+		/* Fill the column so the footer sits near the bottom of the page,
+		   aligned with the topic tree on the left. */
+		height: calc(100vh - 4.8rem);
 		min-height: 0;
 		background: var(--cds-layer, #262626);
 		border: 1px solid var(--cds-border-subtle, #393939);
@@ -393,14 +387,44 @@ THE SOFTWARE.
 
 	.panel-footer {
 		flex: 0 0 auto;
-		padding: 0.5em 1em 1em;
+		padding: 0.5em 1em 0.75em;
+	}
+
+	/* Controls (lock/nav/compare) on the left, message meta on the right — one row. */
+	.footer-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 1em;
+		flex-wrap: wrap;
+		padding-bottom: 0.5em;
+	}
+
+	.footer-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.75em;
+		flex-wrap: wrap;
+	}
+
+	.nav-buttons {
+		display: flex;
+		align-items: center;
+		scale: 0.75;
+		margin: -0.25em -0.5em;
 	}
 
 	.message-meta {
 		display: flex;
-		justify-content: space-between;
 		align-items: center;
 		gap: 0.5em;
-		padding-bottom: 0.5em;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	/* Carbon checkboxes add top margin that would misalign the single row. */
+	.footer-controls :global(.bx--form-item),
+	.footer-controls :global(.bx--checkbox-wrapper) {
+		margin: 0;
 	}
 </style>

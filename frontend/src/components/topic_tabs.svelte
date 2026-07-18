@@ -20,6 +20,7 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { Close } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry } from '$lib/state';
 	import { activateTab, closeTab, pinTab } from '$lib/tabs';
@@ -27,6 +28,52 @@ THE SOFTWARE.
 	export let broker: BrokerRepositoryEntry;
 
 	$: activeId = broker.selectedTopic?.id ?? null;
+
+	let copiedId: string | null = null;
+	let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function fallbackCopyText(text: string): boolean {
+		try {
+			const textArea = document.createElement('textarea');
+			textArea.value = text;
+			textArea.setAttribute('readonly', '');
+			textArea.style.position = 'fixed';
+			textArea.style.opacity = '0';
+			document.body.appendChild(textArea);
+			textArea.focus();
+			textArea.select();
+			const copied = document.execCommand('copy');
+			document.body.removeChild(textArea);
+			return copied;
+		} catch {
+			return false;
+		}
+	}
+
+	// Right-click a tab to copy its full topic path (interim until the editor
+	// context menu arrives with split view).
+	async function onCopyTopic(event: MouseEvent, id: string) {
+		event.preventDefault();
+		let copied = false;
+		try {
+			if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+				await navigator.clipboard.writeText(id);
+				copied = true;
+			}
+		} catch {
+			copied = false;
+		}
+		if (!copied) {
+			copied = fallbackCopyText(id);
+		}
+		if (copied) {
+			copiedId = id;
+			if (copiedTimer) clearTimeout(copiedTimer);
+			copiedTimer = setTimeout(() => {
+				copiedId = null;
+			}, 1200);
+		}
+	}
 
 	// Mutations happen in the tabs.ts module, which Svelte can't instrument; the
 	// self-assignment triggers reactivity and propagates via bind:broker.
@@ -54,6 +101,10 @@ THE SOFTWARE.
 			broker = broker;
 		}
 	}
+
+	onDestroy(() => {
+		if (copiedTimer) clearTimeout(copiedTimer);
+	});
 </script>
 
 {#if broker.openTabs.length}
@@ -66,9 +117,10 @@ THE SOFTWARE.
 				role="tab"
 				tabindex="0"
 				aria-selected={tab.id === activeId}
-				title={tab.id}
+				title={copiedId === tab.id ? 'Copied!' : `${tab.id}\n(right-click to copy path)`}
 				on:click={() => onActivate(tab.id)}
 				on:dblclick={() => onPin(tab.id)}
+				on:contextmenu={(event) => onCopyTopic(event, tab.id)}
 				on:auxclick={(event) => onAuxClick(event, tab.id)}
 				on:keydown={(event) => {
 					if (event.key === 'Enter' || event.key === ' ') {
@@ -77,7 +129,9 @@ THE SOFTWARE.
 					}
 				}}
 			>
-				<span class="topic-tabs__label">{tab.id}</span>
+				<span class="topic-tabs__label">
+					{#if copiedId === tab.id}Copied!{:else}{tab.id}{/if}
+				</span>
 				<button
 					type="button"
 					class="topic-tabs__close"

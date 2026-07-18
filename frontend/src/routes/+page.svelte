@@ -96,6 +96,17 @@ THE SOFTWARE.
 	// Save initial URL params before reactive statements can clear them
 	const initialParams = new URLSearchParams(window.location.search);
 	let pendingTopic: string | null = initialParams.get('topic');
+	// Open tabs to restore after reload (JSON array of topic ids). Robust to any
+	// characters a topic id may contain.
+	let pendingTabs: string[] | null = (() => {
+		try {
+			const raw = initialParams.get('tabs');
+			const parsed = raw ? JSON.parse(raw) : null;
+			return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : null;
+		} catch {
+			return null;
+		}
+	})();
 
 	let socketConnected = false;
 	let loginOpen = false;
@@ -208,17 +219,25 @@ THE SOFTWARE.
 				}
 				case 'topic_summaries':
 					app.brokerRepository = processTopicSummaries(json.params, app.brokerRepository);
-					if (pendingTopic && app.selectedBroker && app.brokerRepository[app.selectedBroker]) {
-						const found = findbranchwithid(
-							pendingTopic,
-							app.brokerRepository[app.selectedBroker].topics
-						);
-						if (found) {
-							// Restore the topic from the URL as a pinned tab (not a bare
-							// selection) so it is tracked like any other open tab.
-							openTab(app.brokerRepository[app.selectedBroker], found.id, { pin: true });
-							requestTopicSelection(app.selectedBroker, found.id, socket);
+					if (
+						(pendingTabs || pendingTopic) &&
+						app.selectedBroker &&
+						app.brokerRepository[app.selectedBroker]
+					) {
+						const entry = app.brokerRepository[app.selectedBroker];
+						// Restore previously open tabs as pinned tabs, then the active topic.
+						const ids = pendingTabs ?? (pendingTopic ? [pendingTopic] : []);
+						for (const id of ids) {
+							if (findbranchwithid(id, entry.topics)) {
+								openTab(entry, id, { pin: true });
+							}
 						}
+						const activeId = pendingTopic ?? ids[ids.length - 1] ?? null;
+						if (activeId && findbranchwithid(activeId, entry.topics)) {
+							openTab(entry, activeId, { pin: true });
+							requestTopicSelection(app.selectedBroker, activeId, socket);
+						}
+						pendingTabs = null;
 						pendingTopic = null;
 					}
 					break;
@@ -454,9 +473,10 @@ THE SOFTWARE.
 		}
 	}
 	$: {
-		const currentTopic =
-			app.selectedBroker && app.brokerRepository[app.selectedBroker]?.selectedTopic?.id;
-		const routeState = `${app.selectedBroker}|${selectedTab}|${currentTopic ?? pendingTopic ?? ''}`;
+		const currentEntry = app.selectedBroker ? app.brokerRepository[app.selectedBroker] : null;
+		const currentTopic = currentEntry?.selectedTopic?.id;
+		const openTabIds = currentEntry?.openTabs.map((t) => t.id) ?? [];
+		const routeState = `${app.selectedBroker}|${selectedTab}|${currentTopic ?? pendingTopic ?? ''}|${openTabIds.join(' ')}`;
 		if (routeState !== lastUrlSyncState) {
 			lastUrlSyncState = routeState;
 
@@ -473,6 +493,13 @@ THE SOFTWARE.
 				params.set('topic', pendingTopic);
 			} else {
 				params.delete('topic');
+			}
+			if (openTabIds.length) {
+				params.set('tabs', JSON.stringify(openTabIds));
+			} else if (pendingTabs) {
+				params.set('tabs', JSON.stringify(pendingTabs));
+			} else {
+				params.delete('tabs');
 			}
 			const url = `${$page.url.pathname}?${params.toString()}`;
 			const current = `${$page.url.pathname}${$page.url.search}`;
