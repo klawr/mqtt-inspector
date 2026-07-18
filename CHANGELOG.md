@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.8.0] - 2026-07-18
+
+### Added
+- Add splits with dnd and context menu
+- Close treeview to have more space for editor
+
+### Fixed
+- Formatting
 ## [1.7.0] - 2026-07-18
 
 ### Added
