@@ -7,7 +7,6 @@ import {
 	processBrokerRemoval,
 	type BrokerParam,
 	processBrokers,
-	processMQTTMessage,
 	processMQTTMessages,
 	parseMqttWebSocketMessage,
 	type MQTTMessageParam,
@@ -254,42 +253,6 @@ test('parseMqttWebSocketMessage parses binary mqtt frame', () => {
 	expect(new TextDecoder().decode(new Uint8Array(parsed?.params.payload))).toBe('Hello');
 });
 
-test('processMQTTMessage handles payload from parsed binary frame', () => {
-	const app = new AppState();
-	// Pre-create broker entry with topic tree (processMQTTMessage no longer auto-creates)
-	app.brokerRepository['broker1'] = {
-		topics: [
-			{
-				id: 'topic1',
-				text: 'topic1 (1 message)',
-				children: undefined,
-				number_of_messages: 1,
-				original_text: 'topic1',
-				messages: []
-			}
-		],
-		selectedTopic: null,
-		pipeline: [],
-		connected: true,
-		backendTotalBytes: 17,
-		bytesPerSecond: 0,
-		backendTotalMessages: 0,
-		messagesPerSecond: 0,
-		rateHistory: []
-	};
-	const message: MQTTMessageParam = {
-		source: 'broker1',
-		topic: 'topic1',
-		payload: new TextEncoder().encode('Hello from binary').buffer,
-		timestamp: '2022-01-01T00:00:00.000Z',
-		total_bytes: 17
-	};
-
-	processMQTTMessage(message, app);
-
-	expect(app.brokerRepository['broker1'].topics[0].messages[0].text).toBe('Hello from binary');
-});
-
 test('processMQTTMessages applies batched messages in order', () => {
 	const app = new AppState();
 	// Pre-create broker entry with topic tree
@@ -334,44 +297,6 @@ test('processMQTTMessages applies batched messages in order', () => {
 
 	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual(
 		['second', 'first']
-	);
-});
-
-test('processMQTTMessage keeps selected topic messages sorted newest-first', () => {
-	const app = new AppState();
-	app.brokerRepository['broker1'] = {
-		topics: [
-			{
-				id: 'topic1',
-				text: 'topic1 (2 messages)',
-				children: undefined,
-				number_of_messages: 2,
-				original_text: 'topic1',
-				messages: [new Message('2022-01-01T00:00:02.000Z', null, 'newest')]
-			}
-		],
-		selectedTopic: null,
-		pipeline: [],
-		connected: true,
-		backendTotalBytes: 11,
-		bytesPerSecond: 0,
-		backendTotalMessages: 0,
-		messagesPerSecond: 0,
-		rateHistory: []
-	};
-
-	processMQTTMessage(
-		{
-			source: 'broker1',
-			topic: 'topic1',
-			payload: new TextEncoder().encode('older').buffer,
-			timestamp: '2022-01-01T00:00:01.000Z'
-		},
-		app
-	);
-
-	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual(
-		['newest', 'older']
 	);
 });
 
@@ -1015,102 +940,6 @@ test('processPipelines transforms pipeline params', () => {
 test('processPipelines handles empty array', () => {
 	const result = processPipelines([]);
 	expect(result).toEqual([]);
-});
-
-// ─── processMQTTMessage edge cases ───────────────────────────────────
-
-test('processMQTTMessage does nothing for non-existing broker', () => {
-	const app = new AppState();
-	const message: MQTTMessageParam = {
-		source: 'missing:1883',
-		topic: 'test',
-		payload: new TextEncoder().encode('data').buffer,
-		timestamp: 'ts'
-	};
-
-	const result = processMQTTMessage(message, app);
-	expect(result).toBe(app);
-});
-
-test('processMQTTMessage does nothing for non-existing topic in tree', () => {
-	const app = new AppState();
-	app.brokerRepository['b:1883'] = {
-		topics: [
-			{
-				id: 'other',
-				text: 'other',
-				original_text: 'other',
-				number_of_messages: 1,
-				messages: [],
-				children: undefined
-			}
-		],
-		selectedTopic: null,
-		pipeline: [],
-		connected: true,
-		backendTotalBytes: 0,
-		bytesPerSecond: 0,
-		backendTotalMessages: 0,
-		messagesPerSecond: 0,
-		rateHistory: []
-	};
-
-	const message: MQTTMessageParam = {
-		source: 'b:1883',
-		topic: 'nonexistent',
-		payload: new TextEncoder().encode('data').buffer,
-		timestamp: 'ts'
-	};
-
-	processMQTTMessage(message, app);
-	// "other" topic should be untouched
-	expect(app.brokerRepository['b:1883'].topics[0].messages).toHaveLength(0);
-});
-
-test('processMQTTMessage inserts messages newest-first', () => {
-	const app = new AppState();
-	app.brokerRepository['b:1883'] = {
-		topics: [
-			{
-				id: 'test',
-				text: 'test (2 messages)',
-				original_text: 'test',
-				number_of_messages: 2,
-				messages: [],
-				children: undefined
-			}
-		],
-		selectedTopic: null,
-		pipeline: [],
-		connected: true,
-		backendTotalBytes: 0,
-		bytesPerSecond: 0,
-		backendTotalMessages: 0,
-		messagesPerSecond: 0,
-		rateHistory: []
-	};
-
-	const msg1: MQTTMessageParam = {
-		source: 'b:1883',
-		topic: 'test',
-		payload: new TextEncoder().encode('first').buffer,
-		timestamp: '2024-01-01T00:00:00.000Z'
-	};
-	const msg2: MQTTMessageParam = {
-		source: 'b:1883',
-		topic: 'test',
-		payload: new TextEncoder().encode('second').buffer,
-		timestamp: '2024-01-01T00:00:05.000Z'
-	};
-
-	processMQTTMessage(msg1, app);
-	processMQTTMessage(msg2, app);
-
-	const messages = app.brokerRepository['b:1883'].topics[0].messages;
-	expect(messages).toHaveLength(2);
-	// Newest first
-	expect(messages[0].text).toBe('second');
-	expect(messages[1].text).toBe('first');
 });
 
 // ─── processSettings edge cases ──────────────────────────────────────

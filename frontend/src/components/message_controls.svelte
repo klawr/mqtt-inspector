@@ -22,7 +22,7 @@ THE SOFTWARE.
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import type { BrokerRepositoryEntry } from '$lib/state';
-	import { formatDuration, findbranchwithid } from '$lib/helper';
+	import { formatBytes, formatDuration, findbranchwithid } from '$lib/helper';
 	import { focusedGroup } from '$lib/layout';
 	import { copyToClipboard } from '$lib/clipboard';
 	import {
@@ -113,13 +113,6 @@ THE SOFTWARE.
 		return `${date.toLocaleDateString('de-DE')}, ${date.toLocaleTimeString(undefined, {
 			hour12: false
 		})}.${String(date.getMilliseconds())}`;
-	}
-
-	function formatBytes(bytes: number): string {
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 	}
 
 	let copyStatusMessage = '';

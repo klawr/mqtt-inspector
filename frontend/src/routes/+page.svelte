@@ -48,6 +48,7 @@ THE SOFTWARE.
 		InformationFilled,
 		Locked,
 		LogoGithub,
+		SidePanelOpen,
 		TrashCan,
 		Unlocked
 	} from 'carbon-icons-svelte';
@@ -76,7 +77,7 @@ THE SOFTWARE.
 	import { selectedTheme, availableThemes } from '../store';
 	import { goto } from '$app/navigation';
 	import AppNavIcon from '../components/app_nav_icon.svelte';
-	import { findbranchwithid } from '$lib/helper';
+	import { findbranchwithid, formatBytes } from '$lib/helper';
 	import { requestSubscribeTopic, requestUnsubscribeTopic } from '$lib/socket';
 	import {
 		deserializeLayout,
@@ -95,6 +96,8 @@ THE SOFTWARE.
 	let pendingMqttMessages: import('$lib/ws_msg_handling').MQTTMessageParam[] = [];
 	/** Topics whose initial history sync is still in flight (per editor group). */
 	let syncingTopics = new Set<string>();
+	/** Collapse the left topic/pipeline panel to give the editor full width. */
+	let treeCollapsed = false;
 
 	const MQTT_BATCH_FLUSH_MS = 16;
 
@@ -312,12 +315,6 @@ THE SOFTWARE.
 	let isSideNavOpen = false;
 	let addMqttBrokerModalOpen = false;
 	let removeMqttBrokerModalOpen = false;
-
-	function formatBytes(bytes: number): string {
-		if (bytes < 1024) return bytes + ' B';
-		if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-		return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-	}
 
 	function formatRate(bytesPerSecond: number): string {
 		if (bytesPerSecond < 1024) return bytesPerSecond.toFixed(0) + ' B/s';
@@ -714,9 +711,25 @@ THE SOFTWARE.
 	{#if app.brokerRepository[app.selectedBroker]}
 		{#if selectedTab === 1}
 			<div class="treeview-flex">
-				<div class="treeview-col" style="max-width: 40em; margin-top: -0.27em">
-					<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
-				</div>
+				{#if treeCollapsed}
+					<div class="tree-rail">
+						<Button
+							kind="ghost"
+							size="small"
+							icon={SidePanelOpen}
+							iconDescription="Show topic panel"
+							tooltipPosition="right"
+							on:click={() => (treeCollapsed = false)}
+						/>
+					</div>
+				{:else}
+					<div class="treeview-col" style="max-width: 40em; margin-top: -0.27em">
+						<TopicTree
+							bind:broker={app.brokerRepository[app.selectedBroker]}
+							on:collapse={() => (treeCollapsed = true)}
+						/>
+					</div>
+				{/if}
 				<div class="treeview-col">
 					<div class="editor-host">
 						<div class="editor-layout">
@@ -795,6 +808,13 @@ THE SOFTWARE.
 		box-sizing: border-box;
 		max-height: calc(100vh - 4.8rem);
 		min-height: 0;
+	}
+
+	/* Slim rail shown in place of the collapsed topic panel, with a reopen button. */
+	.tree-rail {
+		flex: 0 0 auto;
+		padding-top: 0.1rem;
+		border-right: 1px solid var(--cds-border-subtle, #393939);
 	}
 
 	/* Host for the split layout (top, grows) + the shared focused-pane toolbar

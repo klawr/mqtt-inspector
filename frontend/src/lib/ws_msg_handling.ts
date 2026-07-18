@@ -518,37 +518,7 @@ export function processMessagesEvictedBatch(items: MessagesEvictedParam[], app: 
 	return app;
 }
 
-/** Process full message content for the selected topic.
- *  Does NOT update tree counts (meta handles that). Only adds message content. */
-export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
-	if (!app.brokerRepository[message.source]) {
-		return app;
-	}
-
-	const entry = app.brokerRepository[message.source];
-
-	// Find the leaf node and add message content
-	const leaf = findLeafBranch(entry.topics, message.topic);
-	if (leaf) {
-		const new_entry = new Message(
-			message.timestamp,
-			message.payload,
-			null,
-			message.retain ?? false,
-			message.original_payload_size
-		);
-		leaf.messages = mergeMessagesNewestFirst(leaf.messages, [new_entry]);
-	}
-
-	// Update the selectedTopic reference
-	if (entry.selectedTopic) {
-		entry.selectedTopic =
-			findbranchwithid(entry.selectedTopic.id.toString(), entry.topics) || entry.selectedTopic;
-	}
-
-	return app;
-}
-
+/** Process full message content for the selected topics (bulk-inserted per group). */
 export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState) {
 	// Group messages by source+topic for bulk insertion
 	const groups = new Map<string, { leaf: Treebranch; entries: Message[] }>();

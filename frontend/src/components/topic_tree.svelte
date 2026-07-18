@@ -20,8 +20,9 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { createEventDispatcher, onMount, tick } from 'svelte';
 	import { Button, ButtonSet, TreeView } from 'carbon-components-svelte';
+	import { SidePanelClose } from 'carbon-icons-svelte';
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
 	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
 	import { getAllTopicIds } from '$lib/helper';
@@ -29,6 +30,8 @@ THE SOFTWARE.
 	import TopicSelector from './topic_selector.svelte';
 
 	export let broker: BrokerRepositoryEntry;
+
+	const dispatch = createEventDispatcher<{ collapse: void }>();
 	let activeId = broker.selectedTopic?.id || '';
 	let lastShownId = '';
 
@@ -107,10 +110,20 @@ THE SOFTWARE.
 	});
 </script>
 
-<ButtonSet>
-	<Button size="small" on:click={treeview?.expandAll} kind="secondary">Expand all</Button>
-	<Button size="small" on:click={treeview?.collapseAll}>Collapse all</Button>
-</ButtonSet>
+<div class="tree-actions">
+	<ButtonSet>
+		<Button size="small" on:click={treeview?.expandAll} kind="secondary">Expand all</Button>
+		<Button size="small" on:click={treeview?.collapseAll}>Collapse all</Button>
+	</ButtonSet>
+	<Button
+		kind="ghost"
+		size="small"
+		icon={SidePanelClose}
+		iconDescription="Hide topic panel"
+		tooltipPosition="left"
+		on:click={() => dispatch('collapse')}
+	/>
+</div>
 
 <TopicSelector
 	bind:value={searchValue}
@@ -133,6 +146,12 @@ THE SOFTWARE.
 </div>
 
 <style>
+	.tree-actions {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
 	.overflow-auto {
 		overflow: auto;
 		height: calc(100vh - 9.35rem);
