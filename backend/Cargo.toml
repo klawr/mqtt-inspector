@@ -1,6 +1,6 @@
 [package]
 name = "backend"
-version = "1.6.7"
+version = "1.7.0"
 authors = ["Kai Lawrence <mail@kailawrence.de>"]
 edition = "2021"
 
