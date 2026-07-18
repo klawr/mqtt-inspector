@@ -503,19 +503,32 @@ pub fn deserialize_json_rpc_and_process(
             config::remove_from_pipelines(&pipelines_path, message.params);
             websocket::broadcast_pipelines(peer_map, config_path);
         }
-        "select_topic" => {
+        "subscribe_topic" => {
             if let Some(peer_addr) = addr {
-                let broker = message.params["broker"].as_str();
-                let topic = message.params["topic"].as_str();
-                let since_timestamp = message.params["since_timestamp"].as_str();
-                websocket::handle_select_topic(
-                    peer_map,
-                    mqtt_map,
-                    peer_addr,
-                    broker,
-                    topic,
-                    since_timestamp,
-                );
+                if let (Some(broker), Some(topic)) = (
+                    message.params["broker"].as_str(),
+                    message.params["topic"].as_str(),
+                ) {
+                    let since_timestamp = message.params["since_timestamp"].as_str();
+                    websocket::handle_subscribe_topic(
+                        peer_map,
+                        mqtt_map,
+                        peer_addr,
+                        broker,
+                        topic,
+                        since_timestamp,
+                    );
+                }
+            }
+        }
+        "unsubscribe_topic" => {
+            if let Some(peer_addr) = addr {
+                if let (Some(broker), Some(topic)) = (
+                    message.params["broker"].as_str(),
+                    message.params["topic"].as_str(),
+                ) {
+                    websocket::handle_unsubscribe_topic(peer_map, peer_addr, broker, topic);
+                }
             }
         }
         "authenticate_broker" => {
@@ -682,7 +695,7 @@ fn remove_broker(mqtt_host: &str, peer_map: &websocket::PeerMap, mqtt_map: &mqtt
             .for_each(|(_addr, peer)| {
                 if peer.selected_broker.as_deref() == Some(mqtt_host) {
                     peer.selected_broker = None;
-                    peer.selected_topic = None;
+                    peer.subscribed_topics.clear();
                 }
                 peer.authenticated_brokers.remove(mqtt_host);
 
@@ -1257,12 +1270,12 @@ mod tests {
     }
 
     #[test]
-    fn test_process_select_topic_updates_peer() {
+    fn test_process_subscribe_topic_updates_peer() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         let (addr, mut rx) = insert_peer(&peer_map, 9001);
 
-        let json = r#"{"jsonrpc":"2.0","method":"select_topic","params":{"broker":"b:1883","topic":"t/1"}}"#;
+        let json = r#"{"jsonrpc":"2.0","method":"subscribe_topic","params":{"broker":"b:1883","topic":"t/1"}}"#;
         deserialize_json_rpc_and_process(
             json,
             &peer_map,
@@ -1272,25 +1285,51 @@ mod tests {
             &make_notification_buf(),
         );
 
-        // Should receive topic_messages_clear + topic_sync_complete
+        // Should receive topic_sync_complete (no clear anymore)
         let msg1 = rx.try_recv().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(msg1.to_str().unwrap()).unwrap();
-        assert_eq!(parsed["method"], "topic_messages_clear");
+        assert_eq!(parsed["method"], "topic_sync_complete");
+        assert_eq!(parsed["params"]["topic"], "t/1");
 
-        // Peer should have selection set
+        // Peer should have the topic subscribed
         let peers = peer_map.lock().unwrap();
         let peer = peers.get(&addr).unwrap();
         assert_eq!(peer.selected_broker.as_deref(), Some("b:1883"));
-        assert_eq!(peer.selected_topic.as_deref(), Some("t/1"));
+        assert!(peer.subscribed_topics.contains("t/1"));
     }
 
     #[test]
-    fn test_process_select_topic_without_addr_is_noop() {
+    fn test_process_unsubscribe_topic() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (addr, _rx) = insert_peer(&peer_map, 9001);
+
+        for method in ["subscribe_topic", "unsubscribe_topic"] {
+            let json = format!(
+                r#"{{"jsonrpc":"2.0","method":"{method}","params":{{"broker":"b:1883","topic":"t/1"}}}}"#
+            );
+            deserialize_json_rpc_and_process(
+                &json,
+                &peer_map,
+                &mqtt_map,
+                "/tmp",
+                Some(addr),
+                &make_notification_buf(),
+            );
+        }
+
+        let peers = peer_map.lock().unwrap();
+        let peer = peers.get(&addr).unwrap();
+        assert!(!peer.subscribed_topics.contains("t/1"));
+    }
+
+    #[test]
+    fn test_process_subscribe_topic_without_addr_is_noop() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
 
-        // addr = None → should skip select_topic entirely
-        let json = r#"{"jsonrpc":"2.0","method":"select_topic","params":{"broker":"b:1883","topic":"t/1"}}"#;
+        // addr = None → should skip subscribe_topic entirely
+        let json = r#"{"jsonrpc":"2.0","method":"subscribe_topic","params":{"broker":"b:1883","topic":"t/1"}}"#;
         deserialize_json_rpc_and_process(
             json,
             &peer_map,

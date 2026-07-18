@@ -1,5 +1,11 @@
 import { test, expect } from 'vitest';
-import { findbranchwithid, formatDuration, getAllTopicIds, getTopicSuggestions } from './helper';
+import {
+	findbranchwithid,
+	formatBytes,
+	formatDuration,
+	getAllTopicIds,
+	getTopicSuggestions
+} from './helper';
 import { type Treebranch } from './state';
 
 const tree: Treebranch[] = [
@@ -56,6 +62,15 @@ test('findbranchwithid finds branch with messages', () => {
 	expect(result?.id).toBe('1');
 	expect(result?.messages).toBeDefined();
 	expect(result?.messages.length).toBeGreaterThan(0);
+});
+
+test('formatBytes scales through B/KB/MB/GB', () => {
+	expect(formatBytes(0)).toBe('0 B');
+	expect(formatBytes(512)).toBe('512 B');
+	expect(formatBytes(1024)).toBe('1.0 KB');
+	expect(formatBytes(1536)).toBe('1.5 KB');
+	expect(formatBytes(1024 * 1024)).toBe('1.0 MB');
+	expect(formatBytes(2 * 1024 * 1024 * 1024)).toBe('2.0 GB');
 });
 
 test('formatDuration shows milliseconds up to 9999', () => {

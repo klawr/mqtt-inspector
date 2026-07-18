@@ -21,6 +21,7 @@
  */
 
 import { findbranchwithid } from './helper';
+import { newLayout } from './layout';
 import { Message } from './state';
 import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
 
@@ -232,7 +233,7 @@ function ensureBrokerEntry(
 		brokerRepository[broker] = {
 			topics: [],
 			selectedTopic: null,
-			openTabs: [],
+			...newLayout(),
 			pipeline: [],
 			connected: true,
 			backendTotalBytes: 0,
@@ -254,7 +255,7 @@ export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepo
 			brokerRepository[param.broker] = {
 				topics: [],
 				selectedTopic: null,
-				openTabs: [],
+				...newLayout(),
 				pipeline: [],
 				connected: param.connected,
 				backendTotalBytes: param.total_bytes ?? 0,
@@ -517,37 +518,7 @@ export function processMessagesEvictedBatch(items: MessagesEvictedParam[], app: 
 	return app;
 }
 
-/** Process full message content for the selected topic.
- *  Does NOT update tree counts (meta handles that). Only adds message content. */
-export function processMQTTMessage(message: MQTTMessageParam, app: AppState) {
-	if (!app.brokerRepository[message.source]) {
-		return app;
-	}
-
-	const entry = app.brokerRepository[message.source];
-
-	// Find the leaf node and add message content
-	const leaf = findLeafBranch(entry.topics, message.topic);
-	if (leaf) {
-		const new_entry = new Message(
-			message.timestamp,
-			message.payload,
-			null,
-			message.retain ?? false,
-			message.original_payload_size
-		);
-		leaf.messages = mergeMessagesNewestFirst(leaf.messages, [new_entry]);
-	}
-
-	// Update the selectedTopic reference
-	if (entry.selectedTopic) {
-		entry.selectedTopic =
-			findbranchwithid(entry.selectedTopic.id.toString(), entry.topics) || entry.selectedTopic;
-	}
-
-	return app;
-}
-
+/** Process full message content for the selected topics (bulk-inserted per group). */
 export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState) {
 	// Group messages by source+topic for bulk insertion
 	const groups = new Map<string, { leaf: Treebranch; entries: Message[] }>();
@@ -594,27 +565,6 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 	}
 
 	return app;
-}
-
-/** Clear all message content from the selected topic's tree (before re-sync). */
-export function processTopicMessagesClear(app: AppState) {
-	// Clear messages from all leaf nodes for the current broker
-	if (app.selectedBroker && app.brokerRepository[app.selectedBroker]) {
-		const entry = app.brokerRepository[app.selectedBroker];
-		if (entry.selectedTopic) {
-			clearMessages(entry.selectedTopic);
-		}
-	}
-	return app;
-}
-
-function clearMessages(branch: Treebranch) {
-	branch.messages = [];
-	if (branch.children) {
-		for (const child of branch.children) {
-			clearMessages(child);
-		}
-	}
 }
 
 export function processPipelines(params: PipelineParam[]) {

@@ -232,7 +232,9 @@ pub struct PeerConnection {
     consecutive_full: usize,
     dropped_messages: usize,
     pub selected_broker: Option<String>,
-    pub selected_topic: Option<String>,
+    /// Topics this peer is watching live (split editor groups → multiple at once),
+    /// scoped to `selected_broker`.
+    pub subscribed_topics: std::collections::HashSet<String>,
     /// Brokers this peer has authenticated for (by hostname key).
     pub authenticated_brokers: std::collections::HashSet<String>,
 }
@@ -244,7 +246,7 @@ impl PeerConnection {
             consecutive_full: 0,
             dropped_messages: 0,
             selected_broker: None,
-            selected_topic: None,
+            subscribed_topics: std::collections::HashSet::new(),
             authenticated_brokers: std::collections::HashSet::new(),
         }
     }
@@ -371,7 +373,7 @@ pub fn send_message_to_subscribed_peers(peer_map: &PeerMap, message: &Subscribed
         let peers = peer_map.lock().unwrap();
         peers.values().any(|peer| {
             peer.selected_broker.as_deref() == Some(message.source)
-                && peer.selected_topic.as_deref() == Some(message.topic)
+                && peer.subscribed_topics.contains(message.topic)
                 && peer.authenticated_brokers.contains(message.source)
         })
     };
@@ -396,7 +398,7 @@ pub fn send_message_to_subscribed_peers(peer_map: &PeerMap, message: &Subscribed
     let mut peers = peer_map.lock().unwrap();
     for (addr, peer) in peers.iter_mut() {
         let watching = peer.selected_broker.as_deref() == Some(message.source)
-            && peer.selected_topic.as_deref() == Some(message.topic);
+            && peer.subscribed_topics.contains(message.topic);
         if !watching {
             continue;
         }
@@ -422,65 +424,61 @@ pub fn send_message_to_subscribed_peers(peer_map: &PeerMap, message: &Subscribed
     }
 }
 
-/// Handle a `select_topic` request from a specific peer.
-/// Updates the peer's selected broker+topic and sends existing messages for that topic.
-/// Messages are only sent if the peer is authenticated for the broker (when auth is required).
-pub fn handle_select_topic(
+/// Handle a `subscribe_topic` request from a specific peer.
+/// Adds the topic to the peer's live subscription set (split editor groups may watch
+/// several topics at once) and streams that topic's existing messages. A
+/// `since_timestamp` requests only messages newer than what the client has cached.
+/// Messages are only sent if the peer is authenticated for the broker (when required).
+pub fn handle_subscribe_topic(
     peer_map: &PeerMap,
     mqtt_map: &mqtt::BrokerMap,
     addr: SocketAddr,
-    broker: Option<&str>,
-    topic: Option<&str>,
+    broker: &str,
+    topic: &str,
     since_timestamp: Option<&str>,
 ) {
-    // A delta re-sync streams only messages newer than what the client already
-    // has cached, and skips clearing the client's cache for this topic.
-    let is_delta = since_timestamp.is_some();
     let since_dt = since_timestamp.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
 
-    // Phase 1: Collect messages from the mqtt_map (if a topic is selected)
-    let messages: Vec<(String, bytes::Bytes, usize, bool)> =
-        if let (Some(broker_name), Some(topic_name)) = (broker, topic) {
-            let mqtt_lock = mqtt_map.lock().unwrap();
-            if let Some(broker_data) = mqtt_lock.get(broker_name) {
-                if let Some(topic_msgs) = broker_data.topics.get(topic_name) {
-                    topic_msgs
-                        .iter()
-                        .rev() // newest first
-                        .filter(|msg| match since_dt {
-                            // Keep only messages strictly newer than the cached one.
-                            // If a timestamp can't be parsed, keep it to avoid data loss.
-                            Some(since) => chrono::DateTime::parse_from_rfc3339(&msg.timestamp)
-                                .map(|ts| ts > since)
-                                .unwrap_or(true),
-                            None => true,
-                        })
-                        .map(|msg| {
-                            (
-                                msg.timestamp.clone(),
-                                msg.payload.clone(),
-                                msg.original_payload_size,
-                                msg.retain,
-                            )
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
+    // Phase 1: Collect this topic's messages (newest first), delta-filtered.
+    let messages: Vec<(String, bytes::Bytes, usize, bool)> = {
+        let mqtt_lock = mqtt_map.lock().unwrap();
+        if let Some(topic_msgs) = mqtt_lock.get(broker).and_then(|b| b.topics.get(topic)) {
+            topic_msgs
+                .iter()
+                .rev()
+                .filter(|msg| match since_dt {
+                    // Keep only messages strictly newer than the cached one. If a
+                    // timestamp can't be parsed, keep it to avoid data loss.
+                    Some(since) => chrono::DateTime::parse_from_rfc3339(&msg.timestamp)
+                        .map(|ts| ts > since)
+                        .unwrap_or(true),
+                    None => true,
+                })
+                .map(|msg| {
+                    (
+                        msg.timestamp.clone(),
+                        msg.payload.clone(),
+                        msg.original_payload_size,
+                        msg.retain,
+                    )
+                })
+                .collect()
         } else {
             Vec::new()
-        };
+        }
+    };
 
-    // Phase 2: Update the peer's selection and get a sender clone + auth check
+    // Phase 2: Add the topic to the peer's subscription set + auth check.
     let (sender, is_authenticated) = {
         let mut peers = peer_map.lock().unwrap();
         if let Some(peer) = peers.get_mut(&addr) {
-            peer.selected_broker = broker.map(|s| s.to_string());
-            peer.selected_topic = topic.map(|s| s.to_string());
-            let authed = broker.is_some_and(|b| peer.authenticated_brokers.contains(b));
+            // Switching brokers replaces the whole subscription set.
+            if peer.selected_broker.as_deref() != Some(broker) {
+                peer.selected_broker = Some(broker.to_string());
+                peer.subscribed_topics.clear();
+            }
+            peer.subscribed_topics.insert(topic.to_string());
+            let authed = peer.authenticated_brokers.contains(broker);
             (Some(peer.tx.clone()), authed)
         } else {
             (None, false)
@@ -491,38 +489,13 @@ pub fn handle_select_topic(
         return;
     };
 
-    // Phase 3: Send topic_messages_clear (full re-sync only; a delta keeps the cache).
-    if !is_delta {
-        let clear_msg = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0",
-            method: "topic_messages_clear",
-            params: serde_json::json!({}),
-        };
-        if let Ok(serialized) = serde_json::to_string(&clear_msg) {
-            let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
-        }
-    }
-
-    // If not authenticated for this broker, skip sending messages
-    if !is_authenticated {
-        // Send sync complete so the frontend doesn't hang
-        let done = jsonrpc::JsonRpcNotification {
-            jsonrpc: "2.0",
-            method: "topic_sync_complete",
-            params: serde_json::json!({}),
-        };
-        if let Ok(serialized) = serde_json::to_string(&done) {
-            let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
-        }
-        return;
-    }
-
-    // Phase 4: Stream existing messages for the topic (newest first)
-    if let (Some(source), Some(topic_name)) = (broker, topic) {
+    // Phase 3: Stream existing messages (only when authenticated). No clear step —
+    // the frontend keeps its per-topic cache and the delta contains no duplicates.
+    if is_authenticated {
         for (timestamp, payload, original_payload_size, retain) in &messages {
             if let Some(frame) = build_binary_mqtt_frame(
-                source,
-                topic_name,
+                broker,
+                topic,
                 timestamp,
                 payload,
                 *original_payload_size,
@@ -539,11 +512,11 @@ pub fn handle_select_topic(
         }
     }
 
-    // Phase 5: Send topic_sync_complete (retry briefly if channel is full)
+    // Phase 4: Send topic_sync_complete { topic } (retry briefly if channel is full).
     let done = jsonrpc::JsonRpcNotification {
         jsonrpc: "2.0",
         method: "topic_sync_complete",
-        params: serde_json::json!({}),
+        params: serde_json::json!({ "topic": topic }),
     };
     if let Ok(serialized) = serde_json::to_string(&done) {
         let msg = warp::filters::ws::Message::text(serialized);
@@ -562,6 +535,16 @@ pub fn handle_select_topic(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Handle an `unsubscribe_topic` request: stop streaming a topic to this peer.
+pub fn handle_unsubscribe_topic(peer_map: &PeerMap, addr: SocketAddr, broker: &str, topic: &str) {
+    let mut peers = peer_map.lock().unwrap();
+    if let Some(peer) = peers.get_mut(&addr) {
+        if peer.selected_broker.as_deref() == Some(broker) {
+            peer.subscribed_topics.remove(topic);
         }
     }
 }
@@ -945,7 +928,7 @@ mod tests {
             let mut peers = peer_map.lock().unwrap();
             let peer = peers.get_mut(&addr1).unwrap();
             peer.selected_broker = Some("broker:1883".to_string());
-            peer.selected_topic = Some("test/topic".to_string());
+            peer.subscribed_topics.insert("test/topic".to_string());
             peer.authenticated_brokers.insert("broker:1883".to_string());
         }
 
@@ -1006,7 +989,7 @@ mod tests {
             let mut peers = peer_map.lock().unwrap();
             for (_, peer) in peers.iter_mut() {
                 peer.selected_broker = Some("broker:1883".to_string());
-                peer.selected_topic = Some("topic".to_string());
+                peer.subscribed_topics.insert("topic".to_string());
                 peer.authenticated_brokers.insert("broker:1883".to_string());
             }
         }
@@ -1610,209 +1593,159 @@ mod tests {
         assert_eq!(header["params"]["topic"], "日本語/テスト");
     }
 
-    // --- handle_select_topic ---
+    // --- handle_subscribe_topic / handle_unsubscribe_topic ---
 
-    #[test]
-    fn test_handle_select_topic_no_broker_data() {
-        let peer_map = make_peer_map();
-        let mqtt_map = make_mqtt_map();
-        let (addr, mut rx) = insert_peer(&peer_map, 9001);
-
-        // Select a topic on a broker that doesn't exist in mqtt_map
-        handle_select_topic(
-            &peer_map,
-            &mqtt_map,
-            addr,
-            Some("broker:1883"),
-            Some("t/1"),
-            None,
+    /// Helper: insert a broker into the mqtt_map with the given (timestamp, payload) messages.
+    fn insert_broker_with_messages(
+        mqtt_map: &mqtt::BrokerMap,
+        broker: &str,
+        port: &str,
+        topic: &str,
+        messages: &[(&str, &str)],
+    ) {
+        let mut map = mqtt_map.lock().unwrap();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut topics = std::collections::HashMap::new();
+        let mut msgs = std::collections::VecDeque::new();
+        for (ts, payload) in messages {
+            msgs.push_back(mqtt::MqttMessage {
+                timestamp: ts.to_string(),
+                payload: bytes::Bytes::from(payload.to_string()),
+                original_payload_size: payload.len(),
+                retain: false,
+            });
+        }
+        topics.insert(topic.to_string(), msgs);
+        map.insert(
+            broker.to_string(),
+            mqtt::MqttBroker {
+                client: mqtt::connect_to_mqtt_host(
+                    &crate::server::config::BrokerConfig::from_host(port),
+                )
+                .0,
+                broker: broker.to_string(),
+                connected: true,
+                topics,
+                total_bytes: 12,
+                total_messages: messages.len(),
+                eviction_order: std::collections::VecDeque::new(),
+                rate_history: Vec::new(),
+                rate_bytes_accumulator: 0,
+                rate_last_sample_ms: now_ms,
+                requires_auth: false,
+            },
         );
-
-        // Should still receive topic_messages_clear + topic_sync_complete (no messages)
-        let msg1 = rx.try_recv().unwrap();
-        let parsed1: serde_json::Value = serde_json::from_str(msg1.to_str().unwrap()).unwrap();
-        assert_eq!(parsed1["method"], "topic_messages_clear");
-
-        let msg2 = rx.try_recv().unwrap();
-        let parsed2: serde_json::Value = serde_json::from_str(msg2.to_str().unwrap()).unwrap();
-        assert_eq!(parsed2["method"], "topic_sync_complete");
-
-        // No more messages
-        assert!(rx.try_recv().is_err());
-
-        // Peer selection should be updated
-        let peers = peer_map.lock().unwrap();
-        let peer = peers.get(&addr).unwrap();
-        assert_eq!(peer.selected_broker.as_deref(), Some("broker:1883"));
-        assert_eq!(peer.selected_topic.as_deref(), Some("t/1"));
     }
 
-    #[test]
-    fn test_handle_select_topic_with_existing_messages() {
-        let peer_map = make_peer_map();
-        let mqtt_map = make_mqtt_map();
-        let (addr, mut rx) = insert_peer(&peer_map, 9001);
-
-        // Insert some messages into the mqtt_map
-        {
-            let mut map = mqtt_map.lock().unwrap();
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let mut topics = std::collections::HashMap::new();
-            let mut msgs = std::collections::VecDeque::new();
-            msgs.push_back(mqtt::MqttMessage {
-                timestamp: "2024-01-01T00:00:01Z".to_string(),
-                payload: bytes::Bytes::from("msg1"),
-                original_payload_size: 4,
-                retain: false,
-            });
-            msgs.push_back(mqtt::MqttMessage {
-                timestamp: "2024-01-01T00:00:02Z".to_string(),
-                payload: bytes::Bytes::from("msg2"),
-                original_payload_size: 4,
-                retain: false,
-            });
-            msgs.push_back(mqtt::MqttMessage {
-                timestamp: "2024-01-01T00:00:03Z".to_string(),
-                payload: bytes::Bytes::from("msg3"),
-                original_payload_size: 4,
-                retain: false,
-            });
-            topics.insert("test/topic".to_string(), msgs);
-            map.insert(
-                "broker:1883".to_string(),
-                mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host(
-                        &crate::server::config::BrokerConfig::from_host("127.0.0.1:19995"),
-                    )
-                    .0,
-                    broker: "broker:1883".to_string(),
-                    connected: true,
-                    topics,
-                    total_bytes: 12,
-                    total_messages: 2,
-                    eviction_order: std::collections::VecDeque::new(),
-                    rate_history: Vec::new(),
-                    rate_bytes_accumulator: 0,
-                    rate_last_sample_ms: now_ms,
-                    requires_auth: false,
-                },
-            );
-        }
-
-        // Authenticate peer for the broker
+    fn authenticate(peer_map: &PeerMap, addr: SocketAddr, broker: &str) {
         peer_map
             .lock()
             .unwrap()
             .get_mut(&addr)
             .unwrap()
             .authenticated_brokers
-            .insert("broker:1883".to_string());
+            .insert(broker.to_string());
+    }
 
-        handle_select_topic(
-            &peer_map,
+    #[test]
+    fn test_subscribe_topic_no_broker_data() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        // Subscribe on a broker that doesn't exist in mqtt_map (and not authenticated).
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "t/1", None);
+
+        // Only topic_sync_complete { topic } — no clear, no frames.
+        let msg = rx.try_recv().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
+        assert_eq!(parsed["method"], "topic_sync_complete");
+        assert_eq!(parsed["params"]["topic"], "t/1");
+        assert!(rx.try_recv().is_err());
+
+        // Peer subscription should reflect the new topic.
+        let peers = peer_map.lock().unwrap();
+        let peer = peers.get(&addr).unwrap();
+        assert_eq!(peer.selected_broker.as_deref(), Some("broker:1883"));
+        assert!(peer.subscribed_topics.contains("t/1"));
+    }
+
+    #[test]
+    fn test_subscribe_topic_streams_existing_messages_without_clear() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+
+        insert_broker_with_messages(
             &mqtt_map,
-            addr,
-            Some("broker:1883"),
-            Some("test/topic"),
-            None,
+            "broker:1883",
+            "127.0.0.1:19995",
+            "test/topic",
+            &[
+                ("2024-01-01T00:00:01Z", "msg1"),
+                ("2024-01-01T00:00:02Z", "msg2"),
+                ("2024-01-01T00:00:03Z", "msg3"),
+            ],
         );
+        authenticate(&peer_map, addr, "broker:1883");
 
-        // First: topic_messages_clear
-        let msg1 = rx.try_recv().unwrap();
-        let parsed1: serde_json::Value = serde_json::from_str(msg1.to_str().unwrap()).unwrap();
-        assert_eq!(parsed1["method"], "topic_messages_clear");
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "test/topic", None);
 
-        // Then: 3 binary frames with messages (newest first)
+        // 3 binary frames (newest first), then topic_sync_complete — NO clear.
         let mut payloads = Vec::new();
         for _ in 0..3 {
             let msg = rx.try_recv().unwrap();
             assert!(msg.is_binary());
             let bytes = msg.as_bytes();
             let header_len = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
-            let payload = String::from_utf8_lossy(&bytes[4 + header_len..]).to_string();
-            payloads.push(payload);
+            payloads.push(String::from_utf8_lossy(&bytes[4 + header_len..]).to_string());
         }
-        // Should be newest first
         assert_eq!(payloads, vec!["msg3", "msg2", "msg1"]);
 
-        // Finally: topic_sync_complete
         let done = rx.try_recv().unwrap();
         let parsed_done: serde_json::Value = serde_json::from_str(done.to_str().unwrap()).unwrap();
         assert_eq!(parsed_done["method"], "topic_sync_complete");
+        assert_eq!(parsed_done["params"]["topic"], "test/topic");
     }
 
     #[test]
-    fn test_handle_select_topic_delta_skips_clear_and_only_sends_newer() {
+    fn test_subscribe_topic_delta_only_sends_newer() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         let (addr, mut rx) = insert_peer(&peer_map, 9001);
 
-        {
-            let mut map = mqtt_map.lock().unwrap();
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let mut topics = std::collections::HashMap::new();
-            let mut msgs = std::collections::VecDeque::new();
-            for (ts, payload) in [
+        insert_broker_with_messages(
+            &mqtt_map,
+            "broker:1883",
+            "127.0.0.1:19993",
+            "test/topic",
+            &[
                 ("2024-01-01T00:00:01Z", "msg1"),
                 ("2024-01-01T00:00:02Z", "msg2"),
                 ("2024-01-01T00:00:03Z", "msg3"),
-            ] {
-                msgs.push_back(mqtt::MqttMessage {
-                    timestamp: ts.to_string(),
-                    payload: bytes::Bytes::from(payload),
-                    original_payload_size: 4,
-                    retain: false,
-                });
-            }
-            topics.insert("test/topic".to_string(), msgs);
-            map.insert(
-                "broker:1883".to_string(),
-                mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host(
-                        &crate::server::config::BrokerConfig::from_host("127.0.0.1:19993"),
-                    )
-                    .0,
-                    broker: "broker:1883".to_string(),
-                    connected: true,
-                    topics,
-                    total_bytes: 12,
-                    total_messages: 3,
-                    eviction_order: std::collections::VecDeque::new(),
-                    rate_history: Vec::new(),
-                    rate_bytes_accumulator: 0,
-                    rate_last_sample_ms: now_ms,
-                    requires_auth: false,
-                },
-            );
-        }
+            ],
+        );
+        authenticate(&peer_map, addr, "broker:1883");
 
-        peer_map
-            .lock()
-            .unwrap()
-            .get_mut(&addr)
-            .unwrap()
-            .authenticated_brokers
-            .insert("broker:1883".to_string());
-
-        // Client already has messages up to 00:00:02 → expect only msg3, no clear.
-        handle_select_topic(
+        // Client already has messages up to 00:00:02 → expect only msg3.
+        handle_subscribe_topic(
             &peer_map,
             &mqtt_map,
             addr,
-            Some("broker:1883"),
-            Some("test/topic"),
+            "broker:1883",
+            "test/topic",
             Some("2024-01-01T00:00:02Z"),
         );
 
-        // First frame should be the single newer message (no topic_messages_clear).
         let msg = rx.try_recv().unwrap();
         assert!(msg.is_binary());
         let bytes = msg.as_bytes();
         let header_len = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
-        let payload = String::from_utf8_lossy(&bytes[4 + header_len..]).to_string();
-        assert_eq!(payload, "msg3");
+        assert_eq!(
+            String::from_utf8_lossy(&bytes[4 + header_len..]).to_string(),
+            "msg3"
+        );
 
-        // Then topic_sync_complete, and nothing else.
         let done = rx.try_recv().unwrap();
         let parsed_done: serde_json::Value = serde_json::from_str(done.to_str().unwrap()).unwrap();
         assert_eq!(parsed_done["method"], "topic_sync_complete");
@@ -1820,104 +1753,89 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_select_topic_clears_selection_with_none() {
+    fn test_subscribe_multiple_topics_keeps_all_in_set() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
-        let (addr, mut rx) = insert_peer(&peer_map, 9001);
+        let (addr, _rx) = insert_peer(&peer_map, 9001);
+        authenticate(&peer_map, addr, "broker:1883");
 
-        // First set a selection
-        {
-            let mut peers = peer_map.lock().unwrap();
-            let peer = peers.get_mut(&addr).unwrap();
-            peer.selected_broker = Some("broker:1883".to_string());
-            peer.selected_topic = Some("t/1".to_string());
-        }
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "a/1", None);
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "b/2", None);
 
-        // Now clear it
-        handle_select_topic(&peer_map, &mqtt_map, addr, None, None, None);
-
-        // Should receive clear + sync_complete
-        let msg1 = rx.try_recv().unwrap();
-        let parsed1: serde_json::Value = serde_json::from_str(msg1.to_str().unwrap()).unwrap();
-        assert_eq!(parsed1["method"], "topic_messages_clear");
-
-        let msg2 = rx.try_recv().unwrap();
-        let parsed2: serde_json::Value = serde_json::from_str(msg2.to_str().unwrap()).unwrap();
-        assert_eq!(parsed2["method"], "topic_sync_complete");
-
-        // Peer selection should be cleared
         let peers = peer_map.lock().unwrap();
         let peer = peers.get(&addr).unwrap();
-        assert!(peer.selected_broker.is_none());
-        assert!(peer.selected_topic.is_none());
+        assert!(peer.subscribed_topics.contains("a/1"));
+        assert!(peer.subscribed_topics.contains("b/2"));
+        assert_eq!(peer.subscribed_topics.len(), 2);
     }
 
     #[test]
-    fn test_handle_select_topic_nonexistent_peer() {
+    fn test_subscribe_different_broker_replaces_set() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (addr, _rx) = insert_peer(&peer_map, 9001);
+
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "a/1", None);
+        // Switching brokers wipes the old subscription set.
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "other:1883", "z/9", None);
+
+        let peers = peer_map.lock().unwrap();
+        let peer = peers.get(&addr).unwrap();
+        assert_eq!(peer.selected_broker.as_deref(), Some("other:1883"));
+        assert!(peer.subscribed_topics.contains("z/9"));
+        assert!(!peer.subscribed_topics.contains("a/1"));
+    }
+
+    #[test]
+    fn test_unsubscribe_topic_removes_from_set() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (addr, _rx) = insert_peer(&peer_map, 9001);
+        authenticate(&peer_map, addr, "broker:1883");
+
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "a/1", None);
+        handle_subscribe_topic(&peer_map, &mqtt_map, addr, "broker:1883", "b/2", None);
+        handle_unsubscribe_topic(&peer_map, addr, "broker:1883", "a/1");
+
+        let peers = peer_map.lock().unwrap();
+        let peer = peers.get(&addr).unwrap();
+        assert!(!peer.subscribed_topics.contains("a/1"));
+        assert!(peer.subscribed_topics.contains("b/2"));
+    }
+
+    #[test]
+    fn test_subscribe_topic_nonexistent_peer() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         let fake_addr = make_addr(9999);
 
-        // Should not panic when the peer doesn't exist
-        handle_select_topic(
-            &peer_map,
-            &mqtt_map,
-            fake_addr,
-            Some("broker:1883"),
-            Some("t/1"),
-            None,
-        );
+        // Should not panic when the peer doesn't exist.
+        handle_subscribe_topic(&peer_map, &mqtt_map, fake_addr, "broker:1883", "t/1", None);
+        handle_unsubscribe_topic(&peer_map, fake_addr, "broker:1883", "t/1");
     }
 
     #[test]
-    fn test_handle_select_topic_nonexistent_topic_in_broker() {
+    fn test_subscribe_topic_nonexistent_topic_in_broker() {
         let peer_map = make_peer_map();
         let mqtt_map = make_mqtt_map();
         let (addr, mut rx) = insert_peer(&peer_map, 9001);
 
-        // Insert broker with no topics
-        {
-            let mut map = mqtt_map.lock().unwrap();
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            map.insert(
-                "broker:1883".to_string(),
-                mqtt::MqttBroker {
-                    client: mqtt::connect_to_mqtt_host(
-                        &crate::server::config::BrokerConfig::from_host("127.0.0.1:19994"),
-                    )
-                    .0,
-                    broker: "broker:1883".to_string(),
-                    connected: true,
-                    topics: std::collections::HashMap::new(),
-                    total_bytes: 0,
-                    total_messages: 0,
-                    eviction_order: std::collections::VecDeque::new(),
-                    rate_history: Vec::new(),
-                    rate_bytes_accumulator: 0,
-                    rate_last_sample_ms: now_ms,
-                    requires_auth: false,
-                },
-            );
-        }
+        insert_broker_with_messages(&mqtt_map, "broker:1883", "127.0.0.1:19994", "other", &[]);
+        authenticate(&peer_map, addr, "broker:1883");
 
-        handle_select_topic(
+        handle_subscribe_topic(
             &peer_map,
             &mqtt_map,
             addr,
-            Some("broker:1883"),
-            Some("nonexistent/topic"),
+            "broker:1883",
+            "nonexistent/topic",
             None,
         );
 
-        // Should get clear + sync_complete, no binary frames
-        let msg1 = rx.try_recv().unwrap();
-        let parsed1: serde_json::Value = serde_json::from_str(msg1.to_str().unwrap()).unwrap();
-        assert_eq!(parsed1["method"], "topic_messages_clear");
-
-        let msg2 = rx.try_recv().unwrap();
-        let parsed2: serde_json::Value = serde_json::from_str(msg2.to_str().unwrap()).unwrap();
-        assert_eq!(parsed2["method"], "topic_sync_complete");
-
+        // Just topic_sync_complete, no frames, no clear.
+        let msg = rx.try_recv().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
+        assert_eq!(parsed["method"], "topic_sync_complete");
         assert!(rx.try_recv().is_err());
     }
 

@@ -81,13 +81,38 @@ export type Treebranch = {
 	messages: Message[];
 };
 
-/** An open topic tab in the message viewer. Mirrors VS Code editor tabs:
+/** An open topic tab in an editor group. Mirrors VS Code editor tabs:
  *  a `preview` tab is shown italic and is reused when another topic is selected,
  *  until it is pinned (double-click) which turns `preview` off. */
 export type TopicTab = {
 	id: string;
 	preview: boolean;
 };
+
+/** Per-group message navigation state (which message is shown, lock, compare).
+ *  Shared between the group's editor pane and the focused-pane toolbar. */
+export type GroupView = {
+	selectedIndex: number;
+	lockedIndex: boolean;
+	compareMessage: boolean;
+	selectedIndexCompare: number;
+	lockedIndexCompare: boolean;
+};
+
+/** A single editor group: an independent tab strip + editor pane (one per split). */
+export type EditorGroup = {
+	id: string;
+	tabs: TopicTab[];
+	activeTopicId: string | null;
+	view: GroupView;
+};
+
+/** The split layout tree. A leaf holds one editor group; a split arranges its
+ *  children horizontally (`row`) or vertically (`column`), like VS Code's grid.
+ *  `sizes` are flex proportions (one per child, summing to ~100). */
+export type LayoutNode =
+	| { type: 'group'; group: EditorGroup }
+	| { type: 'split'; direction: 'row' | 'column'; children: LayoutNode[]; sizes: number[] };
 
 type PipelineEntry = {
 	topic: string;
@@ -113,8 +138,13 @@ export type RateHistoryEntry = {
 
 export type BrokerRepositoryEntry = {
 	topics: Treebranch[];
+	/** Maintained pointer to the focused group's active topic (for the tree
+	 *  highlight, publish default, pipeline, and the URL `topic` param). */
 	selectedTopic: Treebranch | null;
-	openTabs: TopicTab[];
+	/** Split editor-group layout tree. */
+	layout: LayoutNode;
+	/** Id of the currently focused editor group. */
+	activeGroupId: string;
 	pipeline: { topic: string; timestamp?: string; delta_t?: number }[];
 	connected: boolean;
 	backendTotalBytes: number;

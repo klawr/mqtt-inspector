@@ -20,131 +20,118 @@ THE SOFTWARE.
 -->
 
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { createEventDispatcher } from 'svelte';
 	import { Close } from 'carbon-icons-svelte';
-	import type { BrokerRepositoryEntry } from '$lib/state';
-	import { activateTab, closeTab, pinTab } from '$lib/tabs';
+	import type { BrokerRepositoryEntry, EditorGroup } from '$lib/state';
+	import { activateTab, closeTab, moveTab, pinTab } from '$lib/layout';
+	import { TAB_DND_MIME, readTabDrag, writeTabDrag } from '$lib/dnd';
 
 	export let broker: BrokerRepositoryEntry;
+	export let group: EditorGroup;
 
-	$: activeId = broker.selectedTopic?.id ?? null;
+	const dispatch = createEventDispatcher<{
+		contextmenu: { x: number; y: number; topicId: string };
+	}>();
 
-	let copiedId: string | null = null;
-	let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+	$: activeId = group.activeTopicId;
+	let dragOver = false;
 
-	function fallbackCopyText(text: string): boolean {
-		try {
-			const textArea = document.createElement('textarea');
-			textArea.value = text;
-			textArea.setAttribute('readonly', '');
-			textArea.style.position = 'fixed';
-			textArea.style.opacity = '0';
-			document.body.appendChild(textArea);
-			textArea.focus();
-			textArea.select();
-			const copied = document.execCommand('copy');
-			document.body.removeChild(textArea);
-			return copied;
-		} catch {
-			return false;
-		}
-	}
-
-	// Right-click a tab to copy its full topic path (interim until the editor
-	// context menu arrives with split view).
-	async function onCopyTopic(event: MouseEvent, id: string) {
-		event.preventDefault();
-		let copied = false;
-		try {
-			if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-				await navigator.clipboard.writeText(id);
-				copied = true;
-			}
-		} catch {
-			copied = false;
-		}
-		if (!copied) {
-			copied = fallbackCopyText(id);
-		}
-		if (copied) {
-			copiedId = id;
-			if (copiedTimer) clearTimeout(copiedTimer);
-			copiedTimer = setTimeout(() => {
-				copiedId = null;
-			}, 1200);
-		}
-	}
-
-	// Mutations happen in the tabs.ts module, which Svelte can't instrument; the
+	// Mutations happen in layout.ts, which Svelte can't instrument; the
 	// self-assignment triggers reactivity and propagates via bind:broker.
 	function onActivate(id: string) {
-		activateTab(broker, id);
+		activateTab(broker, group.id, id);
 		broker = broker;
 	}
 
 	function onPin(id: string) {
-		pinTab(broker, id);
+		pinTab(broker, group.id, id);
 		broker = broker;
 	}
 
 	function onClose(event: MouseEvent, id: string) {
 		event.stopPropagation();
-		closeTab(broker, id);
+		closeTab(broker, group.id, id);
 		broker = broker;
 	}
 
 	function onAuxClick(event: MouseEvent, id: string) {
-		// Middle-click closes the tab, like a browser/VS Code.
 		if (event.button === 1) {
 			event.preventDefault();
-			closeTab(broker, id);
+			closeTab(broker, group.id, id);
 			broker = broker;
 		}
 	}
 
-	onDestroy(() => {
-		if (copiedTimer) clearTimeout(copiedTimer);
-	});
+	function onContextMenu(event: MouseEvent, id: string) {
+		event.preventDefault();
+		dispatch('contextmenu', { x: event.clientX, y: event.clientY, topicId: id });
+	}
+
+	function onDragStart(event: DragEvent, id: string) {
+		writeTabDrag(event, { groupId: group.id, topicId: id });
+	}
+
+	// Dropping a tab onto this strip moves it into this group.
+	function onStripDrop(event: DragEvent) {
+		const payload = readTabDrag(event);
+		dragOver = false;
+		if (!payload) return;
+		event.preventDefault();
+		moveTab(broker, payload.groupId, group.id, payload.topicId);
+		broker = broker;
+	}
+
+	function onStripDragOver(event: DragEvent) {
+		if (event.dataTransfer?.types.includes(TAB_DND_MIME)) {
+			event.preventDefault();
+			dragOver = true;
+		}
+	}
 </script>
 
-{#if broker.openTabs.length}
-	<div class="topic-tabs" role="tablist">
-		{#each broker.openTabs as tab (tab.id)}
-			<div
-				class="topic-tabs__tab"
-				class:active={tab.id === activeId}
-				class:preview={tab.preview}
-				role="tab"
-				tabindex="0"
-				aria-selected={tab.id === activeId}
-				title={copiedId === tab.id ? 'Copied!' : `${tab.id}\n(right-click to copy path)`}
-				on:click={() => onActivate(tab.id)}
-				on:dblclick={() => onPin(tab.id)}
-				on:contextmenu={(event) => onCopyTopic(event, tab.id)}
-				on:auxclick={(event) => onAuxClick(event, tab.id)}
-				on:keydown={(event) => {
-					if (event.key === 'Enter' || event.key === ' ') {
-						event.preventDefault();
-						onActivate(tab.id);
-					}
-				}}
+<!-- svelte-ignore a11y-no-static-element-interactions -->
+<div
+	class="topic-tabs"
+	class:drag-over={dragOver}
+	on:dragover={onStripDragOver}
+	on:dragleave={() => (dragOver = false)}
+	on:drop={onStripDrop}
+>
+	{#each group.tabs as tab (tab.id)}
+		<div
+			class="topic-tabs__tab"
+			class:active={tab.id === activeId}
+			class:preview={tab.preview}
+			role="tab"
+			tabindex="0"
+			draggable="true"
+			aria-selected={tab.id === activeId}
+			title={`${tab.id}\n(right-click for options)`}
+			on:click={() => onActivate(tab.id)}
+			on:dblclick={() => onPin(tab.id)}
+			on:contextmenu={(event) => onContextMenu(event, tab.id)}
+			on:auxclick={(event) => onAuxClick(event, tab.id)}
+			on:dragstart={(event) => onDragStart(event, tab.id)}
+			on:keydown={(event) => {
+				if (event.key === 'Enter' || event.key === ' ') {
+					event.preventDefault();
+					onActivate(tab.id);
+				}
+			}}
+		>
+			<span class="topic-tabs__label">{tab.id}</span>
+			<button
+				type="button"
+				class="topic-tabs__close"
+				title="Close tab"
+				aria-label="Close {tab.id}"
+				on:click={(event) => onClose(event, tab.id)}
 			>
-				<span class="topic-tabs__label">
-					{#if copiedId === tab.id}Copied!{:else}{tab.id}{/if}
-				</span>
-				<button
-					type="button"
-					class="topic-tabs__close"
-					title="Close tab"
-					aria-label="Close {tab.id}"
-					on:click={(event) => onClose(event, tab.id)}
-				>
-					<Close size={16} />
-				</button>
-			</div>
-		{/each}
-	</div>
-{/if}
+				<Close size={16} />
+			</button>
+		</div>
+	{/each}
+</div>
 
 <style>
 	.topic-tabs {
@@ -153,8 +140,13 @@ THE SOFTWARE.
 		align-items: stretch;
 		overflow-x: auto;
 		scrollbar-width: thin;
+		min-height: 2.25rem;
 		border-bottom: 1px solid var(--cds-border-subtle, #393939);
 		background: var(--cds-layer, #262626);
+	}
+
+	.topic-tabs.drag-over {
+		background: var(--cds-layer-hover, rgb(255 255 255 / 0.08));
 	}
 
 	.topic-tabs__tab {
