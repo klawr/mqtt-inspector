@@ -21,6 +21,7 @@
  */
 
 import { findbranchwithid } from './helper';
+import { newLayout } from './layout';
 import { Message } from './state';
 import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
 
@@ -232,7 +233,7 @@ function ensureBrokerEntry(
 		brokerRepository[broker] = {
 			topics: [],
 			selectedTopic: null,
-			openTabs: [],
+			...newLayout(),
 			pipeline: [],
 			connected: true,
 			backendTotalBytes: 0,
@@ -254,7 +255,7 @@ export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepo
 			brokerRepository[param.broker] = {
 				topics: [],
 				selectedTopic: null,
-				openTabs: [],
+				...newLayout(),
 				pipeline: [],
 				connected: param.connected,
 				backendTotalBytes: param.total_bytes ?? 0,
@@ -594,27 +595,6 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 	}
 
 	return app;
-}
-
-/** Clear all message content from the selected topic's tree (before re-sync). */
-export function processTopicMessagesClear(app: AppState) {
-	// Clear messages from all leaf nodes for the current broker
-	if (app.selectedBroker && app.brokerRepository[app.selectedBroker]) {
-		const entry = app.brokerRepository[app.selectedBroker];
-		if (entry.selectedTopic) {
-			clearMessages(entry.selectedTopic);
-		}
-	}
-	return app;
-}
-
-function clearMessages(branch: Treebranch) {
-	branch.messages = [];
-	if (branch.children) {
-		for (const child of branch.children) {
-			clearMessages(child);
-		}
-	}
 }
 
 export function processPipelines(params: PipelineParam[]) {

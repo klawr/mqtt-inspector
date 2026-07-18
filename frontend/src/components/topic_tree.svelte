@@ -25,7 +25,7 @@ THE SOFTWARE.
 	import type { TreeNode } from 'carbon-components-svelte/src/TreeView/TreeView.svelte';
 	import type { BrokerRepositoryEntry, Treebranch } from '$lib/state';
 	import { getAllTopicIds } from '$lib/helper';
-	import { openTab, pinTab } from '$lib/tabs';
+	import { openInFocusedGroup, focusedGroup, pinTab } from '$lib/layout';
 	import TopicSelector from './topic_selector.svelte';
 
 	export let broker: BrokerRepositoryEntry;
@@ -58,14 +58,15 @@ THE SOFTWARE.
 			leaf: boolean;
 		}
 	) {
-		openTab(broker, detail.id.toString(), { pin: false });
+		openInFocusedGroup(broker, detail.id.toString(), { pin: false });
 		broker = broker; // trigger reactivity + bind:broker propagation
 	}
 
 	// Double-clicking a tree node pins its (already-selected) tab, mirroring VS Code.
 	function handleDblClick() {
-		if (broker.selectedTopic) {
-			pinTab(broker, broker.selectedTopic.id);
+		const group = focusedGroup(broker);
+		if (group.activeTopicId) {
+			pinTab(broker, group.id, group.activeTopicId);
 			broker = broker;
 		}
 	}
@@ -78,7 +79,7 @@ THE SOFTWARE.
 			return;
 		}
 		treeview?.showNode(topicId);
-		openTab(broker, topicId, { pin: false });
+		openInFocusedGroup(broker, topicId, { pin: false });
 		broker = broker; // trigger reactivity + bind:broker propagation
 	}
 

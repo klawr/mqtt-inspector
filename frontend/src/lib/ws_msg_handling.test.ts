@@ -22,7 +22,6 @@ import {
 	type MessagesEvictedParam,
 	processMQTTMessageMetaBatch,
 	processMessagesEvictedBatch,
-	processTopicMessagesClear,
 	processPipelines,
 	type PipelineParam
 } from './ws_msg_handling';
@@ -199,36 +198,25 @@ test('processBrokers updates BrokerRepository correctly', () => {
 
 	const result = processBrokers(params, brokerRepository);
 
-	expect(result).toEqual({
-		broker1: {
-			topics: [],
-			selectedTopic: null,
-			openTabs: [],
-			pipeline: [],
-			connected: true,
-			backendTotalBytes: 0,
-			bytesPerSecond: 0,
-			backendTotalMessages: 0,
-			messagesPerSecond: 0,
-			rateHistory: [],
-			requiresAuth: false,
-			authenticated: false
-		},
-		broker2: {
-			topics: [],
-			selectedTopic: null,
-			openTabs: [],
-			pipeline: [],
-			connected: false,
-			backendTotalBytes: 0,
-			bytesPerSecond: 0,
-			backendTotalMessages: 0,
-			messagesPerSecond: 0,
-			rateHistory: [],
-			requiresAuth: false,
-			authenticated: false
-		}
-	});
+	for (const name of ['broker1', 'broker2'] as const) {
+		const entry = result[name];
+		expect(entry.topics).toEqual([]);
+		expect(entry.selectedTopic).toBeNull();
+		expect(entry.pipeline).toEqual([]);
+		expect(entry.backendTotalBytes).toBe(0);
+		expect(entry.requiresAuth).toBe(false);
+		expect(entry.authenticated).toBe(false);
+		// Each broker starts with a single empty editor group.
+		expect(entry.layout.type).toBe('group');
+		const group = (
+			entry.layout as { type: 'group'; group: { id: string; tabs: unknown[]; activeTopicId: null } }
+		).group;
+		expect(group.id).toBe(entry.activeGroupId);
+		expect(group.tabs).toEqual([]);
+		expect(group.activeTopicId).toBeNull();
+	}
+	expect(result.broker1.connected).toBe(true);
+	expect(result.broker2.connected).toBe(false);
 });
 
 test('processBrokers handles empty params correctly', () => {
@@ -1006,44 +994,6 @@ test('processMessagesEvictedBatch processes all items', () => {
 	const root = app.brokerRepository['b:1883'].topics[0];
 	expect(root.number_of_messages).toBe(8); // 10 - 1 - 1
 	expect(app.brokerRepository['b:1883'].backendTotalMessages).toBe(8);
-});
-
-// ─── processTopicMessagesClear ───────────────────────────────────────
-
-test('processTopicMessagesClear clears messages from selected topic', () => {
-	const app = makeBrokerWithTopicTree();
-	app.selectedBroker = 'b:1883';
-	const childBranch = app.brokerRepository['b:1883'].topics[0].children![0];
-	app.brokerRepository['b:1883'].selectedTopic = childBranch;
-
-	processTopicMessagesClear(app);
-
-	expect(childBranch.messages).toHaveLength(0);
-});
-
-test('processTopicMessagesClear is noop without selected broker', () => {
-	const app = new AppState();
-	// Should not throw
-	processTopicMessagesClear(app);
-});
-
-test('processTopicMessagesClear is noop without selected topic', () => {
-	const app = new AppState();
-	app.selectedBroker = 'b:1883';
-	app.brokerRepository['b:1883'] = {
-		topics: [],
-		selectedTopic: null,
-		pipeline: [],
-		connected: true,
-		backendTotalBytes: 0,
-		bytesPerSecond: 0,
-		backendTotalMessages: 0,
-		messagesPerSecond: 0,
-		rateHistory: []
-	};
-
-	processTopicMessagesClear(app);
-	// No throw
 });
 
 // ─── processPipelines ────────────────────────────────────────────────

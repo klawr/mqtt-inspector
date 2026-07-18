@@ -37,7 +37,8 @@ THE SOFTWARE.
 		Theme
 	} from 'carbon-components-svelte';
 	import 'carbon-components-svelte/css/all.css';
-	import Messages from '../components/messages.svelte';
+	import EditorLayout from '../components/editor_layout.svelte';
+	import MessageControls from '../components/message_controls.svelte';
 	import AddBroker from '../components/dialogs/add_broker.svelte';
 	import {
 		Add,
@@ -65,7 +66,6 @@ THE SOFTWARE.
 		processMQTTMessageMetaBatch,
 		processMessagesEvictedBatch,
 		processTopicSummaries,
-		processTopicMessagesClear,
 		processPipelines,
 		parseMqttWebSocketMessage,
 		processRateHistorySample,
@@ -77,8 +77,14 @@ THE SOFTWARE.
 	import { goto } from '$app/navigation';
 	import AppNavIcon from '../components/app_nav_icon.svelte';
 	import { findbranchwithid } from '$lib/helper';
-	import { requestTopicSelection } from '$lib/socket';
-	import { openTab } from '$lib/tabs';
+	import { requestSubscribeTopic, requestUnsubscribeTopic } from '$lib/socket';
+	import {
+		deserializeLayout,
+		openInFocusedGroup,
+		serializeLayout,
+		subscribedTopicIds,
+		syncSelectedTopic
+	} from '$lib/layout';
 
 	let socket: WebSocket;
 	let app = new AppState();
@@ -87,26 +93,16 @@ THE SOFTWARE.
 	let reconnectAttempts = 0;
 	let shouldReconnect = true;
 	let pendingMqttMessages: import('$lib/ws_msg_handling').MQTTMessageParam[] = [];
-	let topicSyncing = false;
-	let syncTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Topics whose initial history sync is still in flight (per editor group). */
+	let syncingTopics = new Set<string>();
 
 	const MQTT_BATCH_FLUSH_MS = 16;
-	const SYNC_TIMEOUT_MS = 5000;
 
 	// Save initial URL params before reactive statements can clear them
 	const initialParams = new URLSearchParams(window.location.search);
 	let pendingTopic: string | null = initialParams.get('topic');
-	// Open tabs to restore after reload (JSON array of topic ids). Robust to any
-	// characters a topic id may contain.
-	let pendingTabs: string[] | null = (() => {
-		try {
-			const raw = initialParams.get('tabs');
-			const parsed = raw ? JSON.parse(raw) : null;
-			return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : null;
-		} catch {
-			return null;
-		}
-	})();
+	// Serialized split layout to restore after reload (from the `layout` param).
+	let pendingLayout: string | null = initialParams.get('layout');
 
 	let socketConnected = false;
 	let loginOpen = false;
@@ -139,7 +135,7 @@ THE SOFTWARE.
 	}
 
 	function scheduleMqttFlush() {
-		if (topicSyncing || mqttFlushTimer) {
+		if (mqttFlushTimer) {
 			return;
 		}
 		mqttFlushTimer = setTimeout(() => {
@@ -220,25 +216,26 @@ THE SOFTWARE.
 				case 'topic_summaries':
 					app.brokerRepository = processTopicSummaries(json.params, app.brokerRepository);
 					if (
-						(pendingTabs || pendingTopic) &&
+						(pendingLayout || pendingTopic) &&
 						app.selectedBroker &&
 						app.brokerRepository[app.selectedBroker]
 					) {
 						const entry = app.brokerRepository[app.selectedBroker];
-						// Restore previously open tabs as pinned tabs, then the active topic.
-						const ids = pendingTabs ?? (pendingTopic ? [pendingTopic] : []);
-						for (const id of ids) {
-							if (findbranchwithid(id, entry.topics)) {
-								openTab(entry, id, { pin: true });
+						if (pendingLayout) {
+							// Restore the whole split layout from the URL.
+							const restored = deserializeLayout(pendingLayout);
+							if (restored) {
+								entry.layout = restored.layout;
+								entry.activeGroupId = restored.activeGroupId;
+								syncSelectedTopic(entry);
 							}
+						} else if (pendingTopic && findbranchwithid(pendingTopic, entry.topics)) {
+							openInFocusedGroup(entry, pendingTopic, { pin: true });
 						}
-						const activeId = pendingTopic ?? ids[ids.length - 1] ?? null;
-						if (activeId && findbranchwithid(activeId, entry.topics)) {
-							openTab(entry, activeId, { pin: true });
-							requestTopicSelection(app.selectedBroker, activeId, socket);
-						}
-						pendingTabs = null;
+						pendingLayout = null;
 						pendingTopic = null;
+						// Trigger the subscription diff for the restored topics.
+						app.brokerRepository = app.brokerRepository;
 					}
 					break;
 				case 'mqtt_message_meta_batch':
@@ -251,29 +248,18 @@ THE SOFTWARE.
 				case 'messages_evicted_batch':
 					app = processMessagesEvictedBatch(json.params, app);
 					break;
-				case 'topic_messages_clear':
-					flushPendingMqttMessages();
-					app = processTopicMessagesClear(app);
-					topicSyncing = true;
-					if (syncTimeoutTimer) clearTimeout(syncTimeoutTimer);
-					syncTimeoutTimer = setTimeout(() => {
-						if (topicSyncing) {
-							topicSyncing = false;
-							flushPendingMqttMessages();
-							app.brokerRepository = app.brokerRepository;
-						}
-						syncTimeoutTimer = null;
-					}, SYNC_TIMEOUT_MS);
-					break;
-				case 'topic_sync_complete':
-					topicSyncing = false;
-					if (syncTimeoutTimer) {
-						clearTimeout(syncTimeoutTimer);
-						syncTimeoutTimer = null;
+				case 'topic_sync_complete': {
+					// Per-topic: clear the loading state for the synced topic.
+					const syncedTopic = (json.params as { topic?: string } | undefined)?.topic;
+					if (syncedTopic && syncingTopics.has(syncedTopic)) {
+						const next = new Set(syncingTopics);
+						next.delete(syncedTopic);
+						syncingTopics = next;
 					}
 					flushPendingMqttMessages();
 					app.brokerRepository = app.brokerRepository;
 					break;
+				}
 				case 'rate_history_sample':
 					processRateHistorySample(json.params, app);
 					// Explicit brokerRepository reassignment to ensure Svelte reactivity
@@ -295,11 +281,9 @@ THE SOFTWARE.
 							app.brokerRepository[broker].authenticated = true;
 						}
 						loginOpen = false;
-						// Re-send topic selection now that peer is authenticated
-						if (socket && socket.readyState === WebSocket.OPEN) {
-							const entry = app.brokerRepository[broker];
-							requestTopicSelection(broker, entry?.selectedTopic?.id ?? null, socket);
-						}
+						// Subscriptions are (re)sent by the reactive diff now that
+						// `authenticated` flipped — nudge reactivity.
+						app.brokerRepository = app.brokerRepository;
 					} else {
 						loginRef?.showError('Invalid password');
 					}
@@ -445,38 +429,68 @@ THE SOFTWARE.
 			!app.brokerRepository[app.selectedBroker]?.authenticated
 		: false;
 
-	// Track topic selection and notify backend when it changes
-	let lastSelectedBroker: string | null = null;
-	let lastSelectedTopicId: string | null = null;
-	let lastUrlSyncState = '';
-	$: {
+	// Reconcile the backend live subscriptions with the set of topics shown across
+	// all editor groups. Runs whenever the layout/broker changes (bind writes
+	// invalidate `app`). Diffs against the last-sent set: subscribe new topics
+	// (delta from the newest cached message), unsubscribe removed ones.
+	let lastSubBroker: string | null = null;
+	let lastSubscribed = new Set<string>();
+	function diffSubscriptions() {
+		if (!socket || socket.readyState !== WebSocket.OPEN) return;
 		const currentBroker = app.selectedBroker || null;
-		const currentTopicId = currentBroker
-			? app.brokerRepository[currentBroker]?.selectedTopic?.id ?? null
-			: null;
-		if (currentBroker !== lastSelectedBroker || currentTopicId !== lastSelectedTopicId) {
-			lastSelectedBroker = currentBroker;
-			lastSelectedTopicId = currentTopicId;
-			if (socket && socket.readyState === WebSocket.OPEN) {
-				const entry = currentBroker ? app.brokerRepository[currentBroker] : null;
-				if (entry && entry.requiresAuth && !entry.authenticated) {
-					loginBroker = currentBroker!;
-					loginOpen = true;
-				} else {
-					// If this topic already has cached messages (a revisited tab), ask the
-					// backend for a delta from the newest cached message instead of a full
-					// re-sync. Newest message is at index 0 (newest-first ordering).
-					const cachedNewest = entry?.selectedTopic?.messages[0]?.timestamp ?? null;
-					requestTopicSelection(currentBroker, currentTopicId, socket, cachedNewest);
+		const entry = currentBroker ? app.brokerRepository[currentBroker] : null;
+		const desired = entry ? subscribedTopicIds(entry) : new Set<string>();
+
+		// Broker switched: drop every subscription from the previous broker.
+		if (currentBroker !== lastSubBroker) {
+			if (lastSubBroker) {
+				for (const topic of lastSubscribed) {
+					requestUnsubscribeTopic(lastSubBroker, topic, socket);
 				}
 			}
+			lastSubscribed = new Set();
+			lastSubBroker = currentBroker;
 		}
+		if (!currentBroker || !entry) return;
+
+		// Auth gate: prompt instead of subscribing until authenticated.
+		if (entry.requiresAuth && !entry.authenticated) {
+			if (desired.size) {
+				loginBroker = currentBroker;
+				loginOpen = true;
+			}
+			return;
+		}
+
+		for (const topic of desired) {
+			if (!lastSubscribed.has(topic)) {
+				const since = findbranchwithid(topic, entry.topics)?.messages[0]?.timestamp ?? null;
+				syncingTopics = new Set(syncingTopics).add(topic);
+				requestSubscribeTopic(currentBroker, topic, socket, since);
+			}
+		}
+		for (const topic of lastSubscribed) {
+			if (!desired.has(topic)) {
+				requestUnsubscribeTopic(currentBroker, topic, socket);
+			}
+		}
+		lastSubscribed = desired;
 	}
+	$: {
+		// Reference reactive state so this re-runs on layout/broker/auth changes.
+		void app.selectedBroker;
+		void (app.selectedBroker && app.brokerRepository[app.selectedBroker]?.layout);
+		void (app.selectedBroker && app.brokerRepository[app.selectedBroker]?.authenticated);
+		diffSubscriptions();
+	}
+
+	// Persist broker + view + layout tree to the URL.
+	let lastUrlSyncState = '';
 	$: {
 		const currentEntry = app.selectedBroker ? app.brokerRepository[app.selectedBroker] : null;
 		const currentTopic = currentEntry?.selectedTopic?.id;
-		const openTabIds = currentEntry?.openTabs.map((t) => t.id) ?? [];
-		const routeState = `${app.selectedBroker}|${selectedTab}|${currentTopic ?? pendingTopic ?? ''}|${openTabIds.join(' ')}`;
+		const layoutJson = currentEntry ? serializeLayout(currentEntry) : '';
+		const routeState = `${app.selectedBroker}|${selectedTab}|${layoutJson}`;
 		if (routeState !== lastUrlSyncState) {
 			lastUrlSyncState = routeState;
 
@@ -494,12 +508,12 @@ THE SOFTWARE.
 			} else {
 				params.delete('topic');
 			}
-			if (openTabIds.length) {
-				params.set('tabs', JSON.stringify(openTabIds));
-			} else if (pendingTabs) {
-				params.set('tabs', JSON.stringify(pendingTabs));
+			if (currentEntry && subscribedTopicIds(currentEntry).size) {
+				params.set('layout', layoutJson);
+			} else if (pendingLayout) {
+				params.set('layout', pendingLayout);
 			} else {
-				params.delete('tabs');
+				params.delete('layout');
 			}
 			const url = `${$page.url.pathname}?${params.toString()}`;
 			const current = `${$page.url.pathname}${$page.url.search}`;
@@ -704,11 +718,18 @@ THE SOFTWARE.
 					<TopicTree bind:broker={app.brokerRepository[app.selectedBroker]} />
 				</div>
 				<div class="treeview-col">
-					<Messages
-						bind:broker={app.brokerRepository[app.selectedBroker]}
-						bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-						{topicSyncing}
-					/>
+					<div class="editor-host">
+						<div class="editor-layout">
+							<EditorLayout
+								bind:broker={app.brokerRepository[app.selectedBroker]}
+								{syncingTopics}
+							/>
+						</div>
+						<MessageControls
+							bind:broker={app.brokerRepository[app.selectedBroker]}
+							{syncingTopics}
+						/>
+					</div>
 				</div>
 			</div>
 		{:else if selectedTab === 2}
@@ -721,11 +742,18 @@ THE SOFTWARE.
 					/>
 				</div>
 				<div class="treeview-col">
-					<Messages
-						bind:broker={app.brokerRepository[app.selectedBroker]}
-						bind:selectedTopic={app.brokerRepository[app.selectedBroker].selectedTopic}
-						{topicSyncing}
-					/>
+					<div class="editor-host">
+						<div class="editor-layout">
+							<EditorLayout
+								bind:broker={app.brokerRepository[app.selectedBroker]}
+								{syncingTopics}
+							/>
+						</div>
+						<MessageControls
+							bind:broker={app.brokerRepository[app.selectedBroker]}
+							{syncingTopics}
+						/>
+					</div>
 				</div>
 			</div>
 		{:else if selectedTab === 3}
@@ -766,6 +794,20 @@ THE SOFTWARE.
 		overflow: hidden;
 		box-sizing: border-box;
 		max-height: calc(100vh - 4.8rem);
+		min-height: 0;
+	}
+
+	/* Host for the split layout (top, grows) + the shared focused-pane toolbar
+	   (bottom). Fills the column so it reaches the bottom of the page. */
+	.editor-host {
+		display: flex;
+		flex-direction: column;
+		height: calc(100vh - 4.8rem);
+		min-height: 0;
+	}
+
+	.editor-layout {
+		flex: 1 1 auto;
 		min-height: 0;
 	}
 

@@ -6,7 +6,8 @@ import {
 	requestPipelineAddition,
 	requestPipelineRemoval,
 	requestPublishMqttMessage,
-	requestTopicSelection
+	requestSubscribeTopic,
+	requestUnsubscribeTopic
 } from './socket';
 
 class MockWebSocket {
@@ -122,46 +123,28 @@ test('requestMqttBrokerConnection sends correct message to WebSocket', () => {
 	expect(socket.messages[0].replace(/\s/g, '')).toBe(expectedMessage.replace(/\s/g, ''));
 });
 
-test('requestTopicSelection sends broker and topic', () => {
+test('requestSubscribeTopic sends broker and topic', () => {
 	const socket = new MockWebSocket();
-	requestTopicSelection('broker:1883', 'test/topic', socket as unknown as WebSocket);
+	requestSubscribeTopic('broker:1883', 'test/topic', socket as unknown as WebSocket);
 
 	const parsed = JSON.parse(socket.messages[0]);
 	expect(parsed.jsonrpc).toBe('2.0');
-	expect(parsed.method).toBe('select_topic');
+	expect(parsed.method).toBe('subscribe_topic');
 	expect(parsed.params.broker).toBe('broker:1883');
 	expect(parsed.params.topic).toBe('test/topic');
 });
 
-test('requestTopicSelection sends nulls to deselect', () => {
+test('requestSubscribeTopic omits since_timestamp when not provided', () => {
 	const socket = new MockWebSocket();
-	requestTopicSelection(null, null, socket as unknown as WebSocket);
-
-	const parsed = JSON.parse(socket.messages[0]);
-	expect(parsed.params.broker).toBeNull();
-	expect(parsed.params.topic).toBeNull();
-});
-
-test('requestTopicSelection with broker but null topic', () => {
-	const socket = new MockWebSocket();
-	requestTopicSelection('broker:1883', null, socket as unknown as WebSocket);
-
-	const parsed = JSON.parse(socket.messages[0]);
-	expect(parsed.params.broker).toBe('broker:1883');
-	expect(parsed.params.topic).toBeNull();
-});
-
-test('requestTopicSelection omits since_timestamp when not provided', () => {
-	const socket = new MockWebSocket();
-	requestTopicSelection('broker:1883', 'test/topic', socket as unknown as WebSocket);
+	requestSubscribeTopic('broker:1883', 'test/topic', socket as unknown as WebSocket);
 
 	const parsed = JSON.parse(socket.messages[0]);
 	expect('since_timestamp' in parsed.params).toBe(false);
 });
 
-test('requestTopicSelection includes since_timestamp for delta re-sync', () => {
+test('requestSubscribeTopic includes since_timestamp for delta re-sync', () => {
 	const socket = new MockWebSocket();
-	requestTopicSelection(
+	requestSubscribeTopic(
 		'broker:1883',
 		'test/topic',
 		socket as unknown as WebSocket,
@@ -170,6 +153,16 @@ test('requestTopicSelection includes since_timestamp for delta re-sync', () => {
 
 	const parsed = JSON.parse(socket.messages[0]);
 	expect(parsed.params.since_timestamp).toBe('2024-01-01T00:00:02Z');
+});
+
+test('requestUnsubscribeTopic sends broker and topic', () => {
+	const socket = new MockWebSocket();
+	requestUnsubscribeTopic('broker:1883', 'test/topic', socket as unknown as WebSocket);
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.method).toBe('unsubscribe_topic');
+	expect(parsed.params.broker).toBe('broker:1883');
+	expect(parsed.params.topic).toBe('test/topic');
 });
 
 test('requestPublishMqttMessage handles special characters in payload', () => {

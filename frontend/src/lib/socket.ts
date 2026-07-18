@@ -102,25 +102,27 @@ export function requestPublishMqttMessage(
 	socket.send(message);
 }
 
-export function requestTopicSelection(
-	broker: string | null,
-	topic: string | null,
+/** Start streaming a topic live. `sinceTimestamp` requests only messages newer
+ *  than the newest one already cached (delta re-sync). Split editor groups may
+ *  subscribe to several topics at once. */
+export function requestSubscribeTopic(
+	broker: string,
+	topic: string,
 	socket: WebSocket,
 	sinceTimestamp?: string | null
 ) {
 	const params: Record<string, unknown> = { broker, topic };
 	if (sinceTimestamp) {
-		// Delta re-sync: the backend streams only messages newer than this, and
-		// skips clearing the frontend cache for this topic.
 		params.since_timestamp = sinceTimestamp;
 	}
-	const message = JSON.stringify({
-		jsonrpc: '2.0',
-		method: 'select_topic',
-		params
-	});
+	socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'subscribe_topic', params }));
+}
 
-	socket.send(message);
+/** Stop streaming a topic (no group shows it anymore). */
+export function requestUnsubscribeTopic(broker: string, topic: string, socket: WebSocket) {
+	socket.send(
+		JSON.stringify({ jsonrpc: '2.0', method: 'unsubscribe_topic', params: { broker, topic } })
+	);
 }
 
 export function requestBrokerAuthentication(hostname: string, password: string, socket: WebSocket) {
