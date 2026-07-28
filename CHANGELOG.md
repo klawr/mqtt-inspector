@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.9.0] - 2026-07-28
+
+### Added
+- Order tabs
+
+### Fixed
+- Stop closing tabs
 ## [1.8.0] - 2026-07-18
 
 ### Added
