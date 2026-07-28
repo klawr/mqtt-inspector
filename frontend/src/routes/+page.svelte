@@ -158,7 +158,6 @@ THE SOFTWARE.
 			socket.close();
 		}
 		pendingMqttMessages = [];
-		app = new AppState();
 		socketConnected = false;
 		const wsProto = $page.url.protocol === 'https:' ? 'wss:' : 'ws:';
 		const wsUrl = `${wsProto}//${$page.url.host}/ws`;
@@ -200,6 +199,11 @@ THE SOFTWARE.
 					break;
 				case 'mqtt_brokers': {
 					app.brokerRepository = processBrokers(json.params, app.brokerRepository);
+					if (app.selectedBroker && !app.brokerRepository[app.selectedBroker]) {
+						// The previously selected broker was removed while disconnected.
+						app.selectedBroker = '';
+						app.selectedTopic = null;
+					}
 					const params = new URLSearchParams(window.location.search);
 					const broker = params.get('broker');
 					if (broker && app.brokerRepository[broker]) {

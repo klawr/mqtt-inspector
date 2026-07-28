@@ -228,6 +228,24 @@ test('processBrokers handles empty params correctly', () => {
 	expect(result).toEqual({});
 });
 
+test('processBrokers prunes brokers no longer present in the snapshot', () => {
+	const brokerRepository: BrokerRepository = {};
+
+	const initial: BrokerParam = [
+		{ broker: 'broker1', connected: true, topics: {} },
+		{ broker: 'broker2', connected: true, topics: {} }
+	];
+	processBrokers(initial, brokerRepository);
+	expect(Object.keys(brokerRepository).sort()).toEqual(['broker1', 'broker2']);
+
+	// broker2 was removed on the backend while this client was disconnected;
+	// the next `mqtt_brokers` snapshot only contains broker1.
+	const reconnectSnapshot: BrokerParam = [{ broker: 'broker1', connected: true, topics: {} }];
+	const result = processBrokers(reconnectSnapshot, brokerRepository);
+
+	expect(Object.keys(result)).toEqual(['broker1']);
+});
+
 test('parseMqttWebSocketMessage parses binary mqtt frame', () => {
 	const header = JSON.stringify({
 		jsonrpc: '2.0',

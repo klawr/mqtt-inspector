@@ -249,6 +249,17 @@ function ensureBrokerEntry(
 }
 
 export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepository) {
+	// `mqtt_brokers` is a full authoritative snapshot on every (re)connect, so
+	// drop any entries the backend no longer knows about (e.g. removed while
+	// this client was disconnected and missed the `broker_removal` event).
+	const current = new Set(params.map((param) => param.broker));
+	for (const broker of Object.keys(brokerRepository)) {
+		if (!current.has(broker)) {
+			delete brokerRepository[broker];
+			delete rateWindows[broker];
+		}
+	}
+
 	params.forEach((param) => {
 		const requiresAuth = param.requires_auth ?? false;
 		if (!brokerRepository[param.broker]) {
