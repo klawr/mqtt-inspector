@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import {
+	activateTab,
 	allGroups,
 	closeGroup,
 	closeTab,
@@ -8,6 +9,7 @@ import {
 	moveTab,
 	moveTabToNewSplit,
 	openInFocusedGroup,
+	reorderTab,
 	splitGroup,
 	subscribedTopicIds,
 	serializeLayout,
@@ -120,6 +122,63 @@ test('moveTab moves a tab to another group and closes the emptied source (collap
 			.tabs.map((t) => t.id)
 			.sort()
 	).toEqual(['a', 'b']);
+});
+
+test('reorderTab moves a tab before another tab in the same group', () => {
+	const entry = makeEntry('a', 'b', 'c');
+	openInFocusedGroup(entry, 'a', { pin: true });
+	openInFocusedGroup(entry, 'b', { pin: true });
+	openInFocusedGroup(entry, 'c', { pin: true });
+	const g1 = entry.activeGroupId;
+
+	reorderTab(entry, g1, 'c', 'a', false);
+	expect(focusedGroup(entry).tabs.map((t) => t.id)).toEqual(['c', 'a', 'b']);
+});
+
+test('reorderTab moves a tab after another tab in the same group', () => {
+	const entry = makeEntry('a', 'b', 'c');
+	openInFocusedGroup(entry, 'a', { pin: true });
+	openInFocusedGroup(entry, 'b', { pin: true });
+	openInFocusedGroup(entry, 'c', { pin: true });
+	const g1 = entry.activeGroupId;
+
+	reorderTab(entry, g1, 'a', 'b', true);
+	expect(focusedGroup(entry).tabs.map((t) => t.id)).toEqual(['b', 'a', 'c']);
+});
+
+test('reorderTab with a null target moves the tab to the end', () => {
+	const entry = makeEntry('a', 'b', 'c');
+	openInFocusedGroup(entry, 'a', { pin: true });
+	openInFocusedGroup(entry, 'b', { pin: true });
+	openInFocusedGroup(entry, 'c', { pin: true });
+	const g1 = entry.activeGroupId;
+
+	reorderTab(entry, g1, 'a', null);
+	expect(focusedGroup(entry).tabs.map((t) => t.id)).toEqual(['b', 'c', 'a']);
+});
+
+test('reorderTab does not change the active tab or unrelated groups', () => {
+	const entry = makeEntry('a', 'b');
+	openInFocusedGroup(entry, 'a', { pin: true });
+	openInFocusedGroup(entry, 'b', { pin: true });
+	const g1 = entry.activeGroupId;
+	activateTab(entry, g1, 'a');
+
+	reorderTab(entry, g1, 'b', 'a', false);
+	expect(focusedGroup(entry).activeTopicId).toBe('a');
+	expect(focusedGroup(entry).tabs.map((t) => t.id)).toEqual(['b', 'a']);
+});
+
+test('reorderTab is a no-op for unknown group or tab ids', () => {
+	const entry = makeEntry('a', 'b');
+	openInFocusedGroup(entry, 'a', { pin: true });
+	openInFocusedGroup(entry, 'b', { pin: true });
+	const g1 = entry.activeGroupId;
+	const before = focusedGroup(entry).tabs.map((t) => t.id);
+
+	reorderTab(entry, 'missing-group', 'a', 'b', false);
+	reorderTab(entry, g1, 'missing-tab', 'b', false);
+	expect(focusedGroup(entry).tabs.map((t) => t.id)).toEqual(before);
 });
 
 test('moveTabToNewSplit removes from source and creates a new split', () => {

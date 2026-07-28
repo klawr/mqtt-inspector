@@ -180,6 +180,36 @@ export function closeTab(entry: BrokerRepositoryEntry, groupId: string, topicId:
 	syncSelectedTopic(entry);
 }
 
+/**
+ * Reorder a tab within its own group (drag-and-drop within a tab strip).
+ * `targetTopicId` is the tab being dropped onto, or `null` to move to the
+ * end (dropped on empty strip space); `after` places it past that tab's
+ * far edge rather than in front of it.
+ */
+export function reorderTab(
+	entry: BrokerRepositoryEntry,
+	groupId: string,
+	topicId: string,
+	targetTopicId: string | null,
+	after = false
+) {
+	if (topicId === targetTopicId) return;
+	const group = findGroup(entry, groupId);
+	if (!group) return;
+	const fromIndex = group.tabs.findIndex((t) => t.id === topicId);
+	if (fromIndex < 0) return;
+	const next = group.tabs.slice();
+	const [moved] = next.splice(fromIndex, 1);
+	let targetIndex = targetTopicId ? next.findIndex((t) => t.id === targetTopicId) : -1;
+	if (targetIndex < 0) {
+		targetIndex = next.length;
+	} else if (after) {
+		targetIndex += 1;
+	}
+	next.splice(targetIndex, 0, moved);
+	group.tabs = next;
+}
+
 /** Close every tab in a group except `keepTopicId`. */
 export function closeOtherTabs(entry: BrokerRepositoryEntry, groupId: string, keepTopicId: string) {
 	const group = findGroup(entry, groupId);
