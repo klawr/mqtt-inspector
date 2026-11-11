@@ -38,3 +38,13 @@ export const availableThemes = [
 ];
 
 export const selectedTheme: Writable<Theme> = writable(availableThemes[2]);
+
+export type Session = {
+	/** 'claims': access comes from token roles (Keycloak via reverse proxy). */
+	mode: 'password' | 'claims';
+	user?: string;
+	/** May add/remove brokers, commands and pipelines. */
+	canEdit: boolean;
+};
+
+export const session: Writable<Session> = writable({ mode: 'password', canEdit: true });

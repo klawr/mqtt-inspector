@@ -47,6 +47,7 @@ THE SOFTWARE.
 	import OverwritePipeline from './dialogs/overwrite_pipeline.svelte';
 	import CleanPipelineRows from './cleanPipelineRows.svelte';
 	import { requestPipelineAddition } from '$lib/socket';
+	import { session } from '../store';
 	import TopicSelector from './topic_selector.svelte';
 
 	export let pipelines: SavedPipeline[];
@@ -177,7 +178,7 @@ THE SOFTWARE.
 		</div>
 		<div style="margin-top: auto; margin-bottom: 0; flex: 0">
 			<Button
-				disabled={selectedId === undefined}
+				disabled={selectedId === undefined || !$session.canEdit}
 				tooltipAlignment="end"
 				tooltipPosition="bottom"
 				iconDescription="Delete selected pipeline"
@@ -286,7 +287,7 @@ THE SOFTWARE.
 
 		<div style="flex: 1">
 			<Button
-				disabled={!pipelineName}
+				disabled={!pipelineName || !$session.canEdit}
 				icon={Save}
 				iconDescription="Save current pipeline"
 				size="field"

@@ -22,6 +22,7 @@ THE SOFTWARE.
 <script lang="ts">
 	import { Button, ComboBox, TextInput, Tile, Toggle } from 'carbon-components-svelte';
 	import { requestCommandAddition, requestPublishMqttMessage } from '$lib/socket';
+	import { session } from '../store';
 	import { Add, TrashCan } from 'carbon-icons-svelte';
 	import type { BrokerRepositoryEntry, Command } from '$lib/state';
 	import { getAllTopicIds } from '$lib/helper';
@@ -123,7 +124,7 @@ THE SOFTWARE.
 				tooltipPosition="bottom"
 				iconDescription="Save command"
 				icon={Add}
-				disabled={!topic || !save_command_name}
+				disabled={!topic || !save_command_name || !$session.canEdit}
 				on:click={save_message}
 				size="field"
 			/>
@@ -142,7 +143,7 @@ THE SOFTWARE.
 		</div>
 		<div style="margin-top: auto; margin-bottom: 0; flex: 0">
 			<Button
-				disabled={!selectedCommandId}
+				disabled={!selectedCommandId || !$session.canEdit}
 				tooltipAlignment="end"
 				tooltipPosition="bottom"
 				iconDescription="Delete selected command"

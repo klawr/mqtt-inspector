@@ -24,6 +24,7 @@ import { findbranchwithid } from './helper';
 import { newLayout } from './layout';
 import { Message } from './state';
 import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
+import type { Session } from '../store';
 
 /** Sliding-window rate tracker state per broker. */
 type RateWindowState = {
@@ -134,6 +135,7 @@ export type BrokerParam = {
 	requires_auth?: boolean;
 }[];
 export type MqttConnectionStatus = { source: string; connected: boolean };
+export type SessionParam = { mode?: string; user?: string; can_edit?: boolean };
 export type PipelineParam = { id: string; name: string; pipeline: { topic: string }[] };
 export type MQTTMessageParam = {
 	source: string;
@@ -617,4 +619,13 @@ export function processRateHistorySample(params: RateHistorySampleParam, app: Ap
 	}
 	entry.rateHistory.push(newEntry);
 	return app;
+}
+
+export function processSession(params: SessionParam): Session {
+	return {
+		mode: params.mode === 'claims' ? 'claims' : 'password',
+		user: params.user || undefined,
+		// Only an explicit `false` takes edit rights away.
+		canEdit: params.can_edit !== false
+	};
 }

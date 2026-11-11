@@ -23,6 +23,7 @@
 use super::config::{CommandMessage, PipelineMessage};
 use super::jsonrpc;
 use super::mqtt;
+use super::oidc;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -120,23 +121,57 @@ where
         .map(warp::filters::ws::Message::text)
 }
 
-/// Auto-authenticate a peer for all brokers that do not require a password.
-/// Called when a new peer connects so it immediately receives data from open brokers.
+/// Auto-authenticate a peer for all brokers it may access without a password.
+/// Called when a new peer connects so it immediately receives data from those brokers.
 pub fn auto_authenticate_peer(peer: &mut PeerConnection, mqtt_map: &mqtt::BrokerMap) {
     let ml = mqtt_map.lock().unwrap();
     for (name, broker) in ml.iter() {
-        if !broker.requires_auth {
+        if peer
+            .access
+            .has_implicit_access(broker.requires_auth, &broker.allowed_roles)
+        {
             peer.authenticated_brokers.insert(name.clone());
         }
     }
 }
 
-/// Add an open (no-password) broker to every connected peer's authenticated set.
-/// Called when a new broker without a password is added at runtime.
-pub fn auto_authenticate_all_peers_for_broker(peer_map: &PeerMap, broker_name: &str) {
+/// Grant every connected peer that may access a newly added broker access to it.
+pub fn auto_authenticate_all_peers_for_broker(
+    peer_map: &PeerMap,
+    broker_name: &str,
+    requires_auth: bool,
+    allowed_roles: &[String],
+) {
     let mut peers = peer_map.lock().unwrap();
     for (_, peer) in peers.iter_mut() {
-        peer.authenticated_brokers.insert(broker_name.to_string());
+        if peer
+            .access
+            .has_implicit_access(requires_auth, allowed_roles)
+        {
+            peer.authenticated_brokers.insert(broker_name.to_string());
+        }
+    }
+}
+
+/// Tells the frontend who is logged in and whether they may change the
+/// configuration (add/remove brokers, commands, pipelines).
+pub fn send_session(peer: &mut PeerConnection) {
+    let mut params = serde_json::json!({
+        "mode": if peer.access.is_claims() { "claims" } else { "password" },
+        "can_edit": peer.access.can_edit(),
+    });
+    if let Some(identity) = peer.access.identity() {
+        params["user"] = identity.display_name().into();
+    }
+    let message = jsonrpc::JsonRpcNotification {
+        jsonrpc: "2.0",
+        method: "session",
+        params,
+    };
+    if let Ok(serialized) = serde_json::to_string(&message) {
+        let _ = peer
+            .tx
+            .try_send(warp::filters::ws::Message::text(serialized));
     }
 }
 
@@ -237,6 +272,56 @@ pub struct PeerConnection {
     pub subscribed_topics: std::collections::HashSet<String>,
     /// Brokers this peer has authenticated for (by hostname key).
     pub authenticated_brokers: std::collections::HashSet<String>,
+    /// How this peer is authorized (password locks or token claims).
+    pub access: PeerAccess,
+}
+
+/// How a connected peer is authorized. All access rules that differ between
+/// the two modes live here and in `PeerConnection::sees_broker`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PeerAccess {
+    /// No identity provider configured: brokers with a UI password are locked
+    /// until the peer enters it; everything else is open.
+    #[default]
+    Password,
+    /// Claims mode: access comes from the verified token's roles; broker
+    /// passwords are not used as UI locks.
+    Claims(oidc::Identity),
+}
+
+impl PeerAccess {
+    pub fn is_claims(&self) -> bool {
+        matches!(self, PeerAccess::Claims(_))
+    }
+
+    pub fn identity(&self) -> Option<&oidc::Identity> {
+        match self {
+            PeerAccess::Claims(identity) => Some(identity),
+            PeerAccess::Password => None,
+        }
+    }
+
+    /// May add/remove brokers, commands and pipelines.
+    pub fn can_edit(&self) -> bool {
+        match self {
+            PeerAccess::Claims(identity) => identity.is_admin,
+            PeerAccess::Password => true,
+        }
+    }
+
+    /// Access to a broker without entering a password: by role in claims mode,
+    /// only brokers without a UI password in password mode.
+    pub fn has_implicit_access(&self, requires_auth: bool, allowed_roles: &[String]) -> bool {
+        match self {
+            PeerAccess::Claims(identity) => identity.has_any_role(allowed_roles),
+            PeerAccess::Password => !requires_auth,
+        }
+    }
+
+    /// Whether the UI should offer a password prompt for this broker.
+    pub fn uses_password_lock(&self, requires_auth: bool) -> bool {
+        requires_auth && !self.is_claims()
+    }
 }
 
 impl PeerConnection {
@@ -248,7 +333,15 @@ impl PeerConnection {
             selected_broker: None,
             subscribed_topics: std::collections::HashSet::new(),
             authenticated_brokers: std::collections::HashSet::new(),
+            access: PeerAccess::Password,
         }
+    }
+
+    /// Whether a broker appears in this peer's broker list. In password mode
+    /// locked brokers are listed (so the UI can prompt); in claims mode only
+    /// brokers the peer has access to.
+    pub fn sees_broker(&self, broker: &str) -> bool {
+        !self.access.is_claims() || self.authenticated_brokers.contains(broker)
     }
 
     fn mark_success(&mut self) {
@@ -264,14 +357,18 @@ impl PeerConnection {
 
 pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, PeerConnection>>>;
 
-fn send_message_to_peer_map(
+fn send_message_to_matching_peers(
     peer_map: &PeerMap,
     message_kind: &str,
     build_message: impl Fn() -> warp::filters::ws::Message,
+    include: impl Fn(&PeerConnection) -> bool,
 ) {
     let mut to_remove = Vec::new();
     let mut peers = peer_map.lock().unwrap();
     for (addr, peer) in peers.iter_mut() {
+        if !include(peer) {
+            continue;
+        }
         match peer.tx.try_send(build_message()) {
             Ok(_) => {
                 peer.mark_success();
@@ -293,11 +390,6 @@ fn send_message_to_peer_map(
     for addr in to_remove {
         peers.remove(&addr);
     }
-}
-
-fn send_serialized_to_peers(peer_map: &PeerMap, serialized: &str, message_kind: &str) {
-    let msg = warp::filters::ws::Message::text(serialized);
-    send_message_to_peer_map(peer_map, message_kind, || msg.clone())
 }
 
 /// Send a serialized message only to peers authenticated for the given broker.
@@ -587,7 +679,13 @@ pub fn send_broker_status_to_peers(peer_map: &PeerMap, source: &str, status: boo
         Err(_) => return,
     };
 
-    send_serialized_to_peers(peer_map, &serialized, "mqtt_connection_status");
+    let msg = warp::filters::ws::Message::text(serialized);
+    send_message_to_matching_peers(
+        peer_map,
+        "mqtt_connection_status",
+        || msg.clone(),
+        |peer| peer.sees_broker(source),
+    );
 }
 
 /// Send topic summaries for a single broker to a specific peer.
@@ -732,8 +830,10 @@ pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
     for (addr, peer) in peers.iter_mut() {
         let summaries: Vec<serde_json::Value> = brokers
             .iter()
+            .filter(|(broker, ..)| peer.sees_broker(broker))
             .map(|(broker, connected, total_bytes, total_messages, rate_history, requires_auth)| {
                 let authed = peer.authenticated_brokers.contains(broker.as_str());
+                let requires_auth = peer.access.uses_password_lock(*requires_auth);
                 serde_json::json!({
                     "broker": broker,
                     "connected": connected,
@@ -769,9 +869,11 @@ pub fn broadcast_brokers(peer_map: &PeerMap, mqtt_map: &mqtt::BrokerMap) {
     }
 }
 
-pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt::BrokerMap) {
+/// Sends settings, the brokers this peer may see, and topic summaries of the
+/// brokers it is authenticated for. Call after `auto_authenticate_peer`.
+pub fn send_brokers(peer: &mut PeerConnection, mqtt_map: &mqtt::BrokerMap) {
     // First, send settings so the frontend knows the configured limits
-    send_settings(tx);
+    send_settings(&mut peer.tx);
 
     // Clone data out of the lock so we don't hold mqtt_map during serialization.
     // Under heavy load, holding the lock here blocks the MQTT receive loop long
@@ -781,6 +883,7 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
 
         let summaries: Vec<serde_json::Value> = binding
             .values()
+            .filter(|broker| peer.sees_broker(&broker.broker))
             .map(|broker| {
                 serde_json::json!({
                     "broker": broker.broker,
@@ -789,16 +892,16 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
                     "total_bytes": broker.total_bytes,
                     "total_messages": broker.total_messages,
                     "rate_history": broker.rate_history,
-                    "requires_auth": broker.requires_auth,
+                    "requires_auth": peer.access.uses_password_lock(broker.requires_auth),
                 })
             })
             .collect();
 
-        // Collect topic summaries only for non-auth brokers.
-        // Protected brokers get their summaries after authenticate_broker.
+        // Collect topic summaries only for brokers the peer is authenticated for.
+        // Password-protected brokers get their summaries after authenticate_broker.
         let mut topic_sums: Vec<serde_json::Value> = Vec::new();
         for broker in binding.values() {
-            if broker.requires_auth {
+            if !peer.authenticated_brokers.contains(&broker.broker) {
                 continue;
             }
             let mut topics_map = serde_json::Map::new();
@@ -828,7 +931,9 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
         params: serde_json::json!(broker_summaries),
     };
     if let Ok(serialized) = serde_json::to_string(&meta_msg) {
-        let _ = tx.try_send(warp::filters::ws::Message::text(serialized));
+        let _ = peer
+            .tx
+            .try_send(warp::filters::ws::Message::text(serialized));
     }
 
     // Phase 2: Send topic summaries (name + count) instead of full messages
@@ -839,7 +944,8 @@ pub fn send_brokers(tx: &mut Sender<warp::filters::ws::Message>, mqtt_map: &mqtt
             params: summary.clone(),
         };
         if let Ok(serialized) = serde_json::to_string(&msg) {
-            if tx
+            if peer
+                .tx
                 .try_send(warp::filters::ws::Message::text(serialized))
                 .is_err()
             {
@@ -1132,9 +1238,11 @@ mod tests {
     #[test]
     fn test_send_brokers_empty_mqtt_map() {
         let mqtt_map = make_mqtt_map();
-        let (mut tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
+        let (tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
 
-        send_brokers(&mut tx, &mqtt_map);
+        let mut peer = PeerConnection::new(tx);
+        auto_authenticate_peer(&mut peer, &mqtt_map);
+        send_brokers(&mut peer, &mqtt_map);
 
         // First message is now "settings"
         let settings_msg = rx.try_recv().unwrap();
@@ -1633,6 +1741,7 @@ mod tests {
                 rate_bytes_accumulator: 0,
                 rate_last_sample_ms: now_ms,
                 requires_auth: false,
+                allowed_roles: Vec::new(),
             },
         );
     }
@@ -1959,7 +2068,7 @@ mod tests {
     #[test]
     fn test_send_brokers_with_topics_sends_summaries() {
         let mqtt_map = make_mqtt_map();
-        let (mut tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
+        let (tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
 
         {
             let mut map = mqtt_map.lock().unwrap();
@@ -1990,11 +2099,14 @@ mod tests {
                     rate_bytes_accumulator: 0,
                     rate_last_sample_ms: now_ms,
                     requires_auth: false,
+                    allowed_roles: Vec::new(),
                 },
             );
         }
 
-        send_brokers(&mut tx, &mqtt_map);
+        let mut peer = PeerConnection::new(tx);
+        auto_authenticate_peer(&mut peer, &mqtt_map);
+        send_brokers(&mut peer, &mqtt_map);
 
         // Collect all messages
         let mut methods = Vec::new();
@@ -2018,5 +2130,245 @@ mod tests {
         assert!(methods.contains(&"settings".to_string()));
         assert!(methods.contains(&"mqtt_brokers".to_string()));
         assert!(methods.contains(&"topic_summaries".to_string()));
+    }
+
+    // --- claims mode: role-based visibility ---
+
+    fn identity(roles: &[&str], is_admin: bool) -> oidc::Identity {
+        oidc::Identity {
+            subject: "sub".to_string(),
+            username: Some("alice".to_string()),
+            roles: roles.iter().map(|r| r.to_string()).collect(),
+            expires_at: i64::MAX,
+            is_admin,
+        }
+    }
+
+    /// open: no roles, no password; plant_a: role "plant-a";
+    /// locked: MQTT password (requires_auth) but no roles.
+    fn claims_mqtt_map() -> mqtt::BrokerMap {
+        let mqtt_map = make_mqtt_map();
+        insert_broker_with_messages(
+            &mqtt_map,
+            "open:1883",
+            "127.0.0.1:19981",
+            "t",
+            &[("ts", "x")],
+        );
+        insert_broker_with_messages(
+            &mqtt_map,
+            "plant-a:1883",
+            "127.0.0.1:19982",
+            "t",
+            &[("ts", "x")],
+        );
+        insert_broker_with_messages(
+            &mqtt_map,
+            "locked:1883",
+            "127.0.0.1:19983",
+            "t",
+            &[("ts", "x")],
+        );
+        {
+            let mut map = mqtt_map.lock().unwrap();
+            map.get_mut("plant-a:1883").unwrap().allowed_roles = vec!["plant-a".to_string()];
+            map.get_mut("locked:1883").unwrap().requires_auth = true;
+        }
+        mqtt_map
+    }
+
+    fn broker_names(msg: &serde_json::Value) -> Vec<String> {
+        let mut names: Vec<String> = msg["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["broker"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn test_auto_authenticate_peer_by_roles() {
+        let mqtt_map = claims_mqtt_map();
+
+        let (tx, _rx) = channel(PEER_CHANNEL_CAPACITY);
+        let mut viewer = PeerConnection::new(tx);
+        viewer.access = PeerAccess::Claims(identity(&["viewer"], false));
+        auto_authenticate_peer(&mut viewer, &mqtt_map);
+        let mut got: Vec<_> = viewer.authenticated_brokers.iter().cloned().collect();
+        got.sort();
+        // MQTT password is not a UI lock in claims mode; plant-a needs the role.
+        assert_eq!(got, vec!["locked:1883", "open:1883"]);
+
+        let (tx, _rx) = channel(PEER_CHANNEL_CAPACITY);
+        let mut plant = PeerConnection::new(tx);
+        plant.access = PeerAccess::Claims(identity(&["plant-a"], false));
+        auto_authenticate_peer(&mut plant, &mqtt_map);
+        assert!(plant.authenticated_brokers.contains("plant-a:1883"));
+
+        // Password mode unchanged: only brokers without a UI password.
+        let (tx, _rx) = channel(PEER_CHANNEL_CAPACITY);
+        let mut anon = PeerConnection::new(tx);
+        auto_authenticate_peer(&mut anon, &mqtt_map);
+        let mut got: Vec<_> = anon.authenticated_brokers.iter().cloned().collect();
+        got.sort();
+        assert_eq!(got, vec!["open:1883", "plant-a:1883"]);
+    }
+
+    #[test]
+    fn test_send_brokers_hides_inaccessible_brokers_in_claims_mode() {
+        let mqtt_map = claims_mqtt_map();
+        let (tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
+        let mut peer = PeerConnection::new(tx);
+        peer.access = PeerAccess::Claims(identity(&["viewer"], false));
+        auto_authenticate_peer(&mut peer, &mqtt_map);
+        send_brokers(&mut peer, &mqtt_map);
+
+        let mut summaries_for = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            let parsed: serde_json::Value = serde_json::from_str(msg.to_str().unwrap()).unwrap();
+            match parsed["method"].as_str().unwrap() {
+                "mqtt_brokers" => {
+                    assert_eq!(broker_names(&parsed), vec!["locked:1883", "open:1883"]);
+                    for b in parsed["params"].as_array().unwrap() {
+                        assert_eq!(b["requires_auth"], false);
+                    }
+                }
+                "topic_summaries" => {
+                    summaries_for.push(parsed["params"]["source"].as_str().unwrap().to_string())
+                }
+                _ => {}
+            }
+        }
+        summaries_for.sort();
+        assert_eq!(summaries_for, vec!["locked:1883", "open:1883"]);
+    }
+
+    #[test]
+    fn test_send_brokers_password_mode_lists_all_brokers() {
+        let mqtt_map = claims_mqtt_map();
+        let (tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
+        let mut peer = PeerConnection::new(tx);
+        auto_authenticate_peer(&mut peer, &mqtt_map);
+        send_brokers(&mut peer, &mqtt_map);
+        let _settings = rx.try_recv().unwrap();
+        let brokers: serde_json::Value =
+            serde_json::from_str(rx.try_recv().unwrap().to_str().unwrap()).unwrap();
+        assert_eq!(
+            broker_names(&brokers),
+            vec!["locked:1883", "open:1883", "plant-a:1883"]
+        );
+        let locked = brokers["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["broker"] == "locked:1883")
+            .unwrap();
+        assert_eq!(locked["requires_auth"], true);
+    }
+
+    #[test]
+    fn test_broadcast_brokers_and_status_filtered_in_claims_mode() {
+        let mqtt_map = claims_mqtt_map();
+        let peer_map = make_peer_map();
+        let (addr, mut rx) = insert_peer(&peer_map, 41000);
+        {
+            let mut peers = peer_map.lock().unwrap();
+            let peer = peers.get_mut(&addr).unwrap();
+            peer.access = PeerAccess::Claims(identity(&["viewer"], false));
+            auto_authenticate_peer(peer, &mqtt_map);
+        }
+
+        broadcast_brokers(&peer_map, &mqtt_map);
+        let parsed: serde_json::Value =
+            serde_json::from_str(rx.try_recv().unwrap().to_str().unwrap()).unwrap();
+        assert_eq!(broker_names(&parsed), vec!["locked:1883", "open:1883"]);
+
+        send_broker_status_to_peers(&peer_map, "plant-a:1883", true);
+        assert!(
+            rx.try_recv().is_err(),
+            "status of hidden broker must not be sent"
+        );
+        send_broker_status_to_peers(&peer_map, "open:1883", true);
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn test_auto_authenticate_all_peers_for_new_broker_by_role() {
+        let peer_map = make_peer_map();
+        let (a, _ra) = insert_peer(&peer_map, 41001);
+        let (b, _rb) = insert_peer(&peer_map, 41002);
+        let (c, _rc) = insert_peer(&peer_map, 41003);
+        {
+            let mut peers = peer_map.lock().unwrap();
+            peers.get_mut(&a).unwrap().access = PeerAccess::Claims(identity(&["plant-a"], false));
+            peers.get_mut(&b).unwrap().access = PeerAccess::Claims(identity(&["viewer"], false));
+        }
+        auto_authenticate_all_peers_for_broker(
+            &peer_map,
+            "new:1883",
+            true,
+            &["plant-a".to_string()],
+        );
+        let peers = peer_map.lock().unwrap();
+        assert!(peers[&a].authenticated_brokers.contains("new:1883"));
+        assert!(!peers[&b].authenticated_brokers.contains("new:1883"));
+        // password-mode peer: broker has a UI password → must log in
+        assert!(!peers[&c].authenticated_brokers.contains("new:1883"));
+    }
+
+    #[test]
+    fn test_send_session() {
+        let (tx, mut rx) = channel(PEER_CHANNEL_CAPACITY);
+        let mut peer = PeerConnection::new(tx);
+        send_session(&mut peer);
+        let parsed: serde_json::Value =
+            serde_json::from_str(rx.try_recv().unwrap().to_str().unwrap()).unwrap();
+        assert_eq!(parsed["method"], "session");
+        assert_eq!(parsed["params"]["mode"], "password");
+        assert_eq!(parsed["params"]["can_edit"], true);
+
+        peer.access = PeerAccess::Claims(identity(&[], false));
+        send_session(&mut peer);
+        let parsed: serde_json::Value =
+            serde_json::from_str(rx.try_recv().unwrap().to_str().unwrap()).unwrap();
+        assert_eq!(parsed["params"]["mode"], "claims");
+        assert_eq!(parsed["params"]["user"], "alice");
+        assert_eq!(parsed["params"]["can_edit"], false);
+    }
+
+    #[test]
+    fn test_peer_access_rules() {
+        let password = PeerAccess::Password;
+        let viewer = PeerAccess::Claims(identity(&["plant-a"], false));
+        let admin = PeerAccess::Claims(identity(&[], true));
+        let roles = ["plant-a".to_string()];
+
+        assert!(!password.is_claims() && viewer.is_claims());
+        assert!(password.can_edit() && !viewer.can_edit() && admin.can_edit());
+        // password mode: locked brokers need the password, roles are irrelevant
+        assert!(password.has_implicit_access(false, &roles));
+        assert!(!password.has_implicit_access(true, &[]));
+        assert!(password.uses_password_lock(true));
+        // claims mode: roles decide, passwords never lock
+        assert!(viewer.has_implicit_access(true, &roles));
+        assert!(!admin.has_implicit_access(false, &roles));
+        assert!(admin.has_implicit_access(true, &[]));
+        assert!(!viewer.uses_password_lock(true));
+    }
+
+    #[test]
+    fn test_peer_sees_broker() {
+        let (tx, _rx) = channel(PEER_CHANNEL_CAPACITY);
+        let mut peer = PeerConnection::new(tx);
+        assert!(
+            peer.sees_broker("locked:1883"),
+            "password mode lists every broker"
+        );
+        peer.access = PeerAccess::Claims(identity(&[], false));
+        assert!(!peer.sees_broker("locked:1883"));
+        peer.authenticated_brokers.insert("locked:1883".to_string());
+        assert!(peer.sees_broker("locked:1883"));
     }
 }

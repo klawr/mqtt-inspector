@@ -21,6 +21,7 @@ THE SOFTWARE.
 
 <script lang="ts">
 	import { requestMqttBrokerConnection } from '$lib/socket';
+	import { session } from '../../store';
 	import { Modal, TextInput, Toggle, PasswordInput } from 'carbon-components-svelte';
 
 	export let open = false;
@@ -38,6 +39,7 @@ THE SOFTWARE.
 	let client_key: string | undefined = undefined;
 	let client_key_password: string | undefined = undefined;
 	let access_password: string | undefined = undefined;
+	let allowed_roles: string | undefined = undefined;
 
 	$: if (use_tls && (port === undefined || port === '1883')) {
 		port = '8883';
@@ -51,7 +53,14 @@ THE SOFTWARE.
 			use_tls,
 			username: username?.trim(),
 			password,
-			access_password,
+			...($session.mode === 'claims'
+				? {
+						allowed_roles: (allowed_roles ?? '')
+							.split(',')
+							.map((r) => r.trim())
+							.filter((r) => r)
+					}
+				: { access_password }),
 			...(use_tls && {
 				ca_cert: ca_cert?.trim(),
 				client_cert: client_cert?.trim(),
@@ -117,15 +126,29 @@ THE SOFTWARE.
 	<div style="margin-top: 0.5rem;">
 		<PasswordInput labelText="Password" placeholder="optional" bind:value={password} />
 	</div>
-	<div style="margin-top: 1rem;">
-		<PasswordInput
-			labelText="Access password"
-			placeholder="optional, defaults to the MQTT password"
-			bind:value={access_password}
-		/>
-	</div>
-	<p style="margin-top: 1rem; font-size: 0.75rem; color: var(--cds-text-helper);">
-		Viewers must enter the access password (or, if unset, the MQTT password) to see this broker.
-		Credentials are stored in plain text in the backend config directory.
-	</p>
+	{#if $session.mode === 'claims'}
+		<div style="margin-top: 1rem;">
+			<TextInput
+				labelText="Allowed roles"
+				placeholder="optional, comma-separated, e.g. plant-a, operators"
+				bind:value={allowed_roles}
+			/>
+		</div>
+		<p style="margin-top: 1rem; font-size: 0.75rem; color: var(--cds-text-helper);">
+			Users with any of these roles can see this broker; leave empty for every logged-in user.
+			Credentials are stored in plain text in the backend config directory.
+		</p>
+	{:else}
+		<div style="margin-top: 1rem;">
+			<PasswordInput
+				labelText="Access password"
+				placeholder="optional, defaults to the MQTT password"
+				bind:value={access_password}
+			/>
+		</div>
+		<p style="margin-top: 1rem; font-size: 0.75rem; color: var(--cds-text-helper);">
+			Viewers must enter the access password (or, if unset, the MQTT password) to see this broker.
+			Credentials are stored in plain text in the backend config directory.
+		</p>
+	{/if}
 </Modal>

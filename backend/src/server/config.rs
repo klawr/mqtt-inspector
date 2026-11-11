@@ -49,6 +49,10 @@ pub struct BrokerConfig {
     /// Independent of the MQTT credentials; works for any broker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_password: Option<String>,
+    /// Claims mode only: roles (any of them) that may see and publish to this
+    /// broker. Empty = every logged-in user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_roles: Vec<String>,
 }
 
 impl BrokerConfig {
@@ -107,6 +111,7 @@ impl BrokerConfig {
             client_key: None,
             client_key_password: None,
             access_password: None,
+            allowed_roles: Vec::new(),
         }
     }
 }
@@ -136,6 +141,15 @@ pub fn get_known_brokers(brokers_path: &str) -> Vec<BrokerConfig> {
         eprintln!("Failed to read file {}", brokers_path);
         Vec::new()
     }
+}
+
+/// Brokers whose `access_password` has no effect because claims mode is active.
+pub fn brokers_with_ignored_access_password(configs: &[BrokerConfig]) -> Vec<&str> {
+    configs
+        .iter()
+        .filter(|c| c.access_password.as_deref().is_some_and(|p| !p.is_empty()))
+        .map(|c| c.key())
+        .collect()
 }
 
 fn write_broker_configs(brokers_path: &str, configs: &[BrokerConfig]) {
@@ -655,5 +669,20 @@ mod tests {
         assert_eq!(cfg.access_password.as_deref(), Some("view-pw"));
         let out = serde_json::to_string(&BrokerConfig::from_host("b:1883")).unwrap();
         assert!(!out.contains("access_password"));
+    }
+
+    #[test]
+    fn test_brokers_with_ignored_access_password() {
+        let mut locked = BrokerConfig::from_host("locked:1883");
+        locked.access_password = Some("pw".to_string());
+        let mut empty = BrokerConfig::from_host("empty:1883");
+        empty.access_password = Some(String::new());
+        let mut mqtt_only = BrokerConfig::from_host("mqtt:1883");
+        mqtt_only.password = Some("mqtt-pw".to_string());
+        let configs = vec![locked, empty, mqtt_only];
+        assert_eq!(
+            brokers_with_ignored_access_password(&configs),
+            vec!["locked:1883"]
+        );
     }
 }

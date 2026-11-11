@@ -346,6 +346,12 @@ pub fn connect_to_known_brokers(
         });
 }
 
+/// Processes one JSON-RPC request from a connected peer.
+///
+/// `access` is the access of the connection the request arrived on. It is
+/// passed in rather than looked up in `peer_map`, because a peer can be
+/// removed from the map (e.g. evicted as a slow consumer) while its socket is
+/// still delivering requests; a lookup would then have no access to enforce.
 pub fn deserialize_json_rpc_and_process(
     json_rpc: &str,
     peer_map: &websocket::PeerMap,
@@ -353,6 +359,7 @@ pub fn deserialize_json_rpc_and_process(
     config_path: &str,
     addr: Option<std::net::SocketAddr>,
     notification_buf: &websocket::NotificationBuf,
+    access: &websocket::PeerAccess,
 ) {
     let message = match jsonrpc::deserialize_json_rpc(json_rpc) {
         Ok(msg) => msg,
@@ -365,6 +372,181 @@ pub fn deserialize_json_rpc_and_process(
         "Got method \"{}\" with params {}",
         message.method, message.params
     );
+    match message.method {
+        // Everything that changes the shared configuration goes through
+        // `process_config_change`; this arm is the single admin gate for all of it.
+        "connect" | "remove" | "save_command" | "remove_command" | "save_pipeline"
+        | "remove_pipeline" => {
+            if !access.can_edit() {
+                println!(
+                    "Denied \"{}\" for {}: admin role required",
+                    message.method,
+                    access
+                        .identity()
+                        .map(|i| i.display_name())
+                        .unwrap_or_default()
+                );
+                return;
+            }
+            process_config_change(
+                message,
+                peer_map,
+                mqtt_map,
+                config_path,
+                addr,
+                notification_buf,
+                access,
+            );
+        }
+        "publish" => {
+            let host = match message.params.get("host").and_then(|v| v.as_str()) {
+                Some(h) => h.trim_matches('"').to_string(),
+                None => {
+                    println!("Missing or invalid 'host' param for publish");
+                    return;
+                }
+            };
+            // Check authentication before allowing publish
+            if let Some(peer_addr) = addr {
+                let peers = peer_map.lock().unwrap();
+                if let Some(peer) = peers.get(&peer_addr) {
+                    if !peer.authenticated_brokers.contains(&host) {
+                        println!(
+                            "Peer {peer_addr} not authenticated for broker {host}, publish denied"
+                        );
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+            let topic = match message.params.get("topic").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => {
+                    println!("Missing or invalid 'topic' param for publish");
+                    return;
+                }
+            };
+            let payload = match message.params.get("payload").and_then(|v| v.as_str()) {
+                Some(p) => p,
+                None => {
+                    println!("Missing or invalid 'payload' param for publish");
+                    return;
+                }
+            };
+            let retain = message
+                .params
+                .get("retain")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            mqtt::publish_message(&host, topic, payload, retain, mqtt_map);
+        }
+        "subscribe_topic" => {
+            if let Some(peer_addr) = addr {
+                if let (Some(broker), Some(topic)) = (
+                    message.params["broker"].as_str(),
+                    message.params["topic"].as_str(),
+                ) {
+                    let since_timestamp = message.params["since_timestamp"].as_str();
+                    websocket::handle_subscribe_topic(
+                        peer_map,
+                        mqtt_map,
+                        peer_addr,
+                        broker,
+                        topic,
+                        since_timestamp,
+                    );
+                }
+            }
+        }
+        "unsubscribe_topic" => {
+            if let Some(peer_addr) = addr {
+                if let (Some(broker), Some(topic)) = (
+                    message.params["broker"].as_str(),
+                    message.params["topic"].as_str(),
+                ) {
+                    websocket::handle_unsubscribe_topic(peer_map, peer_addr, broker, topic);
+                }
+            }
+        }
+        "authenticate_broker" => {
+            let hostname = match message.params.get("hostname").and_then(|v| v.as_str()) {
+                Some(h) => h.trim_matches('"').to_string(),
+                None => {
+                    println!("Missing 'hostname' param for authenticate_broker");
+                    return;
+                }
+            };
+            if access.is_claims() {
+                println!("Ignoring authenticate_broker in claims mode; access comes from roles");
+                return;
+            }
+            let supplied_password = message
+                .params
+                .get("password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Look up the broker's configured password
+            let brokers_path = std::format!("{config_path}/brokers.json");
+            let broker_configs = config::get_known_brokers(&brokers_path);
+            let broker_cfg = broker_configs.iter().find(|b| b.key() == hostname);
+
+            let success = match broker_cfg {
+                Some(cfg) => match cfg.ui_password() {
+                    Some(p) => constant_time_eq(supplied_password, p),
+                    None => true, // No password required
+                },
+                None => false, // Broker not found in config
+            };
+
+            if success {
+                if let Some(peer_addr) = addr {
+                    {
+                        let mut peers = peer_map.lock().unwrap();
+                        if let Some(peer) = peers.get_mut(&peer_addr) {
+                            peer.authenticated_brokers.insert(hostname.clone());
+                        }
+                    }
+                    // Send topic summaries for this broker now that the peer is authenticated
+                    websocket::send_broker_topic_summaries(
+                        peer_map, mqtt_map, peer_addr, &hostname,
+                    );
+                }
+            }
+
+            // Send result back to the requesting peer
+            if let Some(peer_addr) = addr {
+                let result = jsonrpc::JsonRpcNotification {
+                    jsonrpc: "2.0",
+                    method: "broker_auth_result",
+                    params: serde_json::json!({
+                        "broker": hostname,
+                        "success": success,
+                    }),
+                };
+                if let Ok(serialized) = serde_json::to_string(&result) {
+                    websocket::send_to_specific_peer(peer_map, peer_addr, &serialized);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles the methods that change the shared configuration (brokers, commands,
+/// pipelines). Only called after the admin check in `deserialize_json_rpc_and_process`.
+fn process_config_change(
+    message: jsonrpc::JsonRpcNotification<'_>,
+    peer_map: &websocket::PeerMap,
+    mqtt_map: &mqtt::BrokerMap,
+    config_path: &str,
+    addr: Option<std::net::SocketAddr>,
+    notification_buf: &websocket::NotificationBuf,
+    access: &websocket::PeerAccess,
+) {
     match message.method {
         "connect" => {
             let hostname = match message.params.get("hostname").and_then(|v| v.as_str()) {
@@ -420,6 +602,19 @@ pub fn deserialize_json_rpc_and_process(
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string()),
+                allowed_roles: message
+                    .params
+                    .get("allowed_roles")
+                    .and_then(|v| v.as_array())
+                    .map(|roles| {
+                        roles
+                            .iter()
+                            .filter_map(|r| r.as_str())
+                            .map(|r| r.trim().to_string())
+                            .filter(|r| !r.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             };
             let has_password = broker_config.ui_password().is_some();
             // Persist the paths as entered (relative to the config dir), but
@@ -429,11 +624,20 @@ pub fn deserialize_json_rpc_and_process(
             connect_to_broker(&resolved_config, peer_map, mqtt_map, notification_buf);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::add_to_brokers(&broker_path, &broker_config);
-            websocket::broadcast_brokers(peer_map, mqtt_map);
-            // Auto-authenticate the peer that added a password-protected broker,
-            // and auto-authenticate ALL peers for non-password brokers.
             let broker_key = broker_config.key().to_string();
-            if has_password {
+            // Grant access to every peer that may use the new broker (open
+            // brokers in password mode, matching roles in claims mode) before
+            // broadcasting, so the list each peer gets is already filtered.
+            websocket::auto_authenticate_all_peers_for_broker(
+                peer_map,
+                &broker_key,
+                has_password,
+                &broker_config.allowed_roles,
+            );
+            websocket::broadcast_brokers(peer_map, mqtt_map);
+            // Password mode: the peer that added a password-protected broker
+            // knows the password, so authenticate it right away.
+            if has_password && !access.is_claims() {
                 if let Some(peer_addr) = addr {
                     let mut peers = peer_map.lock().unwrap();
                     if let Some(peer) = peers.get_mut(&peer_addr) {
@@ -450,8 +654,6 @@ pub fn deserialize_json_rpc_and_process(
                         websocket::send_to_specific_peer(peer_map, peer_addr, &serialized);
                     }
                 }
-            } else {
-                websocket::auto_authenticate_all_peers_for_broker(peer_map, &broker_key);
             }
         }
         "remove" => {
@@ -466,51 +668,6 @@ pub fn deserialize_json_rpc_and_process(
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::remove_from_brokers(&broker_path, &hostname);
             websocket::broadcast_brokers(peer_map, mqtt_map)
-        }
-        "publish" => {
-            let host = match message.params.get("host").and_then(|v| v.as_str()) {
-                Some(h) => h.trim_matches('"').to_string(),
-                None => {
-                    println!("Missing or invalid 'host' param for publish");
-                    return;
-                }
-            };
-            // Check authentication before allowing publish
-            if let Some(peer_addr) = addr {
-                let peers = peer_map.lock().unwrap();
-                if let Some(peer) = peers.get(&peer_addr) {
-                    if !peer.authenticated_brokers.contains(&host) {
-                        println!(
-                            "Peer {peer_addr} not authenticated for broker {host}, publish denied"
-                        );
-                        return;
-                    }
-                } else {
-                    return;
-                }
-            } else {
-                return;
-            }
-            let topic = match message.params.get("topic").and_then(|v| v.as_str()) {
-                Some(t) => t,
-                None => {
-                    println!("Missing or invalid 'topic' param for publish");
-                    return;
-                }
-            };
-            let payload = match message.params.get("payload").and_then(|v| v.as_str()) {
-                Some(p) => p,
-                None => {
-                    println!("Missing or invalid 'payload' param for publish");
-                    return;
-                }
-            };
-            let retain = message
-                .params
-                .get("retain")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            mqtt::publish_message(&host, topic, payload, retain, mqtt_map);
         }
         "save_command" => {
             let command_path: String = std::format!("{config_path}/commands");
@@ -532,92 +689,7 @@ pub fn deserialize_json_rpc_and_process(
             config::remove_from_pipelines(&pipelines_path, message.params);
             websocket::broadcast_pipelines(peer_map, config_path);
         }
-        "subscribe_topic" => {
-            if let Some(peer_addr) = addr {
-                if let (Some(broker), Some(topic)) = (
-                    message.params["broker"].as_str(),
-                    message.params["topic"].as_str(),
-                ) {
-                    let since_timestamp = message.params["since_timestamp"].as_str();
-                    websocket::handle_subscribe_topic(
-                        peer_map,
-                        mqtt_map,
-                        peer_addr,
-                        broker,
-                        topic,
-                        since_timestamp,
-                    );
-                }
-            }
-        }
-        "unsubscribe_topic" => {
-            if let Some(peer_addr) = addr {
-                if let (Some(broker), Some(topic)) = (
-                    message.params["broker"].as_str(),
-                    message.params["topic"].as_str(),
-                ) {
-                    websocket::handle_unsubscribe_topic(peer_map, peer_addr, broker, topic);
-                }
-            }
-        }
-        "authenticate_broker" => {
-            let hostname = match message.params.get("hostname").and_then(|v| v.as_str()) {
-                Some(h) => h.trim_matches('"').to_string(),
-                None => {
-                    println!("Missing 'hostname' param for authenticate_broker");
-                    return;
-                }
-            };
-            let supplied_password = message
-                .params
-                .get("password")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            // Look up the broker's configured password
-            let brokers_path = std::format!("{config_path}/brokers.json");
-            let broker_configs = config::get_known_brokers(&brokers_path);
-            let broker_cfg = broker_configs.iter().find(|b| b.key() == hostname);
-
-            let success = match broker_cfg {
-                Some(cfg) => match cfg.ui_password() {
-                    Some(p) => constant_time_eq(supplied_password, p),
-                    None => true, // No password required
-                },
-                None => false, // Broker not found in config
-            };
-
-            if success {
-                if let Some(peer_addr) = addr {
-                    {
-                        let mut peers = peer_map.lock().unwrap();
-                        if let Some(peer) = peers.get_mut(&peer_addr) {
-                            peer.authenticated_brokers.insert(hostname.clone());
-                        }
-                    }
-                    // Send topic summaries for this broker now that the peer is authenticated
-                    websocket::send_broker_topic_summaries(
-                        peer_map, mqtt_map, peer_addr, &hostname,
-                    );
-                }
-            }
-
-            // Send result back to the requesting peer
-            if let Some(peer_addr) = addr {
-                let result = jsonrpc::JsonRpcNotification {
-                    jsonrpc: "2.0",
-                    method: "broker_auth_result",
-                    params: serde_json::json!({
-                        "broker": hostname,
-                        "success": success,
-                    }),
-                };
-                if let Ok(serialized) = serde_json::to_string(&result) {
-                    websocket::send_to_specific_peer(peer_map, peer_addr, &serialized);
-                }
-            }
-        }
-        _ => {}
+        other => println!("Unhandled config method \"{other}\""),
     }
 }
 
@@ -670,6 +742,7 @@ fn connect_to_mqtt_client_and_loop_forever(
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: now_ms,
             requires_auth,
+            allowed_roles: broker_config.allowed_roles.clone(),
         };
 
         mqtt_lock.insert(mqtt_host.to_string(), broker);
@@ -805,6 +878,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
     }
 
@@ -821,6 +895,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
     }
 
@@ -837,6 +912,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
     }
 
@@ -856,6 +932,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         // Give the spawned thread a moment to take the lock
@@ -886,6 +963,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -897,6 +975,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -922,6 +1001,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         std::fs::remove_dir_all(&config_path).ok();
@@ -944,6 +1024,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         let cmd_file = format!("{}/test_cmd.json", commands_path);
@@ -959,6 +1040,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         assert!(!std::path::Path::new(&cmd_file).exists());
@@ -982,6 +1064,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         let pipe_file = format!("{}/test_pipe.json", pipelines_path);
@@ -996,6 +1079,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         assert!(!std::path::Path::new(&pipe_file).exists());
@@ -1020,6 +1104,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         // Should have received a broadcast_brokers message, even if a status
@@ -1054,6 +1139,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1070,6 +1156,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         // Should receive broker_removal and broadcast_brokers messages
@@ -1142,7 +1229,7 @@ mod tests {
                         r#"{{"jsonrpc":"2.0","method":"save_command","params":{{"name":"cmd_{}","topic":"t","payload":"p"}}}}"#,
                         i
                     );
-                    deserialize_json_rpc_and_process(&json, &pm, &mm, &cp, None, &make_notification_buf());
+                    deserialize_json_rpc_and_process(&json, &pm, &mm, &cp, None, &make_notification_buf(), &websocket::PeerAccess::Password);
                 })
             })
             .collect();
@@ -1169,6 +1256,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         // Should not panic, no broker added
         assert_eq!(mqtt_map.lock().unwrap().len(), 0);
@@ -1186,6 +1274,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         assert_eq!(mqtt_map.lock().unwrap().len(), 0);
     }
@@ -1202,6 +1291,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         // No panic
     }
@@ -1218,6 +1308,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
     }
 
@@ -1234,6 +1325,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
     }
 
@@ -1249,6 +1341,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
     }
 
@@ -1268,6 +1361,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         // Should not panic
 
@@ -1290,6 +1384,7 @@ mod tests {
             &config_path,
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         std::fs::remove_dir_all(&config_path).ok();
@@ -1309,6 +1404,7 @@ mod tests {
             "/tmp",
             Some(addr),
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
 
         // Should receive topic_sync_complete (no clear anymore)
@@ -1341,6 +1437,7 @@ mod tests {
                 "/tmp",
                 Some(addr),
                 &make_notification_buf(),
+                &websocket::PeerAccess::Password,
             );
         }
 
@@ -1363,6 +1460,7 @@ mod tests {
             "/tmp",
             None,
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
         // No panic, no state change
     }
@@ -1384,6 +1482,7 @@ mod tests {
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
             requires_auth: false,
+            allowed_roles: Vec::new(),
         };
 
         let mut topic_a = std::collections::VecDeque::new();
@@ -1498,6 +1597,7 @@ mod tests {
             client_key: None,
             client_key_password: None,
             access_password: None,
+            allowed_roles: Vec::new(),
         };
 
         connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
@@ -1706,6 +1806,7 @@ mod tests {
             client_key: Some("client.key".to_string()),
             client_key_password: None,
             access_password: None,
+            allowed_roles: Vec::new(),
         }
         .with_resolved_cert_paths(&pki.dir);
 
@@ -1747,6 +1848,7 @@ mod tests {
             client_key: None,
             client_key_password: None,
             access_password: None,
+            allowed_roles: Vec::new(),
         };
 
         let peer_map = make_peer_map();
@@ -1786,6 +1888,7 @@ mod tests {
             client_key: Some(pki.path("client_rsa_aes.key")),
             client_key_password: Some(crate::server::test_certs::KEY_PASSWORD.to_string()),
             access_password: None,
+            allowed_roles: Vec::new(),
         };
 
         let peer_map = make_peer_map();
@@ -1818,6 +1921,7 @@ mod tests {
             config_path,
             Some(addr),
             &make_notification_buf(),
+            &websocket::PeerAccess::Password,
         );
     }
 
@@ -1868,6 +1972,234 @@ mod tests {
         authenticate(&config_path, &peer_map, addr, "view-pw");
         assert!(is_authenticated(&peer_map, addr));
 
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    // --- claims mode: admin-only configuration changes ---
+
+    fn claims_access(roles: &[&str], is_admin: bool) -> websocket::PeerAccess {
+        websocket::PeerAccess::Claims(crate::server::oidc::Identity {
+            subject: "sub".to_string(),
+            username: Some("bob".to_string()),
+            roles: roles.iter().map(|r| r.to_string()).collect(),
+            expires_at: i64::MAX,
+            is_admin,
+        })
+    }
+
+    /// Sets the peer's access in the map (as `handle_socket` does) and returns
+    /// it, so tests pass the same access along with each request.
+    fn set_identity(
+        peer_map: &websocket::PeerMap,
+        addr: SocketAddr,
+        roles: &[&str],
+        is_admin: bool,
+    ) -> websocket::PeerAccess {
+        let access = claims_access(roles, is_admin);
+        peer_map.lock().unwrap().get_mut(&addr).unwrap().access = access.clone();
+        access
+    }
+
+    fn config_change_calls() -> [String; 6] {
+        [
+            rpc(
+                "save_command",
+                serde_json::json!({"name": "c", "topic": "t", "payload": "p"}),
+            ),
+            rpc(
+                "save_pipeline",
+                serde_json::json!({"name": "p", "pipeline": [{"topic": "t"}]}),
+            ),
+            rpc("remove", serde_json::json!({"hostname": "keep:1883"})),
+            rpc(
+                "connect",
+                serde_json::json!({"hostname": "127.0.0.1:19995"}),
+            ),
+            rpc("remove_command", serde_json::json!({"name": "kept"})),
+            rpc("remove_pipeline", serde_json::json!({"name": "kept"})),
+        ]
+    }
+
+    /// Config dir with one broker, one command and one pipeline that a denied
+    /// peer must not be able to remove.
+    fn config_with_kept_items() -> String {
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(format!("{config_path}/commands")).unwrap();
+        std::fs::create_dir_all(format!("{config_path}/pipelines")).unwrap();
+        std::fs::write(
+            format!("{config_path}/brokers.json"),
+            r#"[{"host":"keep:1883"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{config_path}/commands/kept.json"),
+            r#"{"name":"kept","topic":"t","payload":"p"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{config_path}/pipelines/kept.json"),
+            r#"{"name":"kept","pipeline":[]}"#,
+        )
+        .unwrap();
+        config_path
+    }
+
+    fn assert_config_unchanged(config_path: &str, mqtt_map: &mqtt::BrokerMap) {
+        assert!(!std::path::Path::new(&format!("{config_path}/commands/c.json")).exists());
+        assert!(!std::path::Path::new(&format!("{config_path}/pipelines/p.json")).exists());
+        let brokers = config::get_known_brokers(&format!("{config_path}/brokers.json"));
+        assert_eq!(brokers.len(), 1);
+        assert_eq!(brokers[0].host, "keep:1883");
+        assert!(mqtt_map.lock().unwrap().is_empty());
+        assert!(std::path::Path::new(&format!("{config_path}/commands/kept.json")).exists());
+        assert!(std::path::Path::new(&format!("{config_path}/pipelines/kept.json")).exists());
+    }
+
+    fn rpc(method: &str, params: serde_json::Value) -> String {
+        serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params }).to_string()
+    }
+
+    #[test]
+    fn test_claims_mode_non_admin_cannot_change_config() {
+        let config_path = config_with_kept_items();
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let buf = make_notification_buf();
+        let (addr, _rx) = insert_peer(&peer_map, 40200);
+        let viewer = set_identity(&peer_map, addr, &["viewer"], false);
+
+        let calls = config_change_calls();
+        for call in &calls {
+            deserialize_json_rpc_and_process(
+                call,
+                &peer_map,
+                &mqtt_map,
+                &config_path,
+                Some(addr),
+                &buf,
+                &viewer,
+            );
+        }
+        assert_config_unchanged(&config_path, &mqtt_map);
+
+        // Admin may.
+        let admin = set_identity(&peer_map, addr, &["admin"], true);
+        deserialize_json_rpc_and_process(
+            &calls[0],
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            Some(addr),
+            &buf,
+            &admin,
+        );
+        assert!(std::path::Path::new(&format!("{config_path}/commands/c.json")).exists());
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    /// Regression: a peer evicted from `peer_map` (e.g. as a slow consumer that
+    /// stopped reading) can still deliver requests over its open socket. Its
+    /// access must still be enforced, not fall back to password mode.
+    #[test]
+    fn test_claims_mode_evicted_peer_stays_denied() {
+        let config_path = config_with_kept_items();
+        let peer_map = make_peer_map(); // peer intentionally not in the map
+        let mqtt_map = make_mqtt_map();
+        let buf = make_notification_buf();
+        let viewer = claims_access(&["viewer"], false);
+
+        for call in &config_change_calls() {
+            deserialize_json_rpc_and_process(
+                call,
+                &peer_map,
+                &mqtt_map,
+                &config_path,
+                Some(make_addr(40205)),
+                &buf,
+                &viewer,
+            );
+        }
+        assert_config_unchanged(&config_path, &mqtt_map);
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_claims_mode_ignores_broker_password_login() {
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(&config_path).unwrap();
+        std::fs::write(
+            format!("{config_path}/brokers.json"),
+            r#"[{"host":"secured:8883","access_password":"view-pw","allowed_roles":["plant-a"]}]"#,
+        )
+        .unwrap();
+        let peer_map = make_peer_map();
+        let (addr, _rx) = insert_peer(&peer_map, 40201);
+        let viewer = set_identity(&peer_map, addr, &["viewer"], false);
+
+        let call = rpc(
+            "authenticate_broker",
+            serde_json::json!({"hostname": "secured:8883", "password": "view-pw"}),
+        );
+        deserialize_json_rpc_and_process(
+            &call,
+            &peer_map,
+            &make_mqtt_map(),
+            &config_path,
+            Some(addr),
+            &make_notification_buf(),
+            &viewer,
+        );
+        assert!(!peer_map.lock().unwrap()[&addr]
+            .authenticated_brokers
+            .contains("secured:8883"));
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_claims_mode_admin_adds_broker_with_allowed_roles() {
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(&config_path).unwrap();
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let (admin, _ra) = insert_peer(&peer_map, 40202);
+        let (plant, _rp) = insert_peer(&peer_map, 40203);
+        let (other, _ro) = insert_peer(&peer_map, 40204);
+        let admin_access = set_identity(&peer_map, admin, &["admin"], true);
+        set_identity(&peer_map, plant, &["plant-a"], false);
+        set_identity(&peer_map, other, &["viewer"], false);
+
+        let call = rpc(
+            "connect",
+            serde_json::json!({"hostname": "127.0.0.1:19996", "allowed_roles": ["plant-a", " "]}),
+        );
+        deserialize_json_rpc_and_process(
+            &call,
+            &peer_map,
+            &mqtt_map,
+            &config_path,
+            Some(admin),
+            &make_notification_buf(),
+            &admin_access,
+        );
+
+        let brokers = config::get_known_brokers(&format!("{config_path}/brokers.json"));
+        assert_eq!(brokers[0].allowed_roles, vec!["plant-a"]);
+        let peers = peer_map.lock().unwrap();
+        assert!(peers[&plant]
+            .authenticated_brokers
+            .contains("127.0.0.1:19996"));
+        assert!(!peers[&other]
+            .authenticated_brokers
+            .contains("127.0.0.1:19996"));
+        assert!(!peers[&admin]
+            .authenticated_brokers
+            .contains("127.0.0.1:19996"));
+        drop(peers);
+
+        remove_broker("127.0.0.1:19996", &peer_map, &mqtt_map);
         std::fs::remove_dir_all(&config_path).ok();
     }
 }

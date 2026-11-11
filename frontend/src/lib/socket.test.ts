@@ -175,6 +175,22 @@ test('requestMqttBrokerConnection includes access_password only when set', () =>
 	expect(JSON.parse(socket.messages[1]).params).toEqual({ hostname: 'broker:1883' });
 });
 
+test('requestMqttBrokerConnection includes allowed_roles only when non-empty', () => {
+	const socket = new MockWebSocket();
+	requestMqttBrokerConnection('broker:1883', socket as unknown as WebSocket, {
+		allowed_roles: ['plant-a', 'ops']
+	});
+	requestMqttBrokerConnection('broker:1883', socket as unknown as WebSocket, {
+		allowed_roles: []
+	});
+
+	expect(JSON.parse(socket.messages[0]).params).toEqual({
+		hostname: 'broker:1883',
+		allowed_roles: ['plant-a', 'ops']
+	});
+	expect(JSON.parse(socket.messages[1]).params).toEqual({ hostname: 'broker:1883' });
+});
+
 test('requestSubscribeTopic sends broker and topic', () => {
 	const socket = new MockWebSocket();
 	requestSubscribeTopic('broker:1883', 'test/topic', socket as unknown as WebSocket);

@@ -81,6 +81,7 @@ export function requestMqttBrokerConnection(
 		client_key?: string;
 		client_key_password?: string;
 		access_password?: string;
+		allowed_roles?: string[];
 	}
 ) {
 	const params: Record<string, unknown> = { hostname };
@@ -92,6 +93,7 @@ export function requestMqttBrokerConnection(
 	if (options?.client_key) params.client_key = options.client_key;
 	if (options?.client_key_password) params.client_key_password = options.client_key_password;
 	if (options?.access_password) params.access_password = options.access_password;
+	if (options?.allowed_roles?.length) params.allowed_roles = options.allowed_roles;
 	const message = JSON.stringify({
 		jsonrpc: '2.0',
 		method: 'connect',

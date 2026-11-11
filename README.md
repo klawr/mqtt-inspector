@@ -83,6 +83,80 @@ Any broker can require viewers to enter a password before its messages are shown
   are protected without extra configuration.
 - If both are set, `access_password` is the one viewers must enter.
 
+### Claims-based access (Keycloak / OpenID Connect via reverse proxy)
+
+Instead of passwords, access can be controlled by the roles in an access token from an
+OpenID Connect provider such as Keycloak. mqtt-inspector does not log users in itself: a
+reverse proxy (e.g. [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/)) handles the
+login and forwards the access token. The backend verifies the token's signature against the
+issuer's keys (JWKS), its issuer, expiry and optional audience, so bypassing the proxy does not
+grant access.
+
+Claims mode is enabled by setting `MQTT_INSPECTOR_OIDC_ISSUER`:
+
+| Variable | Description |
+|----------|-------------|
+| `MQTT_INSPECTOR_OIDC_ISSUER` | Issuer URL, must equal the token's `iss`, e.g. `https://auth.example.com/realms/acme`. |
+| `MQTT_INSPECTOR_OIDC_JWKS_URL` | Optional. Where to fetch the signing keys. Default: discovered via `<issuer>/.well-known/openid-configuration`. Set it if the backend reaches Keycloak under an internal URL, e.g. `http://keycloak:8080/realms/acme/protocol/openid-connect/certs`. |
+| `MQTT_INSPECTOR_OIDC_AUDIENCE` | Optional. Token must contain it in `aud`, or as `azp` (Keycloak's client id). |
+| `MQTT_INSPECTOR_OIDC_ROLES_CLAIM` | Where to read roles from. Default `realm_access.roles`. Dot-separated paths, comma-separated list, e.g. `realm_access.roles,groups` or `resource_access.mqtt-inspector.roles`. |
+| `MQTT_INSPECTOR_OIDC_USER_ROLE` | Optional. Role required to use the app at all (otherwise every valid token). |
+| `MQTT_INSPECTOR_OIDC_ADMIN_ROLE` | Optional. Role required to add/remove brokers, commands and pipelines (otherwise every user may). |
+| `MQTT_INSPECTOR_OIDC_CA_CERT` | Optional. PEM file with the CA of an HTTPS issuer signed by a private CA. |
+
+Per broker, `allowed_roles` restricts who can see and publish to it (any of the listed roles);
+brokers without it are visible to every user:
+
+```json
+[
+  { "host": "plant-a.example.com:1883", "allowed_roles": ["plant-a"] },
+  { "host": "localhost:1883" }
+]
+```
+
+- Users only see the brokers they have access to.
+- Broker passwords (`password`, `access_password`) are not used as UI locks in claims mode;
+  `username`/`password` are still used to log in to the MQTT broker.
+- The token is read from `X-Forwarded-Access-Token`, `X-Auth-Request-Access-Token` or
+  `Authorization: Bearer`, in that order.
+- When the token expires, the connection is closed and the UI reconnects through the proxy with a
+  fresh token.
+- If the issuer cannot be reached, connections are refused (HTTP 503); missing or invalid tokens
+  get 401, missing `MQTT_INSPECTOR_OIDC_USER_ROLE` gets 403.
+
+Example with oauth2-proxy in front:
+
+```yaml
+services:
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+    command:
+      - --provider=keycloak-oidc
+      - --oidc-issuer-url=https://auth.example.com/realms/acme
+      - --client-id=mqtt-inspector
+      - --client-secret=<secret>
+      - --cookie-secret=<32-byte-secret>
+      - --email-domain=*
+      - --upstream=http://mqtt-inspector:3030
+      - --http-address=0.0.0.0:4180
+      - --pass-access-token=true   # forwards X-Forwarded-Access-Token
+      - --cookie-refresh=4m        # shorter than the access token lifetime (Keycloak default 5m)
+    ports:
+      - 4180:4180
+  mqtt-inspector:
+    image: ghcr.io/klawr/mqtt-inspector:latest
+    environment:
+      MQTT_INSPECTOR_OIDC_ISSUER: https://auth.example.com/realms/acme
+      MQTT_INSPECTOR_OIDC_USER_ROLE: mqtt-viewer
+      MQTT_INSPECTOR_OIDC_ADMIN_ROLE: mqtt-admin
+    volumes:
+      - ./config:/srv/config
+```
+
+Use `--pass-access-token` rather than `--pass-authorization-header`: the latter forwards the ID
+token, which in Keycloak does not contain roles by default. Without `--cookie-refresh` the proxy
+keeps forwarding the expired token and the UI cannot reconnect until the page is reloaded.
+
 ### TLS with client certificates (mutual TLS)
 
 To connect to brokers that authenticate clients by certificate, mount your PEM files

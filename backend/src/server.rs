@@ -24,6 +24,7 @@ mod broker_peer_bridge;
 mod config;
 mod jsonrpc;
 mod mqtt;
+mod oidc;
 #[cfg(test)]
 mod test_certs;
 mod websocket;
@@ -62,7 +63,28 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
         });
     }
 
+    let oidc = oidc::OidcConfig::from_env().map(|config| {
+        println!(
+            "Claims-based access enabled (issuer {}, roles from {:?}, user role {:?}, admin role {:?})",
+            config.issuer, config.roles_claims, config.user_role, config.admin_role
+        );
+        match oidc::OidcVerifier::new(config) {
+            Ok(verifier) => std::sync::Arc::new(verifier),
+            // Never fall back to open access on a broken auth configuration.
+            Err(err) => panic!("Invalid OIDC configuration: {err}"),
+        }
+    });
+
     let broker_path = &std::format!("{config_path}/brokers.json");
+    if oidc.is_some() {
+        let configs = config::get_known_brokers(broker_path);
+        for host in config::brokers_with_ignored_access_password(&configs) {
+            eprintln!(
+                "Warning: broker {host} has an access_password, which is ignored in claims mode; \
+                 use allowed_roles to restrict access."
+            );
+        }
+    }
     broker_peer_bridge::connect_to_known_brokers(
         broker_path,
         &peer_map,
@@ -71,61 +93,52 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     );
     println!("Listening for connections on {server_addr} using static files from {static_files} and config {config_path}");
 
-    let ws =
-        {
-            let ws_max = max_ws_publish_message_size();
-            warp::path("ws")
-                .and(warp::ws().map(move |ws: warp::ws::Ws| {
+    let ws = {
+        let ws_max = max_ws_publish_message_size();
+        warp::path("ws")
+            .and(
+                warp::ws().map(move |ws: warp::ws::Ws| {
                     ws.max_message_size(ws_max).max_frame_size(ws_max)
-                }))
-                .and(warp::addr::remote())
-                .and_then(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
+                }),
+            )
+            .and(warp::addr::remote())
+            .and(warp::header::headers_cloned())
+            .and_then(
+                move |ws: warp::ws::Ws,
+                      addr: Option<SocketAddr>,
+                      headers: warp::http::HeaderMap| {
                     let peer_map = std::sync::Arc::clone(&peer_map);
                     let mqtt_map = std::sync::Arc::clone(&mqtt_map);
                     let notification_buf = std::sync::Arc::clone(&notification_buf);
                     let config_path = config_path.clone();
+                    let oidc = oidc.clone();
                     async move {
-                        Ok::<_, warp::Rejection>(ws.on_upgrade(move |socket| async move {
-                            let (ws_tx, ws_rx) = socket.split();
-                            let (mut tx, rx) = channel(websocket::PEER_CHANNEL_CAPACITY);
-
-                            if let Some(addr) = addr {
-                                println!("Received new WebSocket connection from {addr}");
-                                websocket::send_brokers(&mut tx, &mqtt_map);
-                                websocket::send_configs(&mut tx, &config_path);
-
-                                let mut peer = websocket::PeerConnection::new(tx);
-                                websocket::auto_authenticate_peer(&mut peer, &mqtt_map);
-                                peer_map.lock().unwrap().insert(addr, peer);
-                            }
-                            let incoming = rx.map(Ok).forward(ws_tx);
-
-                            let handler = ws_rx.try_for_each(|msg| {
-                                if let Ok(text) = msg.to_str() {
-                                    broker_peer_bridge::deserialize_json_rpc_and_process(
-                                        text,
-                                        &peer_map,
-                                        &mqtt_map,
-                                        &config_path,
-                                        addr,
-                                        &notification_buf,
-                                    );
+                        let identity = match &oidc {
+                            None => None,
+                            Some(verifier) => match authenticate(verifier, &headers).await {
+                                Ok(identity) => Some(identity),
+                                Err(err) => {
+                                    println!("Rejected WebSocket connection from {addr:?}: {err}");
+                                    return Ok::<_, warp::Rejection>(auth_error_reply(&err));
                                 }
-
-                                futures_util::future::ok(())
-                            });
-
-                            pin_mut!(incoming, handler);
-                            futures_util::future::select(incoming, handler).await;
-
-                            if let Some(addr) = addr {
-                                println!("{addr} disconnected");
-                                peer_map.lock().unwrap().remove(&addr);
-                            }
-                        }))
+                            },
+                        };
+                        let reply = ws.on_upgrade(move |socket| {
+                            handle_socket(
+                                socket,
+                                addr,
+                                identity,
+                                peer_map,
+                                mqtt_map,
+                                notification_buf,
+                                config_path,
+                            )
+                        });
+                        Ok(Box::new(reply) as Box<dyn warp::Reply>)
                     }
-                })
-        };
+                },
+            )
+    };
 
     let routes = warp::get()
         .and(ws)
@@ -134,4 +147,114 @@ pub fn run_server(static_files: String, config_path: String) -> tokio::task::Joi
     tokio::spawn(async move {
         warp::serve(routes).run(server_addr).await;
     })
+}
+
+async fn authenticate(
+    verifier: &oidc::OidcVerifier,
+    headers: &warp::http::HeaderMap,
+) -> Result<oidc::Identity, oidc::AuthError> {
+    let token = oidc::token_from_headers(headers).ok_or(oidc::AuthError::MissingToken)?;
+    verifier.verify(&token).await
+}
+
+fn auth_error_reply(err: &oidc::AuthError) -> Box<dyn warp::Reply> {
+    let status = match err {
+        oidc::AuthError::MissingToken | oidc::AuthError::InvalidToken(_) => {
+            warp::http::StatusCode::UNAUTHORIZED
+        }
+        oidc::AuthError::Forbidden(_) => warp::http::StatusCode::FORBIDDEN,
+        oidc::AuthError::Unavailable(_) => warp::http::StatusCode::SERVICE_UNAVAILABLE,
+    };
+    // Details are logged server-side only.
+    Box::new(warp::reply::with_status(
+        status.canonical_reason().unwrap_or_default(),
+        status,
+    ))
+}
+
+/// Time until the token expires; the socket is closed then so the client
+/// reconnects through the proxy with a fresh token.
+fn time_until_expiry(identity: &oidc::Identity) -> std::time::Duration {
+    let remaining = identity.expires_at - chrono::Utc::now().timestamp();
+    std::time::Duration::from_secs(remaining.max(0) as u64)
+}
+
+async fn handle_socket(
+    socket: warp::ws::WebSocket,
+    addr: Option<SocketAddr>,
+    identity: Option<oidc::Identity>,
+    peer_map: websocket::PeerMap,
+    mqtt_map: mqtt::BrokerMap,
+    notification_buf: websocket::NotificationBuf,
+    config_path: String,
+) {
+    if identity.is_some() && addr.is_none() {
+        // Permissions are looked up per peer address; without one we can't enforce them.
+        println!("Closing claims-mode connection without a remote address");
+        return;
+    }
+    let (ws_tx, ws_rx) = socket.split();
+    let (tx, rx) = channel(websocket::PEER_CHANNEL_CAPACITY);
+    // Fixed for the lifetime of this connection and passed to every request,
+    // independent of whether the peer is still in `peer_map`.
+    let access = identity
+        .clone()
+        .map(websocket::PeerAccess::Claims)
+        .unwrap_or_default();
+
+    if let Some(addr) = addr {
+        match &identity {
+            Some(id) => println!(
+                "Received new WebSocket connection from {addr} (user {}, admin={})",
+                id.display_name(),
+                id.is_admin
+            ),
+            None => println!("Received new WebSocket connection from {addr}"),
+        }
+        let mut peer = websocket::PeerConnection::new(tx);
+        peer.access = access.clone();
+        websocket::auto_authenticate_peer(&mut peer, &mqtt_map);
+        websocket::send_session(&mut peer);
+        websocket::send_brokers(&mut peer, &mqtt_map);
+        websocket::send_configs(&mut peer.tx, &config_path);
+        peer_map.lock().unwrap().insert(addr, peer);
+    }
+    let incoming = rx.map(Ok).forward(ws_tx);
+
+    let handler = ws_rx.try_for_each(|msg| {
+        if let Ok(text) = msg.to_str() {
+            broker_peer_bridge::deserialize_json_rpc_and_process(
+                text,
+                &peer_map,
+                &mqtt_map,
+                &config_path,
+                addr,
+                &notification_buf,
+                &access,
+            );
+        }
+
+        futures_util::future::ok(())
+    });
+
+    let expiry = async {
+        match &identity {
+            Some(id) => tokio::time::sleep(time_until_expiry(id)).await,
+            None => futures_util::future::pending::<()>().await,
+        }
+    };
+
+    pin_mut!(incoming, handler, expiry);
+    tokio::select! {
+        _ = &mut incoming => {}
+        _ = &mut handler => {}
+        _ = &mut expiry => {
+            println!("Access token of {addr:?} expired. Closing connection.");
+        }
+    }
+
+    if let Some(addr) = addr {
+        println!("{addr} disconnected");
+        peer_map.lock().unwrap().remove(&addr);
+    }
 }

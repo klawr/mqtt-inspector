@@ -67,6 +67,9 @@ pub struct MqttBroker {
     pub rate_last_sample_ms: i64,
     /// Whether this broker requires authentication to view its messages.
     pub requires_auth: bool,
+    /// Roles that may access this broker in claims mode (empty = any user).
+    #[serde(skip)]
+    pub allowed_roles: Vec<String>,
 }
 
 fn env_usize_mb(name: &str, default_mb: usize) -> usize {
@@ -365,6 +368,7 @@ mod tests {
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
             requires_auth: false,
+            allowed_roles: Vec::new(),
         };
         mqtt_map
             .lock()
@@ -391,6 +395,7 @@ mod tests {
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
             requires_auth: false,
+            allowed_roles: Vec::new(),
         };
         mqtt_map
             .lock()
@@ -469,6 +474,7 @@ mod tests {
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
             requires_auth: false,
+            allowed_roles: Vec::new(),
         };
 
         broker.eviction_order.push_back(("t1".to_string(), 10));
@@ -530,6 +536,7 @@ mod tests {
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
             requires_auth: false,
+            allowed_roles: Vec::new(),
         };
 
         let mut msgs = VecDeque::new();
@@ -570,6 +577,7 @@ mod tests {
             rate_bytes_accumulator: 0,
             rate_last_sample_ms: 0,
             requires_auth: false,
+            allowed_roles: Vec::new(),
         };
 
         let mut msgs = VecDeque::new();

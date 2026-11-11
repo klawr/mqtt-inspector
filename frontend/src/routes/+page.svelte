@@ -70,11 +70,12 @@ THE SOFTWARE.
 		processPipelines,
 		parseMqttWebSocketMessage,
 		processRateHistorySample,
-		processSettings
+		processSettings,
+		processSession
 	} from '$lib/ws_msg_handling';
 	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
 	import Login from '../components/dialogs/login.svelte';
-	import { selectedTheme, availableThemes } from '../store';
+	import { selectedTheme, availableThemes, session } from '../store';
 	import { goto } from '$app/navigation';
 	import AppNavIcon from '../components/app_nav_icon.svelte';
 	import { findbranchwithid, formatBytes } from '$lib/helper';
@@ -280,6 +281,9 @@ THE SOFTWARE.
 					break;
 				case 'settings':
 					app = processSettings(json.params, app);
+					break;
+				case 'session':
+					session.set(processSession(json.params));
 					break;
 				case 'broker_auth_result': {
 					const { broker, success } = json.params as { broker: string; success: boolean };
@@ -623,7 +627,11 @@ THE SOFTWARE.
 			</div>
 		{/if}
 
-		{#if app.brokerRepository[app.selectedBroker]}
+		{#if $session.user}
+			<span class="header-user" title="Logged in via your identity provider">{$session.user}</span>
+		{/if}
+
+		{#if app.brokerRepository[app.selectedBroker] && $session.canEdit}
 			<Button
 				iconDescription="Remove MQTT Broker"
 				tooltipPosition="bottom"
@@ -688,15 +696,17 @@ THE SOFTWARE.
 				}}
 			/>
 		{/each}
-		<div style={socketConnected ? '' : 'pointer-events: none; opacity: 0.5'}>
-			<SideNavLink
-				icon={Add}
-				text="Add Broker"
-				on:click={() => {
-					addMqttBrokerModalOpen = true;
-				}}
-			/>
-		</div>
+		{#if $session.canEdit}
+			<div style={socketConnected ? '' : 'pointer-events: none; opacity: 0.5'}>
+				<SideNavLink
+					icon={Add}
+					text="Add Broker"
+					on:click={() => {
+						addMqttBrokerModalOpen = true;
+					}}
+				/>
+			</div>
+		{/if}
 		<div style="flex: 1" />
 		<SideNavDivider />
 		<SideNavMenu text="Theme">
@@ -869,6 +879,13 @@ THE SOFTWARE.
 		overflow: hidden;
 		text-overflow: ellipsis;
 		max-width: 16rem;
+	}
+
+	.header-user {
+		font-size: 0.875rem;
+		opacity: 0.7;
+		padding: 0 0.5rem;
+		white-space: nowrap;
 	}
 
 	.header-stats {

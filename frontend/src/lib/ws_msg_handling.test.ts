@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import {
+	processSession,
 	processConfigs,
 	type CommandParam,
 	processConnectionStatus,
@@ -1005,4 +1006,21 @@ test('processBrokers updates existing broker status', () => {
 	// Topics should be preserved (not overwritten)
 	expect(result['b:1883'].topics).toHaveLength(1);
 	expect(result['b:1883'].topics[0].original_text).toBe('existing');
+});
+
+test('processSession maps claims sessions', () => {
+	expect(processSession({ mode: 'claims', user: 'alice', can_edit: false })).toEqual({
+		mode: 'claims',
+		user: 'alice',
+		canEdit: false
+	});
+});
+
+test('processSession defaults to password mode with edit rights', () => {
+	expect(processSession({ mode: 'password', can_edit: true })).toEqual({
+		mode: 'password',
+		user: undefined,
+		canEdit: true
+	});
+	expect(processSession({})).toEqual({ mode: 'password', user: undefined, canEdit: true });
 });
