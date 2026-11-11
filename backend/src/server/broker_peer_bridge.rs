@@ -866,7 +866,7 @@ fn process_config_change(
             let resolved_config =
                 broker_config.with_resolved_cert_paths(std::path::Path::new(config_path));
             connect_to_broker(&resolved_config, peer_map, mqtt_map, notification_buf);
-            let broker_path = std::format!("{}/brokers.json", &config_path);
+            let broker_path = std::format!("{}/brokers.json", config_path);
             config::add_to_brokers(&broker_path, &broker_config);
             let broker_key = broker_config.key().to_string();
             // Grant access to every peer that may use the new broker (open
@@ -909,7 +909,7 @@ fn process_config_change(
                 }
             };
             remove_broker(&hostname, peer_map, mqtt_map);
-            let broker_path = std::format!("{}/brokers.json", &config_path);
+            let broker_path = std::format!("{}/brokers.json", config_path);
             config::remove_from_brokers(&broker_path, &hostname);
             websocket::broadcast_brokers(peer_map, mqtt_map)
         }

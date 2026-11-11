@@ -345,9 +345,8 @@ mod tests {
 
     impl TestResource {
         fn new() -> Self {
-            let config_path =
-                std::format!("{}_{}", CONFIG_PATH, uuid::Uuid::new_v4().to_string()).to_string();
-            copy_dir::copy_dir(CONFIG_SOURCE_PATH, config_path.to_string()).unwrap();
+            let config_path = std::format!("{}_{}", CONFIG_PATH, uuid::Uuid::new_v4()).to_string();
+            copy_dir::copy_dir(CONFIG_SOURCE_PATH, &config_path).unwrap();
             let brokers_path = std::format!("{}/brokers.json", config_path);
             let commands_path = std::format!("{}/commands", config_path);
             let pipelines_path = std::format!("{}/pipelines", config_path);
@@ -510,9 +509,9 @@ mod tests {
             "payload": "test"
         });
         let command_path = std::format!("{}/new_command.json", resource.commands_path);
-        assert_eq!(std::path::Path::new(&command_path).exists(), false);
+        assert!(!std::path::Path::new(&command_path).exists());
         add_to_commands(&resource.commands_path, params);
-        assert_eq!(std::path::Path::new(&resource.commands_path).exists(), true);
+        assert!(std::path::Path::new(&resource.commands_path).exists());
         let command = std::fs::read_to_string(command_path).unwrap();
         let command: CommandMessage = serde_json::from_str(&command).unwrap();
         assert_eq!(command.name, "new_command");

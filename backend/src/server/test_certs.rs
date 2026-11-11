@@ -116,5 +116,22 @@ pub fn generate() -> TestPki {
     for step in &encrypt_steps {
         openssl(d, step);
     }
+    make_world_readable(d);
     pki
 }
+
+/// OpenSSL writes private keys as 0600. When the tests run as root (as in the
+/// CI container), mosquitto drops privileges to its own user before loading
+/// the certificates and could not read them. These are throwaway test keys.
+#[cfg(unix)]
+fn make_world_readable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+}
+
+#[cfg(not(unix))]
+fn make_world_readable(_dir: &Path) {}

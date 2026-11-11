@@ -146,7 +146,7 @@ pub fn auto_authenticate_all_peers_for_broker(
     allowed_roles: &[String],
 ) {
     let mut peers = peer_map.lock().unwrap();
-    for (_, peer) in peers.iter_mut() {
+    for peer in peers.values_mut() {
         if peer
             .access
             .has_implicit_access(requires_auth, allowed_roles)
@@ -1107,7 +1107,7 @@ mod tests {
         // Both watch the same topic, but close peer 1's receiver
         {
             let mut peers = peer_map.lock().unwrap();
-            for (_, peer) in peers.iter_mut() {
+            for peer in peers.values_mut() {
                 peer.selected_broker = Some("broker:1883".to_string());
                 peer.subscribed_topics.insert("topic".to_string());
                 peer.authenticated_brokers.insert("broker:1883".to_string());
