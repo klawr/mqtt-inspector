@@ -17,6 +17,7 @@ import {
 	processTopicSummaries,
 	type TopicSummariesParam,
 	processMQTTMessageMeta,
+	refreshTopicTreeRates,
 	type MQTTMessageMetaParam,
 	processMessagesEvicted,
 	type MessagesEvictedParam,
@@ -1110,4 +1111,25 @@ test('processSession defaults to password mode with edit rights', () => {
 		canEdit: true
 	});
 	expect(processSession({})).toEqual({ mode: 'password', user: undefined, canEdit: true });
+});
+
+test('tree labels show own and total rate separately for branches', () => {
+	const app = new AppState();
+	const meta = (topic: string, payload_size: number): MQTTMessageMetaParam => ({
+		source: 'rates:1883',
+		topic,
+		timestamp: 'ts',
+		payload_size,
+		total_bytes: 0,
+		topic_message_count: 1
+	});
+	processMQTTMessageMeta(meta('home', 2000), app);
+	processMQTTMessageMeta(meta('home/temp', 4000), app);
+	refreshTopicTreeRates(app);
+
+	const home = app.brokerRepository['rates:1883'].topics[0];
+	expect(home.text).toMatch(
+		/^home \([\d.]+k? msg\/(s|min) · [\d.]+ [KM]?B\/s, 1 subtopic, [\d.]+k? msg\/(s|min) · [\d.]+ [KM]?B\/s total\)$/
+	);
+	expect(home.children?.[0].text).toMatch(/^temp \([\d.]+k? msg\/(s|min) · [\d.]+ [KM]?B\/s\)$/);
 });

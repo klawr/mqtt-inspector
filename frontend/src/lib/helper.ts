@@ -99,6 +99,34 @@ export function formatDuration(ms: number): string {
 	return `${days.toFixed(1)} d`;
 }
 
+/** Human-readable throughput (B/s / KB/s / MB/s). One decimal below 10 B/s so
+ *  slow topics don't round to 0. */
+export function formatRate(bytesPerSecond: number): string {
+	if (bytesPerSecond === 0) return '0 B/s';
+	if (bytesPerSecond < 10) return bytesPerSecond.toFixed(1) + ' B/s';
+	if (bytesPerSecond < 1024) return bytesPerSecond.toFixed(0) + ' B/s';
+	if (bytesPerSecond < 1024 * 1024) return (bytesPerSecond / 1024).toFixed(1) + ' KB/s';
+	return (bytesPerSecond / (1024 * 1024)).toFixed(1) + ' MB/s';
+}
+
+/** Whether a message rate reads better per minute than per second. */
+export function prefersPerMinute(messagesPerSecond: number): boolean {
+	return messagesPerSecond > 0 && messagesPerSecond < 1;
+}
+
+/** Human-readable message rate. Below 1 msg/s it switches to msg/min so slow
+ *  topics don't read as "0.0 msg/s". */
+export function formatMsgRate(rate: number): string {
+	if (rate === 0) return '0 msg/s';
+	if (prefersPerMinute(rate)) {
+		const perMinute = rate * 60;
+		return (perMinute < 10 ? perMinute.toFixed(1) : perMinute.toFixed(0)) + ' msg/min';
+	}
+	if (rate < 10) return rate.toFixed(1) + ' msg/s';
+	if (rate < 1000) return rate.toFixed(0) + ' msg/s';
+	return (rate / 1000).toFixed(1) + 'k msg/s';
+}
+
 /** Human-readable byte size (B / KB / MB / GB). */
 export function formatBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;

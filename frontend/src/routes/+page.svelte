@@ -71,14 +71,15 @@ THE SOFTWARE.
 		parseMqttWebSocketMessage,
 		processRateHistorySample,
 		processSettings,
-		processSession
+		processSession,
+		refreshTopicTreeRates
 	} from '$lib/ws_msg_handling';
 	import RemoveBroker from '../components/dialogs/remove_broker.svelte';
 	import Login from '../components/dialogs/login.svelte';
 	import { selectedTheme, availableThemes, session } from '../store';
 	import { goto } from '$app/navigation';
 	import AppNavIcon from '../components/app_nav_icon.svelte';
-	import { findbranchwithid, formatBytes } from '$lib/helper';
+	import { findbranchwithid, formatBytes, formatMsgRate, formatRate } from '$lib/helper';
 	import { requestSubscribeTopic, requestUnsubscribeTopic } from '$lib/socket';
 	import {
 		deserializeLayout,
@@ -324,21 +325,10 @@ THE SOFTWARE.
 	let addMqttBrokerModalOpen = false;
 	let removeMqttBrokerModalOpen = false;
 
-	function formatRate(bytesPerSecond: number): string {
-		if (bytesPerSecond < 1024) return bytesPerSecond.toFixed(0) + ' B/s';
-		if (bytesPerSecond < 1024 * 1024) return (bytesPerSecond / 1024).toFixed(1) + ' KB/s';
-		return (bytesPerSecond / (1024 * 1024)).toFixed(1) + ' MB/s';
-	}
-
 	function formatMsgCount(count: number): string {
 		if (count < 1000) return count + ' msg';
 		if (count < 1_000_000) return (count / 1000).toFixed(1) + 'k msg';
 		return (count / 1_000_000).toFixed(1) + 'M msg';
-	}
-
-	function formatMsgRate(rate: number): string {
-		if (rate < 1000) return rate.toFixed(0) + ' msg/s';
-		return (rate / 1000).toFixed(1) + 'k msg/s';
 	}
 
 	function formatDurationShort(ms: number): string {
@@ -529,8 +519,21 @@ THE SOFTWARE.
 		}
 	}
 
-	onMount(initializeWebSocket);
+	// Re-render per-topic rates in the tree once a second so they decay while a
+	// topic is quiet (labels otherwise only change when a message arrives).
+	let topicRateTimer: ReturnType<typeof setInterval> | null = null;
+
+	onMount(() => {
+		initializeWebSocket();
+		topicRateTimer = setInterval(() => {
+			if (refreshTopicTreeRates(app)) app = app;
+		}, 1000);
+	});
 	onDestroy(() => {
+		if (topicRateTimer) {
+			clearInterval(topicRateTimer);
+			topicRateTimer = null;
+		}
 		shouldReconnect = false;
 		flushPendingMqttMessages();
 		if (reconnectTimer) {

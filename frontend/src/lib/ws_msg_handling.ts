@@ -20,7 +20,8 @@
  * THE SOFTWARE.
  */
 
-import { findbranchwithid } from './helper';
+import { findbranchwithid, formatMsgRate, formatRate } from './helper';
+import { clearTopicRates, recordTopicMessage, topicRate, type TopicRate } from './topic_rates';
 import { newLayout } from './layout';
 import { Message } from './state';
 import type {
@@ -227,6 +228,7 @@ export function processBrokerRemoval(params: string, app: AppState) {
 		}
 		delete app.brokerRepository[params];
 		delete rateWindows[params];
+		clearTopicRates(params);
 	}
 
 	return app;
@@ -333,7 +335,7 @@ export function processTopicSummaries(
 	const entry = ensureBrokerEntry(brokerRepository, params.source);
 
 	for (const [topic, info] of Object.entries(params.topics)) {
-		entry.topics = addToTopicTreeMeta(topic, entry.topics, info.count);
+		entry.topics = addToTopicTreeMeta(params.source, topic, entry.topics, info.count);
 	}
 
 	return brokerRepository;
@@ -364,39 +366,57 @@ function addToPipeline(
 	}
 }
 
-function createTreeBranchEntryText(branch: Treebranch) {
-	let text = branch.original_text;
+/** "12 msg/s · 4.8 KB/s"; slow topics show msg/min, bytes stay per second. */
+function formatTopicRate(rate: TopicRate): string {
+	return `${formatMsgRate(rate.messagesPerSecond)} · ${formatRate(rate.bytesPerSecond)}`;
+}
 
-	if (!branch.children?.length && !branch.number_of_messages) {
-		return text;
-	}
+function createTreeBranchEntryText(branch: Treebranch, source: string, now: number = Date.now()) {
+	const text = branch.original_text;
 
-	text += ' (';
+	// Rates are tracked cumulatively per path prefix, so the topic's own rate is
+	// its total minus what its subtopics account for.
+	// Children are measured over the same window as the branch so the
+	// subtraction lines up.
+	const total = topicRate(source, branch.id, now);
+	const children = (branch.children ?? []).reduce(
+		(sum, c) => {
+			const r = topicRate(source, c.id, now, total.window);
+			sum.bytesPerSecond += r.bytesPerSecond;
+			sum.messagesPerSecond += r.messagesPerSecond;
+			return sum;
+		},
+		{ bytesPerSecond: 0, messagesPerSecond: 0 }
+	);
+	const ownMessagesPerSecond = total.messagesPerSecond - children.messagesPerSecond;
+	const own: TopicRate =
+		ownMessagesPerSecond > 1e-6
+			? {
+					bytesPerSecond: Math.max(0, total.bytesPerSecond - children.bytesPerSecond),
+					messagesPerSecond: ownMessagesPerSecond,
+					window: total.window
+				}
+			: { bytesPerSecond: 0, messagesPerSecond: 0, window: total.window };
 
-	const leafMessages =
-		branch.number_of_messages -
-		(branch.children ?? []).reduce((sum, c) => sum + c.number_of_messages, 0);
+	const parts: string[] = [];
 
-	if (leafMessages > 0) {
-		text += `${leafMessages} message${leafMessages > 1 ? 's' : ''}`;
-		if (branch.children?.length) {
-			text += ', ';
-		}
-	}
+	if (own.messagesPerSecond > 0) parts.push(formatTopicRate(own));
 
 	if (branch.children?.length) {
-		const childMessages = branch.number_of_messages - leafMessages;
-		text += `${branch.children.length} subtopic${branch.children.length > 1 ? 's' : ''} with ${childMessages} message${childMessages > 1 ? 's' : ''}`;
+		parts.push(`${branch.children.length} subtopic${branch.children.length > 1 ? 's' : ''}`);
+		// Cumulative rate of the whole branch (own messages + all subtopics).
+		if (children.messagesPerSecond > 0) parts.push(`${formatTopicRate(total)} total`);
 	}
 
-	text += ')';
+	if (!parts.length) return text;
 
-	return text;
+	return `${text} (${parts.join(', ')})`;
 }
 
 /** Walk the topic tree and increment number_of_messages by `count` along the path.
  *  Creates nodes as needed. Does NOT add message content. */
 function addToTopicBranchMeta(
+	source: string,
 	topicsplit: string[],
 	index: number,
 	topicbranch: Treebranch[] | undefined,
@@ -415,7 +435,7 @@ function addToTopicBranchMeta(
 	} else {
 		found = {
 			id: topicsplit.slice(0, index + 1).join('/'),
-			text: key + ` (${count} message${count > 1 ? 's' : ''})`,
+			text: key,
 			children: [],
 			original_text: key,
 			number_of_messages: count,
@@ -423,28 +443,30 @@ function addToTopicBranchMeta(
 		};
 		topicbranch?.push(found);
 	}
-	addToTopicBranchMeta(topicsplit, index + 1, found.children, count);
+	addToTopicBranchMeta(source, topicsplit, index + 1, found.children, count);
 
 	if (found.children?.length === 0) {
 		found.children = undefined;
 	}
 
-	found.text = createTreeBranchEntryText(found);
+	found.text = createTreeBranchEntryText(found, source);
 
 	return topicbranch;
 }
 
 function addToTopicTreeMeta(
+	source: string,
 	topic: string,
 	topictree: Treebranch[],
 	count: number = 1
 ): Treebranch[] {
 	const branch = topic.split('/');
-	return addToTopicBranchMeta(branch, 0, topictree, count) || [];
+	return addToTopicBranchMeta(source, branch, 0, topictree, count) || [];
 }
 
 /** Walk the topic tree and decrement number_of_messages along the path. */
 function decrementTopicTreeCounts(
+	source: string,
 	topicsplit: string[],
 	index: number,
 	topicbranch: Treebranch[] | undefined,
@@ -457,14 +479,14 @@ function decrementTopicTreeCounts(
 
 	found.number_of_messages = Math.max(0, found.number_of_messages - count);
 
-	decrementTopicTreeCounts(topicsplit, index + 1, found.children, count);
+	decrementTopicTreeCounts(source, topicsplit, index + 1, found.children, count);
 
 	// Remove empty leaf nodes
 	if (found.number_of_messages === 0 && !found.children?.length) {
 		const idx = topicbranch.indexOf(found);
 		if (idx !== -1) topicbranch.splice(idx, 1);
 	} else {
-		found.text = createTreeBranchEntryText(found);
+		found.text = createTreeBranchEntryText(found, source);
 	}
 }
 
@@ -478,8 +500,10 @@ export function processMQTTMessageMeta(message: MQTTMessageMetaParam, app: AppSt
 		app.selectedBroker = message.source;
 	}
 
-	// Update topic tree counts
-	entry.topics = addToTopicTreeMeta(message.topic, entry.topics);
+	// Update topic tree counts and per-topic rates (record first so the new
+	// labels already include this message)
+	recordTopicMessage(message.source, message.topic, message.payload_size);
+	entry.topics = addToTopicTreeMeta(message.source, message.topic, entry.topics);
 
 	// Update selected topic reference only when this message affects selected broker.
 	if (
@@ -514,7 +538,7 @@ export function processMessagesEvicted(params: MessagesEvictedParam, app: AppSta
 
 	// Decrement topic tree counts
 	const parts = params.topic.split('/');
-	decrementTopicTreeCounts(parts, 0, entry.topics, params.count);
+	decrementTopicTreeCounts(params.source, parts, 0, entry.topics, params.count);
 
 	// Trim the evicted topic's cached messages (any open tab, not just the active
 	// one) so inactive tab caches stay bounded. Messages are newest-first, so the
@@ -533,6 +557,27 @@ export function processMessagesEvicted(params: MessagesEvictedParam, app: AppSta
 	}
 
 	return app;
+}
+
+/** Recompute the tree labels so per-topic rates keep updating (and drop back
+ *  to nothing) while a topic is quiet. Returns true if any label changed. */
+export function refreshTopicTreeRates(app: AppState, now: number = Date.now()): boolean {
+	let changed = false;
+	const walk = (source: string, branches: Treebranch[] | undefined) => {
+		if (!branches) return;
+		for (const branch of branches) {
+			const text = createTreeBranchEntryText(branch, source, now);
+			if (text !== branch.text) {
+				branch.text = text;
+				changed = true;
+			}
+			walk(source, branch.children);
+		}
+	};
+	for (const [source, entry] of Object.entries(app.brokerRepository)) {
+		walk(source, entry.topics);
+	}
+	return changed;
 }
 
 /** Process a batch of meta notifications (sent by the backend every ~100 ms). */
