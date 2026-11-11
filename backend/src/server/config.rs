@@ -31,12 +31,68 @@ pub struct BrokerConfig {
     pub username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
+    /// PEM file with the CA certificate(s) used to verify the broker.
+    /// When set, it replaces the system trust store for this broker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert: Option<String>,
+    /// PEM file with the client certificate (chain) for mutual TLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert: Option<String>,
+    /// PEM file with the private key belonging to `client_cert`
+    /// (PKCS#8, PKCS#1/RSA or SEC1/EC; encrypted PKCS#8 with `client_key_password`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key: Option<String>,
+    /// Optional password for an encrypted `client_key` (PKCS#8 `ENCRYPTED PRIVATE KEY`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key_password: Option<String>,
+    /// Optional password viewers must enter in the UI to see this broker.
+    /// Independent of the MQTT credentials; works for any broker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_password: Option<String>,
 }
 
 impl BrokerConfig {
     /// The display key used to identify this broker throughout the app (host:port).
     pub fn key(&self) -> &str {
         &self.host
+    }
+
+    /// The password that gates access to this broker in the UI:
+    /// `access_password` if set, otherwise the MQTT `password`.
+    pub fn ui_password(&self) -> Option<&str> {
+        self.access_password
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .or_else(|| self.password.as_deref().filter(|p| !p.is_empty()))
+    }
+
+    /// TLS is used when explicitly enabled or when any certificate is configured.
+    pub fn tls_enabled(&self) -> bool {
+        self.use_tls
+            || self.ca_cert.is_some()
+            || self.client_cert.is_some()
+            || self.client_key.is_some()
+    }
+
+    /// Returns a copy with relative certificate paths resolved against `base_dir`
+    /// (the config directory). Absolute paths are left untouched.
+    pub fn with_resolved_cert_paths(&self, base_dir: &std::path::Path) -> Self {
+        let resolve = |p: &Option<String>| {
+            p.as_ref().map(|p| {
+                let path = std::path::Path::new(p);
+                if path.is_absolute() {
+                    p.clone()
+                } else {
+                    base_dir.join(path).to_string_lossy().into_owned()
+                }
+            })
+        };
+        Self {
+            ca_cert: resolve(&self.ca_cert),
+            client_cert: resolve(&self.client_cert),
+            client_key: resolve(&self.client_key),
+            ..self.clone()
+        }
     }
 
     #[cfg(test)]
@@ -46,6 +102,11 @@ impl BrokerConfig {
             use_tls: false,
             username: None,
             password: None,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+            client_key_password: None,
+            access_password: None,
         }
     }
 }
@@ -492,5 +553,107 @@ mod tests {
         // File should not be created since deserialization fails
         let command_path = std::format!("{}/broken.json", resource.commands_path);
         assert!(!std::path::Path::new(&command_path).exists());
+    }
+
+    // --- certificate settings ---
+
+    #[test]
+    fn test_broker_config_cert_fields_roundtrip() {
+        let json = r#"{"host":"b:8883","ca_cert":"certs/ca.pem","client_cert":"certs/c.crt","client_key":"/abs/c.key"}"#;
+        let cfg: BrokerConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.use_tls);
+        assert!(cfg.tls_enabled());
+        assert_eq!(cfg.ca_cert.as_deref(), Some("certs/ca.pem"));
+        let out = serde_json::to_string(&cfg).unwrap();
+        assert!(out.contains("\"client_key\":\"/abs/c.key\""));
+        assert_eq!(cfg.client_key_password, None);
+        assert!(!out.contains("client_key_password"));
+
+        let with_pw: BrokerConfig = serde_json::from_str(
+            r#"{"host":"b:8883","client_cert":"c.crt","client_key":"c.key","client_key_password":"pw"}"#,
+        )
+        .unwrap();
+        assert_eq!(with_pw.client_key_password.as_deref(), Some("pw"));
+        let resolved = with_pw.with_resolved_cert_paths(std::path::Path::new("/srv/config"));
+        assert_eq!(resolved.client_key_password.as_deref(), Some("pw"));
+    }
+
+    #[test]
+    fn test_broker_config_without_certs_omits_fields() {
+        let cfg = BrokerConfig::from_host("localhost:1883");
+        assert!(!cfg.tls_enabled());
+        let out = serde_json::to_string(&cfg).unwrap();
+        assert!(!out.contains("ca_cert"));
+        assert!(!out.contains("client_cert"));
+        assert!(!out.contains("client_key"));
+    }
+
+    #[test]
+    fn test_with_resolved_cert_paths() {
+        let mut cfg = BrokerConfig::from_host("b:8883");
+        cfg.ca_cert = Some("certs/ca.pem".to_string());
+        cfg.client_cert = Some("/mnt/certs/c.crt".to_string());
+        cfg.client_key = None;
+        let resolved = cfg.with_resolved_cert_paths(std::path::Path::new("/srv/config"));
+        assert_eq!(
+            resolved.ca_cert.as_deref(),
+            Some("/srv/config/certs/ca.pem")
+        );
+        assert_eq!(resolved.client_cert.as_deref(), Some("/mnt/certs/c.crt"));
+        assert_eq!(resolved.client_key, None);
+        assert_eq!(resolved.host, "b:8883");
+        // original is unchanged (that's what gets persisted)
+        assert_eq!(cfg.ca_cert.as_deref(), Some("certs/ca.pem"));
+    }
+
+    // --- UI access password ---
+
+    #[test]
+    fn test_ui_password_none_by_default() {
+        assert_eq!(BrokerConfig::from_host("b:1883").ui_password(), None);
+    }
+
+    #[test]
+    fn test_ui_password_falls_back_to_mqtt_password() {
+        let mut cfg = BrokerConfig::from_host("b:1883");
+        cfg.username = Some("u".to_string());
+        cfg.password = Some("mqtt-pw".to_string());
+        assert_eq!(cfg.ui_password(), Some("mqtt-pw"));
+    }
+
+    #[test]
+    fn test_ui_password_access_password_without_credentials() {
+        let mut cfg = BrokerConfig::from_host("b:8883");
+        cfg.client_cert = Some("c.crt".to_string());
+        cfg.client_key = Some("c.key".to_string());
+        cfg.access_password = Some("view-pw".to_string());
+        assert_eq!(cfg.ui_password(), Some("view-pw"));
+    }
+
+    #[test]
+    fn test_ui_password_access_password_takes_precedence() {
+        let mut cfg = BrokerConfig::from_host("b:1883");
+        cfg.password = Some("mqtt-pw".to_string());
+        cfg.access_password = Some("view-pw".to_string());
+        assert_eq!(cfg.ui_password(), Some("view-pw"));
+    }
+
+    #[test]
+    fn test_ui_password_ignores_empty_values() {
+        let mut cfg = BrokerConfig::from_host("b:1883");
+        cfg.access_password = Some(String::new());
+        cfg.password = Some(String::new());
+        assert_eq!(cfg.ui_password(), None);
+        cfg.password = Some("mqtt-pw".to_string());
+        assert_eq!(cfg.ui_password(), Some("mqtt-pw"));
+    }
+
+    #[test]
+    fn test_access_password_roundtrip() {
+        let cfg: BrokerConfig =
+            serde_json::from_str(r#"{"host":"b:1883","access_password":"view-pw"}"#).unwrap();
+        assert_eq!(cfg.access_password.as_deref(), Some("view-pw"));
+        let out = serde_json::to_string(&BrokerConfig::from_host("b:1883")).unwrap();
+        assert!(!out.contains("access_password"));
     }
 }

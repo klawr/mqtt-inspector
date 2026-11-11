@@ -25,7 +25,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use rumqttc::{MqttOptions, QoS, Transport};
+use rumqttc::tokio_rustls::rustls::{Certificate, ClientConfig, PrivateKey, RootCertStore};
+use rumqttc::{MqttOptions, QoS, TlsConfiguration, Transport};
 
 use super::config::BrokerConfig;
 
@@ -115,12 +116,116 @@ pub fn max_incoming_packet_size() -> usize {
 
 pub type BrokerMap = Arc<Mutex<HashMap<String, MqttBroker>>>;
 
+fn read_pem_items(path: &str) -> Result<Vec<rustls_pemfile::Item>, String> {
+    let content = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    rustls_pemfile::read_all(&mut std::io::BufReader::new(content.as_slice()))
+        .map_err(|e| format!("cannot parse PEM file {path}: {e}"))
+}
+
+fn read_certificates(path: &str) -> Result<Vec<Certificate>, String> {
+    let certs: Vec<Certificate> = read_pem_items(path)?
+        .into_iter()
+        .filter_map(|item| match item {
+            rustls_pemfile::Item::X509Certificate(der) => Some(Certificate(der)),
+            _ => None,
+        })
+        .collect();
+    if certs.is_empty() {
+        return Err(format!("no certificate found in {path}"));
+    }
+    Ok(certs)
+}
+
+const ENCRYPTED_KEY_BEGIN: &str = "-----BEGIN ENCRYPTED PRIVATE KEY-----";
+const ENCRYPTED_KEY_END: &str = "-----END ENCRYPTED PRIVATE KEY-----";
+
+/// Decrypts the first `ENCRYPTED PRIVATE KEY` (PKCS#8, PBES2) block in `pem`.
+fn decrypt_pkcs8_key(pem: &str, password: &str, path: &str) -> Result<PrivateKey, String> {
+    let start = pem.find(ENCRYPTED_KEY_BEGIN).unwrap_or(0);
+    let end = pem[start..]
+        .find(ENCRYPTED_KEY_END)
+        .map(|i| start + i + ENCRYPTED_KEY_END.len())
+        .ok_or_else(|| format!("malformed encrypted private key in {path}"))?;
+    let (_label, der) = pkcs8::der::pem::decode_vec(&pem.as_bytes()[start..end])
+        .map_err(|e| format!("cannot decode encrypted private key in {path}: {e}"))?;
+    let decrypted = pkcs8::EncryptedPrivateKeyInfo::try_from(der.as_slice())
+        .and_then(|info| info.decrypt(password))
+        .map_err(|e| {
+            format!("cannot decrypt private key in {path} (wrong client_key_password?): {e}")
+        })?;
+    Ok(PrivateKey(decrypted.as_bytes().to_vec()))
+}
+
+fn read_private_key(path: &str, password: Option<&str>) -> Result<PrivateKey, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+
+    if content.contains(ENCRYPTED_KEY_BEGIN) {
+        let password = password.ok_or_else(|| {
+            format!("private key in {path} is encrypted; set client_key_password")
+        })?;
+        return decrypt_pkcs8_key(&content, password, path);
+    }
+    if content.contains("Proc-Type: 4,ENCRYPTED") {
+        return Err(format!(
+            "private key in {path} uses legacy OpenSSL encryption, which is not supported; \
+             convert it with: openssl pkcs8 -topk8 -v2 aes-256-cbc -in <old.key> -out <new.key>"
+        ));
+    }
+
+    read_pem_items(path)?
+        .into_iter()
+        .find_map(|item| match item {
+            rustls_pemfile::Item::PKCS8Key(der)
+            | rustls_pemfile::Item::RSAKey(der)
+            | rustls_pemfile::Item::ECKey(der) => Some(PrivateKey(der)),
+            _ => None,
+        })
+        .ok_or_else(|| format!("no supported private key found in {path}"))
+}
+
+/// Builds the rustls configuration for a broker: trust anchors from `ca_cert`
+/// (or the system store if unset) and an optional client certificate for mTLS.
+pub fn build_tls_config(config: &BrokerConfig) -> Result<TlsConfiguration, String> {
+    let mut roots = RootCertStore::empty();
+    match &config.ca_cert {
+        Some(ca_path) => {
+            let (added, _) = roots.add_parsable_certificates(&read_certificates(ca_path)?);
+            if added == 0 {
+                return Err(format!("no valid CA certificate in {ca_path}"));
+            }
+        }
+        None => {
+            let native = rustls_native_certs::load_native_certs()
+                .map_err(|e| format!("cannot load system certificates: {e}"))?;
+            roots.add_parsable_certificates(&native.into_iter().map(|c| c.0).collect::<Vec<_>>());
+        }
+    }
+
+    let builder = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(roots);
+
+    let client_config = match (&config.client_cert, &config.client_key) {
+        (Some(cert_path), Some(key_path)) => builder
+            .with_client_auth_cert(
+                read_certificates(cert_path)?,
+                read_private_key(key_path, config.client_key_password.as_deref())?,
+            )
+            .map_err(|e| format!("invalid client certificate/key pair: {e}"))?,
+        (None, None) => builder.with_no_client_auth(),
+        _ => return Err("client_cert and client_key must be set together".to_string()),
+    };
+
+    Ok(TlsConfiguration::Rustls(Arc::new(client_config)))
+}
+
 pub fn connect_to_mqtt_host(config: &BrokerConfig) -> (rumqttc::Client, rumqttc::Connection) {
     let id = uuid::Uuid::new_v4();
     let host = &config.host;
     println!(
-        "Connecting to Mqtt broker at {host} (tls={}) with id {id}",
-        config.use_tls
+        "Connecting to Mqtt broker at {host} (tls={}, client_cert={}) with id {id}",
+        config.tls_enabled(),
+        config.client_cert.is_some()
     );
     let hostname_ip = host.trim_matches('"').split(':').collect::<Vec<&str>>();
     let hostname = hostname_ip[0];
@@ -131,8 +236,19 @@ pub fn connect_to_mqtt_host(config: &BrokerConfig) -> (rumqttc::Client, rumqttc:
     // truncate for display without forcing reconnects on oversized payloads.
     mqttoptions.set_max_packet_size(max_incoming_packet_size(), max_incoming_packet_size());
 
-    if config.use_tls {
-        mqttoptions.set_transport(Transport::tls_with_default_config());
+    if config.tls_enabled() {
+        let tls_config = build_tls_config(config).unwrap_or_else(|err| {
+            // Keep the client alive so the reconnect loop retries (and re-reads
+            // the certificate files); the broker will reject the handshake meanwhile.
+            eprintln!("TLS setup for {host} failed: {err}. Connection will fail until fixed.");
+            TlsConfiguration::Rustls(Arc::new(
+                ClientConfig::builder()
+                    .with_safe_defaults()
+                    .with_root_certificates(RootCertStore::empty())
+                    .with_no_client_auth(),
+            ))
+        });
+        mqttoptions.set_transport(Transport::tls_with_config(tls_config));
     }
 
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
@@ -479,5 +595,207 @@ mod tests {
 
         assert_eq!(broker.topics["t"].len(), 1);
         assert_eq!(broker.topics["t"].front().unwrap().timestamp, "newest");
+    }
+
+    // --- TLS / client certificate configuration ---
+
+    fn tls_cfg(
+        ca: Option<String>,
+        cert: Option<String>,
+        key: Option<String>,
+    ) -> super::super::config::BrokerConfig {
+        let mut cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:8883");
+        cfg.ca_cert = ca;
+        cfg.client_cert = cert;
+        cfg.client_key = key;
+        cfg
+    }
+
+    #[test]
+    fn test_build_tls_config_ca_only() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let cfg = tls_cfg(Some(pki.path("ca.crt")), None, None);
+        assert!(build_tls_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn test_build_tls_config_client_cert_ec_and_rsa_keys() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        for (cert, key) in [
+            ("client.crt", "client.key"),
+            ("client_rsa.crt", "client_rsa.key"),
+        ] {
+            let cfg = tls_cfg(
+                Some(pki.path("ca.crt")),
+                Some(pki.path(cert)),
+                Some(pki.path(key)),
+            );
+            let result = build_tls_config(&cfg);
+            assert!(result.is_ok(), "{cert}/{key}: {:?}", result.err());
+        }
+    }
+
+    #[test]
+    fn test_build_tls_config_client_cert_with_system_roots() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let cfg = tls_cfg(
+            None,
+            Some(pki.path("client.crt")),
+            Some(pki.path("client.key")),
+        );
+        assert!(build_tls_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn test_build_tls_config_key_file_without_key_fails() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        // Common mistake: pointing client_key at the certificate file.
+        let cfg = tls_cfg(
+            Some(pki.path("ca.crt")),
+            Some(pki.path("client.crt")),
+            Some(pki.path("client.crt")),
+        );
+        let err = build_tls_config(&cfg).unwrap_err();
+        assert!(err.contains("no supported private key"), "{err}");
+    }
+
+    #[test]
+    fn test_build_tls_config_missing_file_fails() {
+        let cfg = tls_cfg(Some("/nonexistent/ca.pem".to_string()), None, None);
+        let err = build_tls_config(&cfg).unwrap_err();
+        assert!(err.contains("/nonexistent/ca.pem"), "{err}");
+    }
+
+    #[test]
+    fn test_build_tls_config_cert_without_key_fails() {
+        let cfg = tls_cfg(None, Some("client.crt".to_string()), None);
+        let err = build_tls_config(&cfg).unwrap_err();
+        assert!(err.contains("must be set together"), "{err}");
+    }
+
+    #[test]
+    fn test_build_tls_config_non_pem_file_fails() {
+        let dir = std::env::temp_dir().join(format!("mqtt_inspector_bad_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("ca.pem");
+        std::fs::write(&bad, "not a certificate").unwrap();
+        let cfg = tls_cfg(Some(bad.to_string_lossy().into_owned()), None, None);
+        assert!(build_tls_config(&cfg).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_connect_with_broken_cert_does_not_panic() {
+        let cfg = tls_cfg(
+            None,
+            Some("/nonexistent/c.crt".to_string()),
+            Some("/nonexistent/c.key".to_string()),
+        );
+        let (_client, _connection) = connect_to_mqtt_host(&cfg);
+    }
+
+    #[test]
+    fn test_build_tls_config_encrypted_keys_with_password() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        for (cert, key) in [
+            ("client_rsa.crt", "client_rsa_aes.key"),
+            ("client_rsa.crt", "client_rsa_3des.key"),
+            ("client.crt", "client_ec_scrypt.key"),
+        ] {
+            let mut cfg = tls_cfg(
+                Some(pki.path("ca.crt")),
+                Some(pki.path(cert)),
+                Some(pki.path(key)),
+            );
+            cfg.client_key_password = Some(crate::server::test_certs::KEY_PASSWORD.to_string());
+            let result = build_tls_config(&cfg);
+            assert!(result.is_ok(), "{key}: {:?}", result.err());
+        }
+    }
+
+    #[test]
+    fn test_build_tls_config_encrypted_key_without_password_fails() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let cfg = tls_cfg(
+            Some(pki.path("ca.crt")),
+            Some(pki.path("client_rsa.crt")),
+            Some(pki.path("client_rsa_aes.key")),
+        );
+        let err = build_tls_config(&cfg).unwrap_err();
+        assert!(err.contains("set client_key_password"), "{err}");
+    }
+
+    #[test]
+    fn test_build_tls_config_encrypted_key_wrong_password_fails() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let mut cfg = tls_cfg(
+            Some(pki.path("ca.crt")),
+            Some(pki.path("client_rsa.crt")),
+            Some(pki.path("client_rsa_aes.key")),
+        );
+        cfg.client_key_password = Some("wrong".to_string());
+        let err = build_tls_config(&cfg).unwrap_err();
+        assert!(err.contains("wrong client_key_password"), "{err}");
+    }
+
+    #[test]
+    fn test_build_tls_config_unencrypted_key_ignores_password() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let mut cfg = tls_cfg(
+            Some(pki.path("ca.crt")),
+            Some(pki.path("client.crt")),
+            Some(pki.path("client.key")),
+        );
+        cfg.client_key_password = Some("unused".to_string());
+        assert!(build_tls_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn test_build_tls_config_legacy_encrypted_key_gives_hint() {
+        if !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping: openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let mut cfg = tls_cfg(
+            Some(pki.path("ca.crt")),
+            Some(pki.path("client_rsa.crt")),
+            Some(pki.path("client_rsa_legacy.key")),
+        );
+        cfg.client_key_password = Some(crate::server::test_certs::KEY_PASSWORD.to_string());
+        let err = build_tls_config(&cfg).unwrap_err();
+        assert!(err.contains("openssl pkcs8 -topk8"), "{err}");
     }
 }

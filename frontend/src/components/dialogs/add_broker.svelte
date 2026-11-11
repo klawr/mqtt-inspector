@@ -33,6 +33,11 @@ THE SOFTWARE.
 	let use_tls = false;
 	let username: string | undefined = undefined;
 	let password: string | undefined = undefined;
+	let ca_cert: string | undefined = undefined;
+	let client_cert: string | undefined = undefined;
+	let client_key: string | undefined = undefined;
+	let client_key_password: string | undefined = undefined;
+	let access_password: string | undefined = undefined;
 
 	$: if (use_tls && (port === undefined || port === '1883')) {
 		port = '8883';
@@ -45,7 +50,14 @@ THE SOFTWARE.
 		requestMqttBrokerConnection(hostname, socket, {
 			use_tls,
 			username: username?.trim(),
-			password
+			password,
+			access_password,
+			...(use_tls && {
+				ca_cert: ca_cert?.trim(),
+				client_cert: client_cert?.trim(),
+				client_key: client_key?.trim(),
+				client_key_password
+			})
 		});
 		open = false;
 	}
@@ -66,13 +78,54 @@ THE SOFTWARE.
 	<div style="margin-top: 1rem;">
 		<Toggle labelText="Use TLS (mqtts)" bind:toggled={use_tls} labelA="Off" labelB="On" />
 	</div>
+	{#if use_tls}
+		<div style="margin-top: 1rem;">
+			<TextInput
+				labelText="CA certificate (PEM)"
+				placeholder="optional, e.g. certs/ca.pem (default: system CAs)"
+				bind:value={ca_cert}
+			/>
+		</div>
+		<div style="margin-top: 0.5rem;">
+			<TextInput
+				labelText="Client certificate (PEM)"
+				placeholder="optional, e.g. certs/client.crt"
+				bind:value={client_cert}
+			/>
+		</div>
+		<div style="margin-top: 0.5rem;">
+			<TextInput
+				labelText="Client key (PEM)"
+				placeholder="optional, e.g. certs/client.key"
+				bind:value={client_key}
+			/>
+		</div>
+		<div style="margin-top: 0.5rem;">
+			<PasswordInput
+				labelText="Client key password"
+				placeholder="optional, only for encrypted keys"
+				bind:value={client_key_password}
+			/>
+		</div>
+		<p style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--cds-text-helper);">
+			Paths on the backend, relative to the config directory (e.g. /srv/config) or absolute.
+		</p>
+	{/if}
 	<div style="margin-top: 1rem;">
 		<TextInput labelText="Username" placeholder="optional" bind:value={username} />
 	</div>
 	<div style="margin-top: 0.5rem;">
 		<PasswordInput labelText="Password" placeholder="optional" bind:value={password} />
 	</div>
+	<div style="margin-top: 1rem;">
+		<PasswordInput
+			labelText="Access password"
+			placeholder="optional, defaults to the MQTT password"
+			bind:value={access_password}
+		/>
+	</div>
 	<p style="margin-top: 1rem; font-size: 0.75rem; color: var(--cds-text-helper);">
+		Viewers must enter the access password (or, if unset, the MQTT password) to see this broker.
 		Credentials are stored in plain text in the backend config directory.
 	</p>
 </Modal>

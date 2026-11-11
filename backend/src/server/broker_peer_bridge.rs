@@ -335,10 +335,14 @@ pub fn connect_to_known_brokers(
     mqtt_map: &mqtt::BrokerMap,
     notification_buf: &websocket::NotificationBuf,
 ) {
+    let config_dir = std::path::Path::new(broker_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
     config::get_known_brokers(broker_path)
         .iter()
         .for_each(|broker_config| {
-            connect_to_broker(broker_config, peer_map, mqtt_map, notification_buf);
+            let resolved = broker_config.with_resolved_cert_paths(config_dir);
+            connect_to_broker(&resolved, peer_map, mqtt_map, notification_buf);
         });
 }
 
@@ -381,6 +385,15 @@ pub fn deserialize_json_rpc_and_process(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            let optional_string = |key: &str| {
+                message
+                    .params
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            };
             let password = message
                 .params
                 .get("password")
@@ -392,12 +405,28 @@ pub fn deserialize_json_rpc_and_process(
                 use_tls,
                 username,
                 password,
+                ca_cert: optional_string("ca_cert"),
+                client_cert: optional_string("client_cert"),
+                client_key: optional_string("client_key"),
+                client_key_password: message
+                    .params
+                    .get("client_key_password")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
+                access_password: message
+                    .params
+                    .get("access_password")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
             };
-            let has_password = broker_config
-                .password
-                .as_ref()
-                .is_some_and(|p| !p.is_empty());
-            connect_to_broker(&broker_config, peer_map, mqtt_map, notification_buf);
+            let has_password = broker_config.ui_password().is_some();
+            // Persist the paths as entered (relative to the config dir), but
+            // connect using the resolved ones.
+            let resolved_config =
+                broker_config.with_resolved_cert_paths(std::path::Path::new(config_path));
+            connect_to_broker(&resolved_config, peer_map, mqtt_map, notification_buf);
             let broker_path = std::format!("{}/brokers.json", &config_path);
             config::add_to_brokers(&broker_path, &broker_config);
             websocket::broadcast_brokers(peer_map, mqtt_map);
@@ -551,9 +580,9 @@ pub fn deserialize_json_rpc_and_process(
             let broker_cfg = broker_configs.iter().find(|b| b.key() == hostname);
 
             let success = match broker_cfg {
-                Some(cfg) => match &cfg.password {
-                    Some(p) if !p.is_empty() => constant_time_eq(supplied_password, p),
-                    _ => true, // No password required
+                Some(cfg) => match cfg.ui_password() {
+                    Some(p) => constant_time_eq(supplied_password, p),
+                    None => true, // No password required
                 },
                 None => false, // Broker not found in config
             };
@@ -627,10 +656,7 @@ fn connect_to_mqtt_client_and_loop_forever(
     } else {
         println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
         let (client, mut connection) = mqtt::connect_to_mqtt_host(broker_config);
-        let requires_auth = broker_config
-            .password
-            .as_ref()
-            .is_some_and(|p| !p.is_empty());
+        let requires_auth = broker_config.ui_password().is_some();
         let now_ms = chrono::Utc::now().timestamp_millis();
         let broker = mqtt::MqttBroker {
             client,
@@ -1467,6 +1493,11 @@ mod tests {
             use_tls: false,
             username: None,
             password: None,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+            client_key_password: None,
+            access_password: None,
         };
 
         connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
@@ -1604,5 +1635,239 @@ mod tests {
         // Cleanup
         mosquitto2.kill().ok();
         mosquitto2.wait().ok();
+    }
+
+    /// Starts mosquitto with a TLS listener that requires a client certificate
+    /// signed by the test CA.
+    fn start_mosquitto_mtls(
+        port: u16,
+        pki: &crate::server::test_certs::TestPki,
+    ) -> std::process::Child {
+        let conf = pki.dir.join("mosquitto.conf");
+        std::fs::write(
+            &conf,
+            format!(
+                "listener {port} 127.0.0.1\n\
+                 allow_anonymous true\n\
+                 cafile {}\n\
+                 certfile {}\n\
+                 keyfile {}\n\
+                 require_certificate true\n",
+                pki.path("ca.crt"),
+                pki.path("server.crt"),
+                pki.path("server.key"),
+            ),
+        )
+        .unwrap();
+        std::process::Command::new("mosquitto")
+            .args(["-c", &conf.to_string_lossy()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("mosquitto must be installed to run integration tests")
+    }
+
+    fn wait_until_connected(mqtt_map: &mqtt::BrokerMap, hostname: &str, attempts: usize) -> bool {
+        for _ in 0..attempts {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if mqtt_map
+                .lock()
+                .unwrap()
+                .get(hostname)
+                .is_some_and(|b| b.connected)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn test_integration_mutual_tls_with_client_certificate() {
+        if !mosquitto_available() || !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping integration test: mosquitto or openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let port = find_free_port();
+        let hostname = format!("127.0.0.1:{port}");
+        let mut mosquitto = start_mosquitto_mtls(port, &pki);
+        wait_for_port(port, std::time::Duration::from_secs(5));
+
+        // Paths are given relative to the "config dir" (the PKI dir here) to
+        // exercise the same resolution brokers.json uses.
+        let broker_config = config::BrokerConfig {
+            host: hostname.clone(),
+            use_tls: false, // implied by the certificate settings
+            username: None,
+            password: None,
+            ca_cert: Some("ca.crt".to_string()),
+            client_cert: Some("client.crt".to_string()),
+            client_key: Some("client.key".to_string()),
+            client_key_password: None,
+            access_password: None,
+        }
+        .with_resolved_cert_paths(&pki.dir);
+
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let notification_buf = make_notification_buf();
+        connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
+
+        let connected = wait_until_connected(&mqtt_map, &hostname, 50);
+        remove_broker(&hostname, &peer_map, &mqtt_map);
+        mosquitto.kill().ok();
+        mosquitto.wait().ok();
+        assert!(
+            connected,
+            "backend should connect using its client certificate"
+        );
+    }
+
+    #[test]
+    fn test_integration_mutual_tls_rejected_without_client_certificate() {
+        if !mosquitto_available() || !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping integration test: mosquitto or openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let port = find_free_port();
+        let hostname = format!("127.0.0.1:{port}");
+        let mut mosquitto = start_mosquitto_mtls(port, &pki);
+        wait_for_port(port, std::time::Duration::from_secs(5));
+
+        // Trusts the server, but presents no client certificate.
+        let broker_config = config::BrokerConfig {
+            host: hostname.clone(),
+            use_tls: true,
+            username: None,
+            password: None,
+            ca_cert: Some(pki.path("ca.crt")),
+            client_cert: None,
+            client_key: None,
+            client_key_password: None,
+            access_password: None,
+        };
+
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let notification_buf = make_notification_buf();
+        connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
+
+        let connected = wait_until_connected(&mqtt_map, &hostname, 20);
+        remove_broker(&hostname, &peer_map, &mqtt_map);
+        mosquitto.kill().ok();
+        mosquitto.wait().ok();
+        assert!(
+            !connected,
+            "broker must reject clients without a certificate"
+        );
+    }
+
+    #[test]
+    fn test_integration_mutual_tls_with_encrypted_client_key() {
+        if !mosquitto_available() || !crate::server::test_certs::openssl_available() {
+            eprintln!("Skipping integration test: mosquitto or openssl not available");
+            return;
+        }
+        let pki = crate::server::test_certs::generate();
+        let port = find_free_port();
+        let hostname = format!("127.0.0.1:{port}");
+        let mut mosquitto = start_mosquitto_mtls(port, &pki);
+        wait_for_port(port, std::time::Duration::from_secs(5));
+
+        let broker_config = config::BrokerConfig {
+            host: hostname.clone(),
+            use_tls: true,
+            username: None,
+            password: None,
+            ca_cert: Some(pki.path("ca.crt")),
+            client_cert: Some(pki.path("client_rsa.crt")),
+            client_key: Some(pki.path("client_rsa_aes.key")),
+            client_key_password: Some(crate::server::test_certs::KEY_PASSWORD.to_string()),
+            access_password: None,
+        };
+
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let notification_buf = make_notification_buf();
+        connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
+
+        let connected = wait_until_connected(&mqtt_map, &hostname, 50);
+        remove_broker(&hostname, &peer_map, &mqtt_map);
+        mosquitto.kill().ok();
+        mosquitto.wait().ok();
+        assert!(
+            connected,
+            "backend should connect using its encrypted client key"
+        );
+    }
+
+    // --- access_password gates authenticate_broker ---
+
+    fn authenticate(config_path: &str, peer_map: &websocket::PeerMap, addr: SocketAddr, pw: &str) {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "authenticate_broker",
+            "params": { "hostname": "secured:8883", "password": pw }
+        });
+        deserialize_json_rpc_and_process(
+            &msg.to_string(),
+            peer_map,
+            &make_mqtt_map(),
+            config_path,
+            Some(addr),
+            &make_notification_buf(),
+        );
+    }
+
+    fn is_authenticated(peer_map: &websocket::PeerMap, addr: SocketAddr) -> bool {
+        peer_map.lock().unwrap()[&addr]
+            .authenticated_brokers
+            .contains("secured:8883")
+    }
+
+    #[test]
+    fn test_authenticate_broker_with_access_password() {
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(&config_path).unwrap();
+        // Certificate-only broker (no MQTT credentials) protected by access_password;
+        // the MQTT password of another broker must not interfere.
+        std::fs::write(
+            format!("{config_path}/brokers.json"),
+            r#"[{"host":"secured:8883","client_cert":"c.crt","client_key":"c.key","access_password":"view-pw"}]"#,
+        )
+        .unwrap();
+        let peer_map = make_peer_map();
+        let (addr, _rx) = insert_peer(&peer_map, 40100);
+
+        authenticate(&config_path, &peer_map, addr, "wrong");
+        assert!(!is_authenticated(&peer_map, addr));
+
+        authenticate(&config_path, &peer_map, addr, "view-pw");
+        assert!(is_authenticated(&peer_map, addr));
+
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    #[test]
+    fn test_authenticate_broker_access_password_overrides_mqtt_password() {
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(&config_path).unwrap();
+        std::fs::write(
+            format!("{config_path}/brokers.json"),
+            r#"[{"host":"secured:8883","username":"u","password":"mqtt-pw","access_password":"view-pw"}]"#,
+        )
+        .unwrap();
+        let peer_map = make_peer_map();
+        let (addr, _rx) = insert_peer(&peer_map, 40101);
+
+        authenticate(&config_path, &peer_map, addr, "mqtt-pw");
+        assert!(!is_authenticated(&peer_map, addr));
+
+        authenticate(&config_path, &peer_map, addr, "view-pw");
+        assert!(is_authenticated(&peer_map, addr));
+
+        std::fs::remove_dir_all(&config_path).ok();
     }
 }

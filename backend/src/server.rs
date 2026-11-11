@@ -24,6 +24,8 @@ mod broker_peer_bridge;
 mod config;
 mod jsonrpc;
 mod mqtt;
+#[cfg(test)]
+mod test_certs;
 mod websocket;
 
 use std::{

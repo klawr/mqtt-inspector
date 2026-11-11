@@ -123,6 +123,58 @@ test('requestMqttBrokerConnection sends correct message to WebSocket', () => {
 	expect(socket.messages[0].replace(/\s/g, '')).toBe(expectedMessage.replace(/\s/g, ''));
 });
 
+test('requestMqttBrokerConnection includes certificate paths when given', () => {
+	const socket = new MockWebSocket();
+	requestMqttBrokerConnection('broker:8883', socket as unknown as WebSocket, {
+		use_tls: true,
+		ca_cert: 'certs/ca.pem',
+		client_cert: 'certs/client.crt',
+		client_key: 'certs/client.key',
+		client_key_password: 'key-pw'
+	});
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.method).toBe('connect');
+	expect(parsed.params).toEqual({
+		hostname: 'broker:8883',
+		use_tls: true,
+		ca_cert: 'certs/ca.pem',
+		client_cert: 'certs/client.crt',
+		client_key: 'certs/client.key',
+		client_key_password: 'key-pw'
+	});
+});
+
+test('requestMqttBrokerConnection omits empty certificate paths', () => {
+	const socket = new MockWebSocket();
+	requestMqttBrokerConnection('broker:8883', socket as unknown as WebSocket, {
+		use_tls: true,
+		ca_cert: '',
+		client_cert: undefined,
+		client_key: '',
+		client_key_password: ''
+	});
+
+	const parsed = JSON.parse(socket.messages[0]);
+	expect(parsed.params).toEqual({ hostname: 'broker:8883', use_tls: true });
+});
+
+test('requestMqttBrokerConnection includes access_password only when set', () => {
+	const socket = new MockWebSocket();
+	requestMqttBrokerConnection('broker:1883', socket as unknown as WebSocket, {
+		access_password: 'view-pw'
+	});
+	requestMqttBrokerConnection('broker:1883', socket as unknown as WebSocket, {
+		access_password: ''
+	});
+
+	expect(JSON.parse(socket.messages[0]).params).toEqual({
+		hostname: 'broker:1883',
+		access_password: 'view-pw'
+	});
+	expect(JSON.parse(socket.messages[1]).params).toEqual({ hostname: 'broker:1883' });
+});
+
 test('requestSubscribeTopic sends broker and topic', () => {
 	const socket = new MockWebSocket();
 	requestSubscribeTopic('broker:1883', 'test/topic', socket as unknown as WebSocket);

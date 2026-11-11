@@ -72,12 +72,26 @@ export function requestPipelineRemoval(pipeline: string, socket: WebSocket) {
 export function requestMqttBrokerConnection(
 	hostname: string,
 	socket: WebSocket,
-	options?: { use_tls?: boolean; username?: string; password?: string }
+	options?: {
+		use_tls?: boolean;
+		username?: string;
+		password?: string;
+		ca_cert?: string;
+		client_cert?: string;
+		client_key?: string;
+		client_key_password?: string;
+		access_password?: string;
+	}
 ) {
 	const params: Record<string, unknown> = { hostname };
 	if (options?.use_tls) params.use_tls = true;
 	if (options?.username) params.username = options.username;
 	if (options?.password) params.password = options.password;
+	if (options?.ca_cert) params.ca_cert = options.ca_cert;
+	if (options?.client_cert) params.client_cert = options.client_cert;
+	if (options?.client_key) params.client_key = options.client_key;
+	if (options?.client_key_password) params.client_key_password = options.client_key_password;
+	if (options?.access_password) params.access_password = options.access_password;
 	const message = JSON.stringify({
 		jsonrpc: '2.0',
 		method: 'connect',
