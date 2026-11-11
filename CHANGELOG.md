@@ -1,6 +1,17 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.10.0] - 2026-11-11
+
+### Added
+- Add cert + access_pw
+- Add oidc support
+- Add mqtt 5 support
+- Add topic rate to tree
+
+### Fixed
+- Cleanup and keep locked messages locked
+- Ci
 ## [1.9.0] - 2026-07-28
 
 ### Added
@@ -182,7 +193,12 @@ All notable changes to this project will be documented in this file.
 - Update message when changing topic
 ## [1.1.0] - 2024-04-10
 
+### Added
+- Add vscode build tasks
+- Use monaco editor for messages
+
 ### Fixed
+- Add linter exception for monaco
 - Update monaco.svelte Copyright
 - Use proper workflows for pull requests
 - Push master workflow
@@ -242,8 +258,6 @@ All notable changes to this project will be documented in this file.
 - Add prettyPrint for json
 - Add searchbar to topic_tree
 - Add search to pipeline nextStepText
-- Add vscode build tasks
-- Use monaco editor for messages
 - Add tagged deploy for releases
 
 ### Fix
@@ -252,5 +266,4 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - Handle big payload sizes
 - Update CI pipeline
-- Add linter exception for monaco
 
