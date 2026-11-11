@@ -25,6 +25,8 @@ use super::jsonrpc;
 use super::mqtt;
 use super::websocket;
 
+use rumqttc::v5::mqttbytes::{self, v5::Packet};
+use rumqttc::v5::{ConnectionError, Event, StateError};
 use std::collections::HashMap;
 
 const RECONNECT_BACKOFF_MS: u64 = 1000;
@@ -123,210 +125,428 @@ fn evict_while_preserving_topic_latest(
         .collect()
 }
 
-fn loop_forever(
-    mut connection: rumqttc::Connection,
-    peer_map: &websocket::PeerMap,
-    mqtt_map: &mqtt::BrokerMap,
-    notification_buf: &websocket::NotificationBuf,
-) {
-    let (ip, port) = connection.eventloop.mqtt_options.broker_address();
-    let hostname = format!("{ip}:{port}");
-    let mut disconnect_candidate_since: Option<std::time::Instant> = None;
-    let mut disconnect_notified = false;
+/// Why a connection loop returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopExit {
+    /// Broker removed, DISCONNECT received, or (fallback mode) the connection dropped.
+    Ended,
+    /// The broker rejected MQTT 5 before ever accepting a connection.
+    ProtocolRejected,
+}
 
-    for notification in connection.iter() {
-        if !broker_exists(mqtt_map, &hostname) {
-            println!("Broker {hostname} no longer exists in map. Stopping connection loop.");
-            break;
+/// How the connection loop deals with protocol negotiation in auto mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopMode {
+    /// A fixed protocol; never exit for protocol reasons.
+    Fixed,
+    /// Auto mode on MQTT 5: exit with `ProtocolRejected` if the broker keeps
+    /// refusing the MQTT 5 handshake.
+    TryV5,
+    /// Auto mode after falling back to 3.1.1: once connected, exit when the
+    /// connection drops, so the next attempt tries MQTT 5 again. This undoes a
+    /// fallback that was caused by a transient failure rather than an old broker.
+    FallbackV311,
+}
+
+/// Consecutive handshake rejections before auto mode falls back to 3.1.1.
+/// More than one, so a broker restarting mid-handshake doesn't trigger it.
+const PROTOCOL_REJECTIONS_BEFORE_FALLBACK: u32 = 2;
+
+/// A connection event, independent of the MQTT version.
+enum ConnEvent {
+    Publish {
+        topic: String,
+        payload: bytes::Bytes,
+        retain: bool,
+        properties: Option<std::sync::Arc<mqtt::MessageProperties>>,
+    },
+    ConnAck(String),
+    Disconnect(String),
+    /// PingResp, SubAck, outgoing packets, ...
+    Other,
+    OversizedPayload,
+    StateError(String),
+    /// `protocol_rejection`: the failure looks like the broker refusing the
+    /// MQTT version (connection dropped or unparseable CONNACK during handshake).
+    Error {
+        message: String,
+        protocol_rejection: bool,
+    },
+}
+
+fn is_protocol_rejection_io(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    // 3.1.1-only brokers either close the socket on a v5 CONNECT (mosquitto
+    // < 1.6: "connection closed by peer") or answer with a 3.1.1 CONNACK that
+    // the v5 parser rejects as invalid data.
+    matches!(
+        err.kind(),
+        ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::InvalidData
+    )
+}
+
+fn v5_event(n: Result<Event, ConnectionError>) -> ConnEvent {
+    match n {
+        Ok(Event::Incoming(Packet::Publish(p))) => ConnEvent::Publish {
+            // rumqttc already resolved topic aliases into `p.topic`.
+            topic: String::from_utf8_lossy(&p.topic).into_owned(),
+            payload: p.payload,
+            retain: p.retain,
+            properties: mqtt::MessageProperties::from_publish(p.properties),
+        },
+        Ok(Event::Incoming(Packet::ConnAck(a))) => ConnEvent::ConnAck(format!("{:?}", a.code)),
+        Ok(Event::Incoming(Packet::Disconnect(d))) => ConnEvent::Disconnect(format!(
+            "{:?} {:?}",
+            d.reason_code,
+            d.properties.and_then(|p| p.reason_string)
+        )),
+        Ok(_) => ConnEvent::Other,
+        Err(ConnectionError::MqttState(StateError::Deserialization(
+            mqttbytes::Error::PayloadSizeLimitExceeded { .. },
+        ))) => ConnEvent::OversizedPayload,
+        Err(ConnectionError::MqttState(err)) => ConnEvent::StateError(err.to_string()),
+        Err(err) => {
+            let protocol_rejection = match &err {
+                ConnectionError::Io(io) => is_protocol_rejection_io(io),
+                ConnectionError::ConnectionRefused(code) => {
+                    *code == mqttbytes::v5::ConnectReturnCode::UnsupportedProtocolVersion
+                }
+                _ => false,
+            };
+            ConnEvent::Error {
+                message: err.to_string(),
+                protocol_rejection,
+            }
+        }
+    }
+}
+
+fn v311_event(n: Result<rumqttc::Event, rumqttc::ConnectionError>) -> ConnEvent {
+    use rumqttc::{ConnectionError, Event, Packet, StateError};
+    match n {
+        Ok(Event::Incoming(Packet::Publish(p))) => ConnEvent::Publish {
+            topic: p.topic,
+            payload: p.payload,
+            retain: p.retain,
+            properties: None,
+        },
+        Ok(Event::Incoming(Packet::ConnAck(a))) => ConnEvent::ConnAck(format!("{:?}", a.code)),
+        Ok(Event::Incoming(Packet::Disconnect)) => ConnEvent::Disconnect(String::new()),
+        Ok(_) => ConnEvent::Other,
+        Err(ConnectionError::MqttState(StateError::Deserialization(
+            rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(_),
+        ))) => ConnEvent::OversizedPayload,
+        Err(ConnectionError::MqttState(err)) => ConnEvent::StateError(err.to_string()),
+        Err(err) => ConnEvent::Error {
+            message: err.to_string(),
+            // Every MQTT 5 broker also accepts 3.1.1, so this is never the cause.
+            protocol_rejection: false,
+        },
+    }
+}
+
+/// State of one connection loop, shared by both MQTT versions.
+struct ConnectionLoop<'a> {
+    hostname: String,
+    protocol: config::MqttProtocol,
+    mode: LoopMode,
+    peer_map: &'a websocket::PeerMap,
+    mqtt_map: &'a mqtt::BrokerMap,
+    notification_buf: &'a websocket::NotificationBuf,
+    disconnect_candidate_since: Option<std::time::Instant>,
+    disconnect_notified: bool,
+    connected_once: bool,
+    consecutive_rejections: u32,
+}
+
+impl ConnectionLoop<'_> {
+    /// Handles one event; `Some` stops the loop.
+    fn handle(&mut self, event: ConnEvent) -> Option<LoopExit> {
+        if !broker_exists(self.mqtt_map, &self.hostname) {
+            println!(
+                "Broker {} no longer exists in map. Stopping connection loop.",
+                self.hostname
+            );
+            return Some(LoopExit::Ended);
         }
 
-        match notification {
-            Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
-                disconnect_candidate_since = None;
-                let retain = p.retain;
-                let (payload, original_payload_len) =
-                    truncate_payload(p.payload, mqtt::max_message_size());
-                let timestamp = chrono::Utc::now().to_rfc3339();
-                let (total_bytes, new_sample, topic_message_count, evictions, _rate_history_len) = {
-                    let mut mqtt_lock = mqtt_map.lock().unwrap();
-                    let broker = match mqtt_lock.get_mut(&hostname) {
-                        Some(b) => b,
-                        None => {
-                            println!("Broker {hostname} not found in map. Exiting loop.");
-                            break;
-                        }
-                    };
-                    broker.connected = true;
-                    let msg_bytes = payload.len();
-                    let new_msg = mqtt::MqttMessage {
-                        timestamp: timestamp.clone(),
-                        payload: payload.clone(),
-                        original_payload_size: original_payload_len,
-                        retain,
-                    };
-                    let topic_name = p.topic.clone();
-                    if let Some(topic_vec) = broker.topics.get_mut(&topic_name) {
-                        topic_vec.push_back(new_msg);
-                    } else {
-                        let mut vd = std::collections::VecDeque::new();
-                        vd.push_back(new_msg);
-                        broker.topics.insert(topic_name.clone(), vd);
-                    }
-                    broker.total_bytes += msg_bytes;
-                    broker.total_messages += 1;
-                    broker.eviction_order.push_back((topic_name, msg_bytes));
-
-                    let evictions = evict_while_preserving_topic_latest(broker);
-
-                    let topic_message_count =
-                        broker.topics.get(&p.topic).map(|v| v.len()).unwrap_or(0);
-
-                    // Rate history sampling: accumulate bytes and record every 10s
-                    broker.rate_bytes_accumulator += msg_bytes;
-                    let now_ms = chrono::Utc::now().timestamp_millis();
-                    let elapsed_ms = now_ms - broker.rate_last_sample_ms;
-                    let new_sample = if elapsed_ms >= 10_000 {
-                        let elapsed_secs = elapsed_ms as f64 / 1000.0;
-                        let bytes_per_second = broker.rate_bytes_accumulator as f64 / elapsed_secs;
-                        let sample = mqtt::RateHistoryEntry {
-                            timestamp: now_ms,
-                            bytes_per_second,
-                            total_bytes: broker.total_bytes,
-                        };
-                        broker.rate_history.push(sample.clone());
-                        broker.rate_bytes_accumulator = 0;
-                        broker.rate_last_sample_ms = now_ms;
-                        // Prune entries older than 7 days
-                        let cutoff = now_ms - 7 * 24 * 60 * 60 * 1000;
-                        broker.rate_history.retain(|e| e.timestamp >= cutoff);
-                        Some(sample)
-                    } else {
-                        None
-                    };
-
-                    let rate_history_len = broker.rate_history.len();
-
-                    (
-                        broker.total_bytes,
-                        new_sample,
-                        topic_message_count,
-                        evictions,
-                        rate_history_len,
-                    )
-                }; // mqtt_lock dropped here
-                if let Some(ref sample) = new_sample {
-                    websocket::send_rate_sample_to_peers(peer_map, &hostname, sample);
-                }
-                // Buffer eviction notifications (will be flushed in batch)
-                if !evictions.is_empty() {
-                    websocket::buffer_evictions(notification_buf, &hostname, &evictions);
-                }
-                // Buffer lightweight meta (will be flushed in batch)
-                websocket::buffer_message_meta(
-                    notification_buf,
-                    websocket::PendingMeta {
-                        source: hostname.clone(),
-                        topic: p.topic.clone(),
-                        timestamp: timestamp.clone(),
-                        payload_size: original_payload_len,
-                        total_bytes,
-                        topic_message_count,
-                        retain,
-                    },
-                );
-                // Send full payload ONLY to peers watching this topic
-                let message = websocket::SubscribedPeerMessage {
-                    source: &hostname,
-                    topic: &p.topic,
-                    payload: &payload,
-                    original_payload_size: original_payload_len,
-                    total_bytes,
-                    timestamp: &timestamp,
-                    retain,
-                };
-                websocket::send_message_to_subscribed_peers(peer_map, &message);
+        match event {
+            ConnEvent::Publish {
+                topic,
+                payload,
+                retain,
+                properties,
+            } => {
+                self.disconnect_candidate_since = None;
+                return self.handle_publish(topic, payload, retain, properties);
             }
-            Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(a))) => {
-                disconnect_candidate_since = None;
-                disconnect_notified = false;
+            ConnEvent::ConnAck(code) => {
+                self.disconnect_candidate_since = None;
+                self.disconnect_notified = false;
+                self.connected_once = true;
+                self.consecutive_rejections = 0;
                 let client = {
-                    let mut mqtt_lock = mqtt_map.lock().unwrap();
-                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
+                    let mut mqtt_lock = self.mqtt_map.lock().unwrap();
+                    if let Some(broker) = mqtt_lock.get_mut(&self.hostname) {
                         broker.connected = true;
+                        broker.protocol = Some(self.protocol);
                         Some(broker.client.clone())
                     } else {
                         None
                     }
                 };
                 if let Some(mut client) = client {
-                    if let Err(err) = client.subscribe("#", rumqttc::QoS::AtMostOnce) {
-                        println!("Failed to re-subscribe after ConnAck for {hostname}: {err}");
+                    if let Err(err) = client.subscribe_all() {
+                        println!(
+                            "Failed to re-subscribe after ConnAck for {}: {err}",
+                            self.hostname
+                        );
                     }
                 }
-                websocket::send_broker_status_to_peers(peer_map, &hostname, true);
-                println!("Connection event: {:?} for {:?}", a.code, hostname);
+                websocket::send_broker_status_to_peers(
+                    self.peer_map,
+                    &self.hostname,
+                    true,
+                    Some(self.protocol),
+                );
+                println!(
+                    "Connection event: {code} for {:?} (MQTT {})",
+                    self.hostname,
+                    self.protocol.label()
+                );
             }
-            Ok(rumqttc::Event::Incoming(rumqttc::Packet::Disconnect)) => {
-                println!("Disconnect event for {hostname:?}");
-                break;
+            ConnEvent::Disconnect(reason) => {
+                println!("Disconnect event for {:?}: {reason}", self.hostname);
+                return Some(LoopExit::Ended);
             }
-            Ok(_) => {
-                // PingReq, PingResp, SubAck, etc. — no lock needed
+            ConnEvent::Other | ConnEvent::OversizedPayload => {}
+            ConnEvent::StateError(err) => {
+                println!(
+                    "MqttState error for {:?}: {err}. Will retry.",
+                    self.hostname
+                );
+                return self.handle_connection_error();
             }
-            Err(rumqttc::ConnectionError::MqttState(rumqttc::StateError::Deserialization(
-                rumqttc::mqttbytes::Error::PayloadSizeLimitExceeded(_),
-            ))) => {}
-            Err(rumqttc::ConnectionError::MqttState(err)) => {
-                {
-                    let mut mqtt_lock = mqtt_map.lock().unwrap();
-                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
-                        broker.connected = false;
+            ConnEvent::Error {
+                message,
+                protocol_rejection,
+            } => {
+                println!(
+                    "Connection error for {:?}: {message}. Will retry.",
+                    self.hostname
+                );
+                if self.mode == LoopMode::TryV5 && !self.connected_once {
+                    if protocol_rejection {
+                        self.consecutive_rejections += 1;
+                        if self.consecutive_rejections >= PROTOCOL_REJECTIONS_BEFORE_FALLBACK {
+                            return Some(LoopExit::ProtocolRejected);
+                        }
+                    } else {
+                        self.consecutive_rejections = 0;
                     }
                 }
-                println!("MqttState error for {hostname:?}: {err}. Will retry.");
-                let now = std::time::Instant::now();
-                let candidate_since = disconnect_candidate_since.get_or_insert(now);
-                if !disconnect_notified
-                    && now.duration_since(*candidate_since).as_millis()
-                        >= DISCONNECT_NOTIFY_GRACE_MS as u128
-                {
-                    websocket::send_broker_status_to_peers(peer_map, &hostname, false);
-                    disconnect_notified = true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
-            }
-            Err(err) => {
-                {
-                    let mut mqtt_lock = mqtt_map.lock().unwrap();
-                    if let Some(broker) = mqtt_lock.get_mut(&hostname) {
-                        broker.connected = false;
-                    }
-                }
-                println!("Connection error for {hostname:?}: {err}. Will retry.");
-                let now = std::time::Instant::now();
-                let candidate_since = disconnect_candidate_since.get_or_insert(now);
-                if !disconnect_notified
-                    && now.duration_since(*candidate_since).as_millis()
-                        >= DISCONNECT_NOTIFY_GRACE_MS as u128
-                {
-                    websocket::send_broker_status_to_peers(peer_map, &hostname, false);
-                    disconnect_notified = true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
+                return self.handle_connection_error();
             }
         }
+        None
     }
-    // Connection iterator ended — broker disconnected or was removed
-    println!("Connection loop for {hostname:?} ended. Marking broker as disconnected.");
-    {
-        let mut mqtt_lock = mqtt_map.lock().unwrap();
-        if let Some(broker) = mqtt_lock.get_mut(&hostname) {
-            broker.connected = false;
+
+    /// Marks the broker disconnected, notifies peers after a grace period and
+    /// backs off before the client reconnects.
+    fn handle_connection_error(&mut self) -> Option<LoopExit> {
+        {
+            let mut mqtt_lock = self.mqtt_map.lock().unwrap();
+            if let Some(broker) = mqtt_lock.get_mut(&self.hostname) {
+                broker.connected = false;
+            }
+        }
+        if self.mode == LoopMode::FallbackV311 && self.connected_once {
+            return Some(LoopExit::Ended);
+        }
+        let now = std::time::Instant::now();
+        let candidate_since = self.disconnect_candidate_since.get_or_insert(now);
+        if !self.disconnect_notified
+            && now.duration_since(*candidate_since).as_millis()
+                >= DISCONNECT_NOTIFY_GRACE_MS as u128
+        {
+            websocket::send_broker_status_to_peers(self.peer_map, &self.hostname, false, None);
+            self.disconnect_notified = true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
+        None
+    }
+
+    fn handle_publish(
+        &mut self,
+        topic: String,
+        payload: bytes::Bytes,
+        retain: bool,
+        properties: Option<std::sync::Arc<mqtt::MessageProperties>>,
+    ) -> Option<LoopExit> {
+        let (payload, original_payload_len) = truncate_payload(payload, mqtt::max_message_size());
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let (total_bytes, new_sample, topic_message_count, evictions, _rate_history_len) = {
+            let mut mqtt_lock = self.mqtt_map.lock().unwrap();
+            let broker = match mqtt_lock.get_mut(&self.hostname) {
+                Some(b) => b,
+                None => {
+                    println!("Broker {} not found in map. Exiting loop.", self.hostname);
+                    return Some(LoopExit::Ended);
+                }
+            };
+            broker.connected = true;
+            let msg_bytes = payload.len();
+            let new_msg = mqtt::MqttMessage {
+                timestamp: timestamp.clone(),
+                payload: payload.clone(),
+                original_payload_size: original_payload_len,
+                retain,
+                properties: properties.clone(),
+            };
+            let topic_name = topic.clone();
+            if let Some(topic_vec) = broker.topics.get_mut(&topic_name) {
+                topic_vec.push_back(new_msg);
+            } else {
+                let mut vd = std::collections::VecDeque::new();
+                vd.push_back(new_msg);
+                broker.topics.insert(topic_name.clone(), vd);
+            }
+            broker.total_bytes += msg_bytes;
+            broker.total_messages += 1;
+            broker.eviction_order.push_back((topic_name, msg_bytes));
+
+            let evictions = evict_while_preserving_topic_latest(broker);
+
+            let topic_message_count = broker.topics.get(&topic).map(|v| v.len()).unwrap_or(0);
+
+            // Rate history sampling: accumulate bytes and record every 10s
+            broker.rate_bytes_accumulator += msg_bytes;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let elapsed_ms = now_ms - broker.rate_last_sample_ms;
+            let new_sample = if elapsed_ms >= 10_000 {
+                let elapsed_secs = elapsed_ms as f64 / 1000.0;
+                let bytes_per_second = broker.rate_bytes_accumulator as f64 / elapsed_secs;
+                let sample = mqtt::RateHistoryEntry {
+                    timestamp: now_ms,
+                    bytes_per_second,
+                    total_bytes: broker.total_bytes,
+                };
+                broker.rate_history.push(sample.clone());
+                broker.rate_bytes_accumulator = 0;
+                broker.rate_last_sample_ms = now_ms;
+                // Prune entries older than 7 days
+                let cutoff = now_ms - 7 * 24 * 60 * 60 * 1000;
+                broker.rate_history.retain(|e| e.timestamp >= cutoff);
+                Some(sample)
+            } else {
+                None
+            };
+
+            let rate_history_len = broker.rate_history.len();
+
+            (
+                broker.total_bytes,
+                new_sample,
+                topic_message_count,
+                evictions,
+                rate_history_len,
+            )
+        }; // mqtt_lock dropped here
+        if let Some(ref sample) = new_sample {
+            websocket::send_rate_sample_to_peers(self.peer_map, &self.hostname, sample);
+        }
+        // Buffer eviction notifications (will be flushed in batch)
+        if !evictions.is_empty() {
+            websocket::buffer_evictions(self.notification_buf, &self.hostname, &evictions);
+        }
+        // Buffer lightweight meta (will be flushed in batch)
+        websocket::buffer_message_meta(
+            self.notification_buf,
+            websocket::PendingMeta {
+                source: self.hostname.clone(),
+                topic: topic.clone(),
+                timestamp: timestamp.clone(),
+                payload_size: original_payload_len,
+                total_bytes,
+                topic_message_count,
+                retain,
+            },
+        );
+        // Send full payload ONLY to peers watching this topic
+        let message = websocket::SubscribedPeerMessage {
+            source: &self.hostname,
+            topic: &topic,
+            payload: &payload,
+            original_payload_size: original_payload_len,
+            total_bytes: Some(total_bytes),
+            timestamp: &timestamp,
+            retain,
+            properties: properties.as_deref(),
+        };
+        websocket::send_message_to_subscribed_peers(self.peer_map, &message);
+        None
+    }
+
+    /// Marks the broker disconnected once the loop has ended.
+    fn finish(&self) {
+        {
+            let mut mqtt_lock = self.mqtt_map.lock().unwrap();
+            if let Some(broker) = mqtt_lock.get_mut(&self.hostname) {
+                broker.connected = false;
+            }
+        }
+        if !self.disconnect_notified {
+            websocket::send_broker_status_to_peers(self.peer_map, &self.hostname, false, None);
         }
     }
-    if !disconnect_notified {
-        websocket::send_broker_status_to_peers(peer_map, &hostname, false);
+}
+
+fn loop_forever(
+    connection: mqtt::MqttConnection,
+    mode: LoopMode,
+    peer_map: &websocket::PeerMap,
+    mqtt_map: &mqtt::BrokerMap,
+    notification_buf: &websocket::NotificationBuf,
+) -> LoopExit {
+    let ((ip, port), protocol) = match &connection {
+        mqtt::MqttConnection::V5(c) => (
+            c.eventloop.options.broker_address(),
+            config::MqttProtocol::V5,
+        ),
+        mqtt::MqttConnection::V311(c) => (
+            c.eventloop.mqtt_options.broker_address(),
+            config::MqttProtocol::V311,
+        ),
+    };
+    let mut state = ConnectionLoop {
+        hostname: format!("{ip}:{port}"),
+        protocol,
+        mode,
+        peer_map,
+        mqtt_map,
+        notification_buf,
+        disconnect_candidate_since: None,
+        disconnect_notified: false,
+        connected_once: false,
+        consecutive_rejections: 0,
+    };
+
+    let exit = match connection {
+        mqtt::MqttConnection::V5(mut c) => c.iter().find_map(|n| state.handle(v5_event(n))),
+        mqtt::MqttConnection::V311(mut c) => c.iter().find_map(|n| state.handle(v311_event(n))),
     }
+    // The iterator only ends when the client was dropped/disconnected.
+    .unwrap_or(LoopExit::Ended);
+
+    println!(
+        "Connection loop for {:?} ended ({exit:?}). Marking broker as disconnected.",
+        state.hostname
+    );
+    state.finish();
+    exit
 }
 
 pub fn connect_to_known_brokers(
@@ -441,7 +661,25 @@ pub fn deserialize_json_rpc_and_process(
                 .get("retain")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            mqtt::publish_message(&host, topic, payload, retain, mqtt_map);
+            // Optional MQTT 5 user properties: [[key, value], ...].
+            let user_properties = message
+                .params
+                .get("user_properties")
+                .and_then(|v| v.as_array())
+                .map(|pairs| {
+                    pairs
+                        .iter()
+                        .filter_map(|pair| match pair.as_array()?.as_slice() {
+                            [key, value] => {
+                                Some((key.as_str()?.to_string(), value.as_str()?.to_string()))
+                            }
+                            _ => None,
+                        })
+                        .filter(|(key, _)| !key.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            mqtt::publish_message(&host, topic, payload, retain, user_properties, mqtt_map);
         }
         "subscribe_topic" => {
             if let Some(peer_addr) = addr {
@@ -615,7 +853,13 @@ fn process_config_change(
                             .collect()
                     })
                     .unwrap_or_default(),
+                protocol: optional_string("protocol").and_then(|p| config::MqttProtocol::parse(&p)),
             };
+            // Reject before persisting, so a typo never ends up in brokers.json.
+            if let Err(err) = broker_config.address() {
+                println!("Ignoring connect request: {err}");
+                return;
+            }
             let has_password = broker_config.ui_password().is_some();
             // Persist the paths as entered (relative to the config dir), but
             // connect using the resolved ones.
@@ -727,7 +971,16 @@ fn connect_to_mqtt_client_and_loop_forever(
         println!("MQTT-Client for {mqtt_host} already exists.");
     } else {
         println!("MQTT-Client for {mqtt_host} does not exist. Creating new client.");
-        let (client, mut connection) = mqtt::connect_to_mqtt_host(broker_config);
+        // Unset protocol = auto: start with MQTT 5, fall back to 3.1.1 if rejected.
+        let auto = broker_config.protocol.is_none();
+        let mut protocol = broker_config.protocol.unwrap_or(config::MqttProtocol::V5);
+        let (client, mut connection) = match mqtt::connect_to_mqtt_host(broker_config, protocol) {
+            Ok(created) => created,
+            Err(err) => {
+                println!("Not connecting to {mqtt_host}: {err}");
+                return;
+            }
+        };
         let requires_auth = broker_config.ui_password().is_some();
         let now_ms = chrono::Utc::now().timestamp_millis();
         let broker = mqtt::MqttBroker {
@@ -743,25 +996,48 @@ fn connect_to_mqtt_client_and_loop_forever(
             rate_last_sample_ms: now_ms,
             requires_auth,
             allowed_roles: broker_config.allowed_roles.clone(),
+            protocol: None,
         };
 
         mqtt_lock.insert(mqtt_host.to_string(), broker);
         drop(mqtt_lock);
 
         loop {
-            loop_forever(connection, peer_map, mqtt_map, notification_buf);
+            let mode = match (auto, protocol) {
+                (false, _) => LoopMode::Fixed,
+                (true, config::MqttProtocol::V5) => LoopMode::TryV5,
+                (true, config::MqttProtocol::V311) => LoopMode::FallbackV311,
+            };
+            let exit = loop_forever(connection, mode, peer_map, mqtt_map, notification_buf);
 
             if !broker_exists(mqtt_map, mqtt_host) {
                 println!("Broker {mqtt_host} was removed. Stopping reconnect loop.");
                 break;
             }
 
-            println!(
-                "Connection loop ended for {mqtt_host}. Recreating MQTT client and reconnecting."
-            );
-            std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
+            match exit {
+                LoopExit::ProtocolRejected => {
+                    // The loop already backed off after the rejection.
+                    println!("{mqtt_host} rejected MQTT 5. Falling back to MQTT 3.1.1.");
+                    protocol = config::MqttProtocol::V311;
+                }
+                LoopExit::Ended => {
+                    if auto {
+                        protocol = config::MqttProtocol::V5;
+                    }
+                    println!(
+                        "Connection loop ended for {mqtt_host}. Recreating MQTT client and reconnecting."
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(RECONNECT_BACKOFF_MS));
+                }
+            }
 
-            let (new_client, new_connection) = mqtt::connect_to_mqtt_host(broker_config);
+            // The address was valid for the first client, so this can't fail.
+            let Ok((new_client, new_connection)) =
+                mqtt::connect_to_mqtt_host(broker_config, protocol)
+            else {
+                break;
+            };
             {
                 let mut mqtt_lock = mqtt_map.lock().unwrap();
                 let Some(broker) = mqtt_lock.get_mut(mqtt_host) else {
@@ -842,6 +1118,148 @@ mod tests {
 
     fn make_notification_buf() -> websocket::NotificationBuf {
         websocket::NotificationBuf::new(Mutex::new(websocket::NotificationBuffer::default()))
+    }
+
+    // --- MQTT version fallback ---
+
+    fn io_error(kind: std::io::ErrorKind) -> ConnectionError {
+        ConnectionError::Io(std::io::Error::new(kind, "test"))
+    }
+
+    fn is_rejection(event: ConnEvent) -> bool {
+        matches!(
+            event,
+            ConnEvent::Error {
+                protocol_rejection: true,
+                ..
+            }
+        )
+    }
+
+    #[test]
+    fn test_v5_protocol_rejection_classification() {
+        use std::io::ErrorKind;
+        // Old mosquitto closes the socket; spec-compliant 3.1.1 brokers send a
+        // CONNACK the v5 parser can't read (InvalidData).
+        assert!(is_rejection(v5_event(Err(io_error(
+            ErrorKind::ConnectionAborted
+        )))));
+        assert!(is_rejection(v5_event(Err(io_error(
+            ErrorKind::InvalidData
+        )))));
+        assert!(is_rejection(v5_event(Err(
+            ConnectionError::ConnectionRefused(
+                mqttbytes::v5::ConnectReturnCode::UnsupportedProtocolVersion
+            )
+        ))));
+        // Broker down or bad credentials are not protocol problems.
+        assert!(!is_rejection(v5_event(Err(io_error(
+            ErrorKind::ConnectionRefused
+        )))));
+        assert!(!is_rejection(v5_event(Err(
+            ConnectionError::ConnectionRefused(mqttbytes::v5::ConnectReturnCode::NotAuthorized)
+        ))));
+        // 3.1.1 is the fallback; it never triggers another one.
+        let v311_err = rumqttc::ConnectionError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "test",
+        ));
+        assert!(!is_rejection(v311_event(Err(v311_err))));
+    }
+
+    fn connection_loop<'a>(
+        mode: LoopMode,
+        peer_map: &'a websocket::PeerMap,
+        mqtt_map: &'a mqtt::BrokerMap,
+        notification_buf: &'a websocket::NotificationBuf,
+    ) -> ConnectionLoop<'a> {
+        let host = "127.0.0.1:18850";
+        let (client, _connection) = mqtt::connect_to_mqtt_host(
+            &config::BrokerConfig::from_host(host),
+            config::MqttProtocol::V5,
+        )
+        .unwrap();
+        mqtt_map.lock().unwrap().insert(
+            host.to_string(),
+            mqtt::MqttBroker {
+                client,
+                broker: host.to_string(),
+                connected: false,
+                topics: HashMap::new(),
+                total_bytes: 0,
+                total_messages: 0,
+                eviction_order: std::collections::VecDeque::new(),
+                rate_history: Vec::new(),
+                rate_bytes_accumulator: 0,
+                rate_last_sample_ms: 0,
+                requires_auth: false,
+                allowed_roles: Vec::new(),
+                protocol: None,
+            },
+        );
+        ConnectionLoop {
+            hostname: host.to_string(),
+            protocol: config::MqttProtocol::V5,
+            mode,
+            peer_map,
+            mqtt_map,
+            notification_buf,
+            disconnect_candidate_since: None,
+            disconnect_notified: false,
+            connected_once: false,
+            consecutive_rejections: 0,
+        }
+    }
+
+    fn rejection() -> ConnEvent {
+        ConnEvent::Error {
+            message: "connection closed by peer".to_string(),
+            protocol_rejection: true,
+        }
+    }
+
+    #[test]
+    fn test_fallback_after_repeated_rejection_only_before_connect() {
+        let (pm, mm, nb) = (make_peer_map(), make_mqtt_map(), make_notification_buf());
+
+        // Auto mode: the second consecutive rejection triggers the fallback.
+        let mut state = connection_loop(LoopMode::TryV5, &pm, &mm, &nb);
+        assert_eq!(state.handle(rejection()), None);
+        assert_eq!(state.handle(rejection()), Some(LoopExit::ProtocolRejected));
+
+        // A fixed protocol never falls back.
+        let mut state = connection_loop(LoopMode::Fixed, &pm, &mm, &nb);
+        state.consecutive_rejections = PROTOCOL_REJECTIONS_BEFORE_FALLBACK;
+        assert_eq!(state.handle(rejection()), None);
+
+        // Once MQTT 5 connected, drops are ordinary disconnects.
+        let mut state = connection_loop(LoopMode::TryV5, &pm, &mm, &nb);
+        assert_eq!(
+            state.handle(ConnEvent::ConnAck("Success".to_string())),
+            None
+        );
+        assert_eq!(
+            mm.lock().unwrap()["127.0.0.1:18850"].protocol,
+            Some(config::MqttProtocol::V5)
+        );
+        state.consecutive_rejections = PROTOCOL_REJECTIONS_BEFORE_FALLBACK;
+        assert_eq!(state.handle(rejection()), None);
+    }
+
+    #[test]
+    fn test_fallback_connection_exits_on_drop_to_retry_v5() {
+        let (pm, mm, nb) = (make_peer_map(), make_mqtt_map(), make_notification_buf());
+        let mut state = connection_loop(LoopMode::FallbackV311, &pm, &mm, &nb);
+        state.protocol = config::MqttProtocol::V311;
+        assert_eq!(
+            state.handle(ConnEvent::ConnAck("Success".to_string())),
+            None
+        );
+        let drop = ConnEvent::Error {
+            message: "connection reset".to_string(),
+            protocol_rejection: false,
+        };
+        assert_eq!(state.handle(drop), Some(LoopExit::Ended));
     }
 
     fn make_addr(port: u16) -> SocketAddr {
@@ -944,6 +1362,52 @@ mod tests {
         drop(map);
 
         // Cleanup
+        std::fs::remove_dir_all(&config_path).ok();
+    }
+
+    /// Regression: an invalid port used to panic while the broker map was
+    /// locked, poisoning it and breaking every later request.
+    #[test]
+    fn test_process_connect_invalid_address_is_rejected() {
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let config_path = format!("/tmp/mqtt_test_{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(&config_path).ok();
+
+        for hostname in ["127.0.0.1:18841x", "127.0.0.1", "127.0.0.1:70000"] {
+            let json = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "connect",
+                "params": { "hostname": hostname }
+            })
+            .to_string();
+            deserialize_json_rpc_and_process(
+                &json,
+                &peer_map,
+                &mqtt_map,
+                &config_path,
+                None,
+                &make_notification_buf(),
+                &websocket::PeerAccess::Password,
+            );
+        }
+        // A bad entry already in brokers.json must not crash either.
+        connect_to_broker(
+            &config::BrokerConfig::from_host("bad-port:abc"),
+            &peer_map,
+            &mqtt_map,
+            &make_notification_buf(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(!mqtt_map.is_poisoned(), "broker map must not be poisoned");
+        assert!(mqtt_map.lock().unwrap().is_empty());
+        assert!(
+            !std::path::Path::new(&config_path)
+                .join("brokers.json")
+                .exists(),
+            "invalid brokers must not be persisted"
+        );
         std::fs::remove_dir_all(&config_path).ok();
     }
 
@@ -1468,7 +1932,7 @@ mod tests {
     #[test]
     fn test_eviction_keeps_newest_message_per_topic() {
         let cfg = config::BrokerConfig::from_host("127.0.0.1:18839");
-        let (client, _conn) = mqtt::connect_to_mqtt_host(&cfg);
+        let (client, _conn) = mqtt::connect_to_mqtt_host(&cfg, config::MqttProtocol::V5).unwrap();
 
         let mut broker = mqtt::MqttBroker {
             client,
@@ -1483,6 +1947,7 @@ mod tests {
             rate_last_sample_ms: 0,
             requires_auth: false,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
 
         let mut topic_a = std::collections::VecDeque::new();
@@ -1491,12 +1956,14 @@ mod tests {
             payload: bytes::Bytes::from_static(b"a-old"),
             original_payload_size: 5,
             retain: false,
+            properties: None,
         });
         topic_a.push_back(mqtt::MqttMessage {
             timestamp: "2026-01-01T00:00:01Z".to_string(),
             payload: bytes::Bytes::from_static(b"a-new"),
             original_payload_size: 5,
             retain: false,
+            properties: None,
         });
 
         let mut topic_b = std::collections::VecDeque::new();
@@ -1505,6 +1972,7 @@ mod tests {
             payload: bytes::Bytes::from_static(b"b-only"),
             original_payload_size: 6,
             retain: false,
+            properties: None,
         });
 
         broker.topics.insert("t/a".to_string(), topic_a);
@@ -1598,6 +2066,7 @@ mod tests {
             client_key_password: None,
             access_password: None,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
 
         connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
@@ -1737,6 +2206,118 @@ mod tests {
         mosquitto2.wait().ok();
     }
 
+    /// MQTT 5 user properties (and other publish properties) must be stored
+    /// with the message so the UI can show them.
+    #[test]
+    fn test_mqtt5_user_properties_are_stored() {
+        if !mosquitto_available() {
+            eprintln!("Skipping integration test: mosquitto not available");
+            return;
+        }
+
+        let port = find_free_port();
+        let hostname = format!("127.0.0.1:{port}");
+        let mut mosquitto = start_mosquitto(port);
+        wait_for_port(port, std::time::Duration::from_secs(5));
+
+        let peer_map = make_peer_map();
+        let mqtt_map = make_mqtt_map();
+        let notification_buf = make_notification_buf();
+        let broker_config = config::BrokerConfig::from_host(&hostname);
+        connect_to_broker(&broker_config, &peer_map, &mqtt_map, &notification_buf);
+
+        let connected = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            mqtt_map
+                .lock()
+                .unwrap()
+                .get(&hostname)
+                .is_some_and(|b| b.connected)
+        });
+        assert!(connected, "backend should connect to mosquitto");
+
+        let (pub_client, mut pub_conn) = rumqttc::v5::Client::new(
+            rumqttc::v5::MqttOptions::new("test-pub-props", "127.0.0.1", port),
+            10,
+        );
+        std::thread::spawn(move || {
+            for notification in pub_conn.iter() {
+                if notification.is_err() {
+                    break;
+                }
+            }
+        });
+        let props = rumqttc::v5::mqttbytes::v5::PublishProperties {
+            user_properties: vec![
+                ("trace-id".to_string(), "abc123".to_string()),
+                ("tag".to_string(), "one".to_string()),
+                ("tag".to_string(), "two".to_string()),
+            ],
+            content_type: Some("application/json".to_string()),
+            correlation_data: Some(bytes::Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef])),
+            ..Default::default()
+        };
+        pub_client
+            .publish_with_properties(
+                "test/props",
+                rumqttc::v5::mqttbytes::QoS::AtLeastOnce,
+                false,
+                "{}",
+                props,
+            )
+            .unwrap();
+
+        mqtt::publish_message(
+            &hostname,
+            "test/sent",
+            "x",
+            false,
+            vec![("origin".to_string(), "inspector".to_string())],
+            &mqtt_map,
+        );
+        let sent = (0..50).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let lock = mqtt_map.lock().unwrap();
+            lock.get(&hostname)
+                .and_then(|b| b.topics.get("test/sent"))
+                .and_then(|msgs| msgs.back())
+                .map(|m| m.properties.clone())
+        });
+        let sent_properties = sent
+            .expect("backend should receive its own publish")
+            .expect("own publish should carry user properties");
+        assert_eq!(
+            sent_properties.user_properties,
+            vec![("origin".to_string(), "inspector".to_string())]
+        );
+
+        let stored = (0..50).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let lock = mqtt_map.lock().unwrap();
+            lock.get(&hostname)
+                .and_then(|b| b.topics.get("test/props"))
+                .and_then(|msgs| msgs.back())
+                .map(|m| m.properties.clone())
+        });
+        let _ = pub_client.disconnect();
+        mosquitto.kill().ok();
+        mosquitto.wait().ok();
+
+        let properties = stored
+            .expect("backend should have received test/props")
+            .expect("message should carry properties");
+        assert_eq!(
+            properties.user_properties,
+            vec![
+                ("trace-id".to_string(), "abc123".to_string()),
+                ("tag".to_string(), "one".to_string()),
+                ("tag".to_string(), "two".to_string()),
+            ]
+        );
+        assert_eq!(properties.content_type.as_deref(), Some("application/json"));
+        assert_eq!(properties.correlation_data.as_deref(), Some("0xdeadbeef"));
+    }
+
     /// Starts mosquitto with a TLS listener that requires a client certificate
     /// signed by the test CA.
     fn start_mosquitto_mtls(
@@ -1807,6 +2388,7 @@ mod tests {
             client_key_password: None,
             access_password: None,
             allowed_roles: Vec::new(),
+            protocol: None,
         }
         .with_resolved_cert_paths(&pki.dir);
 
@@ -1849,6 +2431,7 @@ mod tests {
             client_key_password: None,
             access_password: None,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
 
         let peer_map = make_peer_map();
@@ -1889,6 +2472,7 @@ mod tests {
             client_key_password: Some(crate::server::test_certs::KEY_PASSWORD.to_string()),
             access_password: None,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
 
         let peer_map = make_peer_map();

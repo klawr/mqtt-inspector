@@ -53,6 +53,67 @@ pub struct BrokerConfig {
     /// broker. Empty = every logged-in user.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_roles: Vec<String>,
+    /// MQTT version to use: "5" or "3.1.1". Unset = try MQTT 5 and fall back
+    /// to 3.1.1 if the broker rejects it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_protocol"
+    )]
+    pub protocol: Option<MqttProtocol>,
+}
+
+/// MQTT protocol version used to talk to a broker.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MqttProtocol {
+    #[serde(rename = "5")]
+    V5,
+    #[serde(rename = "3.1.1")]
+    V311,
+}
+
+impl MqttProtocol {
+    /// Parses user input such as "5", "v5", "5.0", "3.1.1" or "311".
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().trim_start_matches(['v', 'V']) {
+            "5" | "5.0" => Some(Self::V5),
+            "3.1.1" | "311" | "3" | "4" => Some(Self::V311),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::V5 => "5",
+            Self::V311 => "3.1.1",
+        }
+    }
+}
+
+/// Lenient: an unknown value falls back to auto (with a warning) instead of
+/// failing to parse brokers.json, which would drop every broker.
+fn deserialize_protocol<'de, D>(deserializer: D) -> Result<Option<MqttProtocol>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() || s == "auto" => None,
+        Some(v) => {
+            let text = v
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string());
+            let parsed = MqttProtocol::parse(&text);
+            if parsed.is_none() {
+                eprintln!(
+                    "Unknown MQTT protocol {v} in broker config; using auto (5, fallback 3.1.1)"
+                );
+            }
+            parsed
+        }
+    })
 }
 
 impl BrokerConfig {
@@ -68,6 +129,30 @@ impl BrokerConfig {
             .as_deref()
             .filter(|p| !p.is_empty())
             .or_else(|| self.password.as_deref().filter(|p| !p.is_empty()))
+    }
+
+    /// Splits `host` ("hostname:port") into its parts, rejecting anything that
+    /// can't be connected to (missing/invalid port, empty host, IPv6 literals).
+    pub fn address(&self) -> Result<(String, u16), String> {
+        let host = self.host.trim_matches('"');
+        let invalid = |reason: &str| {
+            Err(format!(
+                "invalid broker address {host:?}: {reason} (expected hostname:port, e.g. 127.0.0.1:1883)"
+            ))
+        };
+        let Some((hostname, port)) = host.split_once(':') else {
+            return invalid("missing port");
+        };
+        if hostname.is_empty() {
+            return invalid("missing hostname");
+        }
+        if port.contains(':') {
+            return invalid("too many ':'");
+        }
+        match port.parse::<u16>() {
+            Ok(port) if port != 0 => Ok((hostname.to_string(), port)),
+            _ => invalid("port must be a number from 1 to 65535"),
+        }
     }
 
     /// TLS is used when explicitly enabled or when any certificate is configured.
@@ -112,6 +197,7 @@ impl BrokerConfig {
             client_key_password: None,
             access_password: None,
             allowed_roles: Vec::new(),
+            protocol: None,
         }
     }
 }
@@ -283,6 +369,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_broker_address() {
+        let addr = |host: &str| BrokerConfig::from_host(host).address();
+        assert_eq!(addr("127.0.0.1:1883"), Ok(("127.0.0.1".to_string(), 1883)));
+        assert_eq!(
+            addr("\"broker.local:8883\""),
+            Ok(("broker.local".to_string(), 8883))
+        );
+        for bad in [
+            "127.0.0.1:18841x",
+            "127.0.0.1",
+            "127.0.0.1:",
+            ":1883",
+            "127.0.0.1:0",
+            "127.0.0.1:65536",
+            "::1:1883",
+        ] {
+            let err = addr(bad).unwrap_err();
+            assert!(err.contains("invalid broker address"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_broker_protocol_parsing() {
+        let brokers: Vec<BrokerConfig> = serde_json::from_str(
+            r#"[
+                { "host": "a:1883" },
+                { "host": "b:1883", "protocol": "5" },
+                { "host": "c:1883", "protocol": "3.1.1" },
+                { "host": "d:1883", "protocol": "v3.1.1" },
+                { "host": "e:1883", "protocol": 5 },
+                { "host": "f:1883", "protocol": "auto" },
+                { "host": "g:1883", "protocol": "bogus" }
+            ]"#,
+        )
+        .unwrap();
+        let protocols: Vec<_> = brokers.iter().map(|b| b.protocol).collect();
+        assert_eq!(
+            protocols,
+            vec![
+                None,
+                Some(MqttProtocol::V5),
+                Some(MqttProtocol::V311),
+                Some(MqttProtocol::V311),
+                Some(MqttProtocol::V5),
+                None,
+                // Unknown values fall back to auto instead of failing the whole file.
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_broker_protocol_round_trip() {
+        let mut cfg = BrokerConfig::from_host("a:1883");
+        assert!(!serde_json::to_string(&cfg).unwrap().contains("protocol"));
+        cfg.protocol = Some(MqttProtocol::V311);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""protocol":"3.1.1""#), "{json}");
+        let back: BrokerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protocol, Some(MqttProtocol::V311));
     }
 
     #[test]

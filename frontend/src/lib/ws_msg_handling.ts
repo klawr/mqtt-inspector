@@ -23,7 +23,14 @@
 import { findbranchwithid } from './helper';
 import { newLayout } from './layout';
 import { Message } from './state';
-import type { AppState, BrokerRepository, BrokerRepositoryEntry, Treebranch } from './state';
+import type {
+	AppState,
+	BrokerRepository,
+	BrokerRepositoryEntry,
+	MessageProperties,
+	MqttProtocol,
+	Treebranch
+} from './state';
 import type { Session } from '../store';
 
 /** Sliding-window rate tracker state per broker. */
@@ -133,8 +140,14 @@ export type BrokerParam = {
 	total_messages?: number;
 	rate_history?: { timestamp: number; bytes_per_second: number; total_bytes: number }[];
 	requires_auth?: boolean;
+	protocol?: MqttProtocol | null;
 }[];
-export type MqttConnectionStatus = { source: string; connected: boolean };
+export type MqttConnectionStatus = {
+	source: string;
+	connected: boolean;
+	/** Only sent on connect. */
+	protocol?: MqttProtocol;
+};
 export type SessionParam = { mode?: string; user?: string; can_edit?: boolean };
 export type PipelineParam = { id: string; name: string; pipeline: { topic: string }[] };
 export type MQTTMessageParam = {
@@ -145,6 +158,7 @@ export type MQTTMessageParam = {
 	original_payload_size?: number;
 	total_bytes?: number;
 	retain?: boolean;
+	properties?: MessageProperties;
 };
 
 export type MQTTMessageMetaParam = {
@@ -223,6 +237,9 @@ export function processConnectionStatus(params: MqttConnectionStatus, app: AppSt
 		return app;
 	}
 	app.brokerRepository[params.source].connected = params.connected;
+	if (params.protocol) {
+		app.brokerRepository[params.source].protocol = params.protocol;
+	}
 
 	return app;
 }
@@ -281,11 +298,14 @@ export function processBrokers(params: BrokerParam, brokerRepository: BrokerRepo
 					totalBytes: e.total_bytes
 				})),
 				requiresAuth,
-				authenticated: false
+				authenticated: false,
+				protocol: param.protocol ?? undefined
 			};
 		} else {
 			brokerRepository[param.broker].connected = param.connected;
 			brokerRepository[param.broker].requiresAuth = requiresAuth;
+			brokerRepository[param.broker].protocol =
+				param.protocol ?? brokerRepository[param.broker].protocol;
 			brokerRepository[param.broker].backendTotalBytes =
 				param.total_bytes ?? brokerRepository[param.broker].backendTotalBytes;
 			brokerRepository[param.broker].backendTotalMessages =
@@ -555,7 +575,8 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 				message.payload,
 				null,
 				message.retain ?? false,
-				message.original_payload_size
+				message.original_payload_size,
+				message.properties ?? null
 			)
 		);
 	}

@@ -19,6 +19,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+import type { MqttProtocol } from './state';
 
 export function requestCommandAddition(
 	save_command_name: string,
@@ -82,6 +83,8 @@ export function requestMqttBrokerConnection(
 		client_key_password?: string;
 		access_password?: string;
 		allowed_roles?: string[];
+		/** Unset = auto (MQTT 5, falling back to 3.1.1). */
+		protocol?: MqttProtocol;
 	}
 ) {
 	const params: Record<string, unknown> = { hostname };
@@ -94,6 +97,7 @@ export function requestMqttBrokerConnection(
 	if (options?.client_key_password) params.client_key_password = options.client_key_password;
 	if (options?.access_password) params.access_password = options.access_password;
 	if (options?.allowed_roles?.length) params.allowed_roles = options.allowed_roles;
+	if (options?.protocol) params.protocol = options.protocol;
 	const message = JSON.stringify({
 		jsonrpc: '2.0',
 		method: 'connect',
@@ -107,12 +111,17 @@ export function requestPublishMqttMessage(
 	topic: string,
 	payload: string,
 	retain: boolean,
-	socket: WebSocket
+	socket: WebSocket,
+	userProperties: [string, string][] = []
 ) {
+	const params: Record<string, unknown> = { host, topic, payload, retain };
+	// MQTT 5 user properties; rows without a key are skipped.
+	const properties = userProperties.filter(([key]) => key.trim() !== '');
+	if (properties.length) params.user_properties = properties;
 	const message = JSON.stringify({
 		jsonrpc: '2.0',
 		method: 'publish',
-		params: { host, topic, payload, retain }
+		params
 	});
 
 	socket.send(message);

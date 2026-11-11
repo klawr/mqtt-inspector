@@ -22,7 +22,15 @@ THE SOFTWARE.
 <script lang="ts">
 	import { requestMqttBrokerConnection } from '$lib/socket';
 	import { session } from '../../store';
-	import { Modal, TextInput, Toggle, PasswordInput } from 'carbon-components-svelte';
+	import type { MqttProtocol } from '$lib/state';
+	import {
+		Modal,
+		TextInput,
+		Toggle,
+		PasswordInput,
+		Select,
+		SelectItem
+	} from 'carbon-components-svelte';
 
 	export let open = false;
 	export let socket: WebSocket;
@@ -40,6 +48,7 @@ THE SOFTWARE.
 	let client_key_password: string | undefined = undefined;
 	let access_password: string | undefined = undefined;
 	let allowed_roles: string | undefined = undefined;
+	let protocol: MqttProtocol | 'auto' = 'auto';
 
 	$: if (use_tls && (port === undefined || port === '1883')) {
 		port = '8883';
@@ -47,10 +56,22 @@ THE SOFTWARE.
 		port = '1883';
 	}
 
+	// Mirrors the backend's check; invalid addresses are never saved.
+	$: portInvalid = port !== undefined && port.trim() !== '' && !isValidPort(port.trim());
+	$: ipInvalid = ip !== undefined && ip.includes(':');
+
+	function isValidPort(value: string): boolean {
+		if (!/^\d+$/.test(value)) return false;
+		const n = Number(value);
+		return n >= 1 && n <= 65535;
+	}
+
 	function submit() {
+		if (portInvalid || ipInvalid) return;
 		const hostname = `${ip?.trim() || ip_default}:${port?.trim() || port_default}`;
 		requestMqttBrokerConnection(hostname, socket, {
 			use_tls,
+			...(protocol !== 'auto' && { protocol }),
 			username: username?.trim(),
 			password,
 			...($session.mode === 'claims'
@@ -77,13 +98,39 @@ THE SOFTWARE.
 	modalHeading="Add MQTT Broker"
 	primaryButtonText="Confirm"
 	secondaryButtonText="Cancel"
+	primaryButtonDisabled={portInvalid || ipInvalid}
 	on:click:button--secondary={() => (open = false)}
 	on:open
 	on:close
 	on:submit={submit}
 >
-	<TextInput labelText="Ip" placeholder={ip_default} bind:value={ip} />
-	<TextInput labelText="Port" placeholder={port_default} bind:value={port} />
+	<TextInput
+		labelText="Ip"
+		placeholder={ip_default}
+		bind:value={ip}
+		invalid={ipInvalid}
+		invalidText="Enter the host without a port (IPv6 addresses are not supported)"
+	/>
+	<TextInput
+		labelText="Port"
+		placeholder={port_default}
+		bind:value={port}
+		invalid={portInvalid}
+		invalidText="Port must be a number from 1 to 65535"
+	/>
+	<div style="margin-top: 1rem;">
+		<Select
+			labelText="MQTT version"
+			bind:selected={protocol}
+			helperText={protocol === 'auto'
+				? 'Uses MQTT 5 (with user properties) and falls back to 3.1.1 for older brokers.'
+				: ''}
+		>
+			<SelectItem value="auto" text="Auto (MQTT 5, fall back to 3.1.1)" />
+			<SelectItem value="5" text="MQTT 5" />
+			<SelectItem value="3.1.1" text="MQTT 3.1.1" />
+		</Select>
+	</div>
 	<div style="margin-top: 1rem;">
 		<Toggle labelText="Use TLS (mqtts)" bind:toggled={use_tls} labelA="Off" labelB="On" />
 	</div>

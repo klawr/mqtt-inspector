@@ -37,10 +37,16 @@ cd test/system
 2. **Builds & starts the mqtt-inspector backend** with a small byte cap so
    eviction kicks in quickly.
 3. **Opens WebSocket clients** in three roles:
-   - **Observer** — receives only meta batches (no `select_topic`), verifies no binary frames leak.
-   - **Subscriber** — sends `select_topic` once, verifies on-demand binary payload delivery.
-   - **Topic-switcher** — rotates `select_topic` every 5 s, exercises the clear→resync cycle.
+   - **Observer** — receives only meta batches (no `subscribe_topic`), verifies no binary frames leak.
+   - **Subscriber** — sends `subscribe_topic` once, verifies on-demand binary payload delivery
+     (and, with MQTT 5, that the frames carry user properties).
+   - **Topic-switcher** — every 5 s unsubscribes its topic and subscribes the next one,
+     exercising the history replay → `topic_sync_complete` → live stream cycle.
 4. **Spawns publisher threads** that publish MQTT messages at the configured rate.
+   With MQTT 5 (the default) each message carries user properties (`publisher`,
+   `seq`, `sent_at`, a repeated `tag`) and a content type. While the test runs you
+   can open the UI at <http://127.0.0.1:3030>, select a `stress/...` topic and
+   expand **User properties** in the message toolbar to see them.
 5. **Monitors** backend process memory (RSS) and WebSocket liveness every second.
    The RSS check allows a small grace margin and only fails if the process stays above the adjusted limit for several consecutive samples.
 6. After the configured duration, **stops everything** and prints a summary with
@@ -57,6 +63,7 @@ cd test/system
 | `--ws-clients` | `STRESS_WS_CLIENTS` | 3 | Number of WebSocket clients |
 | `--max-broker-mb` | `STRESS_MAX_BROKER_MB` | 128 | Backend payload cap per broker (MB) |
 | `--topics` | `STRESS_TOPICS` | 50 | Subtopics per publisher (total topics = publishers × topics) |
+| `--mqtt-version` | `STRESS_MQTT_VERSION` | 5 | Publisher MQTT version; `5` attaches user properties to every message |
 | `--backend-rss-limit` | `STRESS_RSS_LIMIT` | 512 | Nominal backend RSS sanity bound (MB) |
 | `--backend-rss-grace-percent` | `STRESS_RSS_GRACE_PERCENT` | 25 | Allowed RSS overshoot above the nominal limit |
 | `--backend-rss-sustain-seconds` | `STRESS_RSS_SUSTAIN_SECONDS` | 5 | Consecutive seconds above the adjusted limit before failing |

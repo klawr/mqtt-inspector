@@ -8,10 +8,10 @@ and MQTT publishers, then monitors stability for a configurable duration.
 Architecture-aware: tests the meta-only + on-demand loading protocol:
   - All WS peers receive text JSON batches (mqtt_message_meta_batch,
     messages_evicted_batch) for every incoming MQTT message.
-  - Only peers that have sent a select_topic request receive binary
+  - Only peers that have sent a subscribe_topic request receive binary
     mqtt_message frames for the selected topic.
   - The test verifies both paths: observer clients (meta only) and
-    subscriber clients (meta + binary payloads via select_topic).
+    subscriber clients (meta + binary payloads via subscribe_topic).
 """
 
 import argparse
@@ -81,6 +81,8 @@ except SystemExit:
 
 # These imports only succeed inside the venv
 import paho.mqtt.client as paho_mqtt  # noqa: E402
+from paho.mqtt.packettypes import PacketTypes  # noqa: E402
+from paho.mqtt.properties import Properties  # noqa: E402
 import psutil  # noqa: E402
 import websocket  # noqa: E402
 
@@ -368,12 +370,19 @@ def publisher_thread(
     username: str | None = None,
     password: str | None = None,
     topic_base: str | None = None,
+    mqtt_version: str = "5",
 ):
-    """Publish messages at *rate* msg/s until _stop_event is set."""
+    """Publish messages at *rate* msg/s until _stop_event is set.
+
+    With MQTT 5 every message carries user properties (publisher, seq,
+    sent_at and a repeated ``tag`` key) so they can be inspected in the UI.
+    """
+    use_v5 = mqtt_version == "5"
     try:
         client = paho_mqtt.Client(
             paho_mqtt.CallbackAPIVersion.VERSION2,
             client_id=f"stress-pub-{thread_id}",
+            protocol=paho_mqtt.MQTTv5 if use_v5 else paho_mqtt.MQTTv311,
         )
         if username and password:
             client.username_pw_set(username, password)
@@ -397,7 +406,19 @@ def publisher_thread(
             seq_bytes = str(seq).encode("utf-8")
             rand_len = max(0, this_size - len(seq_bytes) - 1)
             payload = seq_bytes + b":" + os.urandom(rand_len)
-            client.publish(topic, payload, qos=0)
+            properties = None
+            if use_v5:
+                properties = Properties(PacketTypes.PUBLISH)
+                properties.UserProperty = [
+                    ("publisher", f"pub{thread_id}"),
+                    ("seq", str(seq)),
+                    ("sent_at", time.strftime("%Y-%m-%dT%H:%M:%S%z")),
+                    # Repeated key on purpose: MQTT 5 allows duplicates.
+                    ("tag", "stress"),
+                    ("tag", f"topic-{seq % num_topics}"),
+                ]
+                properties.ContentType = "application/octet-stream"
+            client.publish(topic, payload, qos=0, properties=properties)
             seq += 1
             counter["sent"] += 1
             # Randomise delay: mostly short bursts, occasionally long pauses
@@ -444,8 +465,6 @@ def _parse_text_message(msg: dict, counter: dict) -> tuple[str, object]:
         if isinstance(params, list):
             counter["eviction_entries"] += len(params)
         counter["eviction_batches"] += 1
-    elif method == "topic_messages_clear":
-        counter["topic_clears"] += 1
     elif method == "topic_sync_complete":
         counter["topic_syncs"] += 1
     elif method == "mqtt_brokers":
@@ -468,9 +487,26 @@ def _parse_text_message(msg: dict, counter: dict) -> tuple[str, object]:
     return method, params
 
 
+def _count_binary_frame(data: bytes, counter: dict) -> None:
+    """Count a binary mqtt_message frame and whether it carries MQTT 5 user properties.
+
+    Frame layout: 4-byte big-endian header length, JSON header, raw payload.
+    """
+    counter["binary_frames"] += 1
+    if len(data) < 4:
+        return
+    header_len = int.from_bytes(data[:4], "big")
+    header = _decode_text_json(data[4:4 + header_len])
+    if not header:
+        return
+    properties = (header.get("params") or {}).get("properties") or {}
+    if properties.get("user_properties"):
+        counter["frames_with_user_properties"] += 1
+
+
 def ws_observer_thread(client_id: int, url: str, counter: dict, errors: list, label: str = "observer"):
     """
-    Observer client: connects but never sends select_topic.
+    Observer client: connects but never sends subscribe_topic.
     Should receive meta batches + eviction batches (text) but NO binary frames.
     """
     try:
@@ -517,7 +553,7 @@ def ws_subscriber_thread(
     errors: list,
 ):
     """
-    Subscriber client: waits for initial sync, then sends select_topic to
+    Subscriber client: waits for initial sync, then sends subscribe_topic to
     subscribe to a topic. Should receive meta batches (text) AND binary
     mqtt_message frames for the selected topic.
     """
@@ -546,7 +582,7 @@ def ws_subscriber_thread(
                         continue
                     _parse_text_message(msg, counter)
 
-                    # After broker list + first meta, send select_topic
+                    # After broker list + first meta, send subscribe_topic
                     if not selected:
                         if (
                             counter["broker_lists"] > 0
@@ -555,7 +591,7 @@ def ws_subscriber_thread(
                             select_msg = json.dumps(
                                 {
                                     "jsonrpc": "2.0",
-                                    "method": "select_topic",
+                                    "method": "subscribe_topic",
                                     "params": {
                                         "broker": mqtt_broker,
                                         "topic": subscribe_topic,
@@ -564,14 +600,14 @@ def ws_subscriber_thread(
                             )
                             ws.send(select_msg)
                             selected = True
-                            counter["select_topic_sent"] += 1
+                            counter["subscribe_topic_sent"] += 1
                             print(
                                 f"\n  [ws-subscriber-{client_id}] "
-                                f"select_topic → {mqtt_broker} / {subscribe_topic}"
+                                f"subscribe_topic → {mqtt_broker} / {subscribe_topic}"
                             )
 
                 elif opcode == websocket.ABNF.OPCODE_BINARY:
-                    counter["binary_frames"] += 1
+                    _count_binary_frame(data, counter)
 
             except websocket.WebSocketTimeoutException:
                 continue
@@ -600,8 +636,9 @@ def ws_topic_switch_thread(
     errors: list,
 ):
     """
-    Topic-switching client: periodically changes the selected topic to exercise
-    the select_topic → clear → resync → stream cycle.
+    Topic-switching client: periodically moves its subscription to another topic
+    (unsubscribe_topic old, subscribe_topic new) like a user switching tabs, which
+    exercises the history replay → topic_sync_complete → live stream cycle.
     """
     try:
         ws = websocket.WebSocket()
@@ -614,6 +651,7 @@ def ws_topic_switch_thread(
     last_switch = 0.0
     switch_interval = 5.0  # switch topic every 5 seconds
     topic_index = 0
+    current_topic: str | None = None
 
     try:
         while not _stop_event.is_set():
@@ -637,10 +675,18 @@ def ws_topic_switch_thread(
                     ):
                         # Rotate across different publishers' subtopics
                         topic = f"stress/pub{topic_index % num_publishers}/{topic_index % num_topics}"
+                        if current_topic is not None:
+                            ws.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "method": "unsubscribe_topic",
+                                "params": {"broker": mqtt_broker, "topic": current_topic},
+                            }))
+                            counter["unsubscribe_topic_sent"] += 1
+                        current_topic = topic
                         select_msg = json.dumps(
                             {
                                 "jsonrpc": "2.0",
-                                "method": "select_topic",
+                                "method": "subscribe_topic",
                                 "params": {
                                     "broker": mqtt_broker,
                                     "topic": topic,
@@ -648,13 +694,13 @@ def ws_topic_switch_thread(
                             }
                         )
                         ws.send(select_msg)
-                        counter["select_topic_sent"] += 1
+                        counter["subscribe_topic_sent"] += 1
                         counter["topic_switches"] += 1
                         topic_index += 1
                         last_switch = now
 
                 elif opcode == websocket.ABNF.OPCODE_BINARY:
-                    counter["binary_frames"] += 1
+                    _count_binary_frame(data, counter)
 
             except websocket.WebSocketTimeoutException:
                 continue
@@ -752,7 +798,7 @@ def ws_auth_subscriber_thread(
 ):
     """
     Auth-mode subscriber: authenticates to the protected broker, then sends
-    select_topic for a topic on that broker.  Should receive binary frames.
+    subscribe_topic for a topic on that broker.  Should receive binary frames.
     """
     try:
         ws = websocket.WebSocket()
@@ -792,11 +838,11 @@ def ws_auth_subscriber_thread(
                                 authenticated = True
                                 print(f"  [ws-auth-sub-{client_id}] authenticated to {protected_broker}")
 
-                    # After auth + first meta, send select_topic
+                    # After auth + first meta, send subscribe_topic
                     if authenticated and not selected and counter["meta_entries"] > 0:
                         select_msg = json.dumps({
                             "jsonrpc": "2.0",
-                            "method": "select_topic",
+                            "method": "subscribe_topic",
                             "params": {
                                 "broker": protected_broker,
                                 "topic": subscribe_topic,
@@ -804,14 +850,14 @@ def ws_auth_subscriber_thread(
                         })
                         ws.send(select_msg)
                         selected = True
-                        counter["select_topic_sent"] += 1
+                        counter["subscribe_topic_sent"] += 1
                         print(
-                            f"  [ws-auth-sub-{client_id}] select_topic → "
+                            f"  [ws-auth-sub-{client_id}] subscribe_topic → "
                             f"{protected_broker} / {subscribe_topic}"
                         )
 
                 elif opcode == websocket.ABNF.OPCODE_BINARY:
-                    counter["binary_frames"] += 1
+                    _count_binary_frame(data, counter)
 
             except websocket.WebSocketTimeoutException:
                 continue
@@ -935,6 +981,9 @@ def parse_args():
                    help="Port of the external MQTT broker (default: 1883)")
     p.add_argument("--topics", type=int, default=int(os.environ.get("STRESS_TOPICS", "50")),
                    help="Number of subtopics per publisher (default: 50)")
+    p.add_argument("--mqtt-version", choices=["5", "3.1.1"],
+                   default=os.environ.get("STRESS_MQTT_VERSION", "5"),
+                   help="Publisher MQTT version; 5 attaches user properties to every message (default: 5)")
     args = p.parse_args()
     args.backend_rss_grace_percent = max(0, args.backend_rss_grace_percent)
     args.backend_rss_sustain_seconds = max(1, args.backend_rss_sustain_seconds)
@@ -994,10 +1043,12 @@ def make_counter() -> dict:
         "binary_frames": 0,
         # Observer got unexpected binary (should stay 0)
         "observer_unexpected_binary": 0,
-        # select_topic protocol
-        "select_topic_sent": 0,
-        "topic_clears": 0,
+        # subscribe_topic protocol
+        "subscribe_topic_sent": 0,
+        "unsubscribe_topic_sent": 0,
         "topic_syncs": 0,
+        # Binary frames whose header carries MQTT 5 user properties
+        "frames_with_user_properties": 0,
         "topic_switches": 0,
         # Broker metadata
         "broker_lists": 0,
@@ -1022,6 +1073,8 @@ def main_stress(args):
     print(f"  Publishers      : {args.publishers}  @ {args.rate} msg/s each")
     print(f"  Topics/publisher: {args.topics}  (total: {args.publishers * args.topics})")
     print(f"  Message size    : {args.msg_size} bytes")
+    print(f"  MQTT version    : {args.mqtt_version}"
+          + ("  (with user properties)" if args.mqtt_version == "5" else ""))
     print(f"  WS clients      : {args.ws_clients}  (observer / subscriber / switcher)")
     print(f"  Max broker MB   : {args.max_broker_mb}")
     print(f"  RSS limit       : {args.backend_rss_limit} MB")
@@ -1058,7 +1111,7 @@ def main_stress(args):
         n_ws = max(args.ws_clients, 3)
         n_observers = max(1, n_ws - 2)
 
-        # Observers: receive only meta batches (no select_topic)
+        # Observers: receive only meta batches (no subscribe_topic)
         for i in range(n_observers):
             t = threading.Thread(
                 target=ws_observer_thread,
@@ -1069,7 +1122,7 @@ def main_stress(args):
             threads.append(t)
         print(f"[ws] {n_observers} observer client(s) connected")
 
-        # Subscriber: sends select_topic once for a fixed topic
+        # Subscriber: sends subscribe_topic once for a fixed topic
         t = threading.Thread(
             target=ws_subscriber_thread,
             args=(0, ws_url, mqtt_broker, counter, errors),
@@ -1079,7 +1132,7 @@ def main_stress(args):
         threads.append(t)
         print("[ws] 1 subscriber client connected")
 
-        # Switcher: periodically rotates select_topic
+        # Switcher: periodically rotates subscribe_topic
         t = threading.Thread(
             target=ws_topic_switch_thread,
             args=(0, ws_url, mqtt_broker, args.publishers, args.topics, counter, errors),
@@ -1103,6 +1156,7 @@ def main_stress(args):
             t = threading.Thread(
                 target=publisher_thread,
                 args=(i, mqtt_host, mqtt_port, args.rate, args.msg_size, args.topics, counter, errors),
+                kwargs={"mqtt_version": args.mqtt_version},
                 daemon=True,
             )
             t.start()
@@ -1157,24 +1211,30 @@ def main_stress(args):
         )
 
     # 3. Subscriber/switcher should receive binary frames
-    if sent > 100 and counter["select_topic_sent"] > 0 and counter["binary_frames"] == 0:
+    if sent > 100 and counter["subscribe_topic_sent"] > 0 and counter["binary_frames"] == 0:
         errors.append(
-            "Subscriber/switcher sent select_topic but received 0 binary frames. "
+            "Subscriber/switcher sent subscribe_topic but received 0 binary frames. "
             "On-demand loading may be broken."
         )
 
-    # 4. select_topic flow: clear + sync expected
-    if counter["select_topic_sent"] > 0:
-        if counter["topic_clears"] == 0:
-            errors.append(
-                f"Sent {counter['select_topic_sent']} select_topic requests "
-                f"but received 0 topic_messages_clear responses."
-            )
+    # 4. subscribe_topic flow: every subscription ends with topic_sync_complete
+    if counter["subscribe_topic_sent"] > 0:
         if counter["topic_syncs"] == 0:
             errors.append(
-                f"Sent {counter['select_topic_sent']} select_topic requests "
+                f"Sent {counter['subscribe_topic_sent']} subscribe_topic requests "
                 f"but received 0 topic_sync_complete responses."
             )
+
+    # 4b. MQTT 5 publishers attach user properties; they must reach the clients
+    if (
+        args.mqtt_version == "5"
+        and counter["binary_frames"] > 0
+        and counter["frames_with_user_properties"] == 0
+    ):
+        errors.append(
+            f"Received {counter['binary_frames']} binary frames but none carried "
+            f"MQTT 5 user properties."
+        )
 
     # 5. Topic-switcher should have switched multiple times
     expected_switches = max(1, (args.duration // 5) - 1)
@@ -1220,7 +1280,7 @@ def main_auth(args):
     Connects the backend to both, then runs three types of WS clients:
       1. unauthenticated observer — should see meta ONLY from open_broker
       2. authenticated observer — authenticates to protected_broker, sees meta from BOTH
-      3. authenticated subscriber — authenticates + select_topic on protected_broker,
+      3. authenticated subscriber — authenticates + subscribe_topic on protected_broker,
          should receive binary frames
 
     Also publishes MQTT messages to both brokers to generate traffic.
@@ -1298,7 +1358,7 @@ def main_auth(args):
         threads.append(t)
         print("[ws] 1 authenticated observer connected")
 
-        # 3. Authenticated subscriber (select_topic on protected broker)
+        # 3. Authenticated subscriber (subscribe_topic on protected broker)
         t = threading.Thread(
             target=ws_auth_subscriber_thread,
             args=(
@@ -1320,6 +1380,7 @@ def main_auth(args):
                 args.rate, args.msg_size, 5,
                 unauth_counter, errors,
             ),
+            kwargs={"mqtt_version": args.mqtt_version},
             daemon=True,
         )
         t.start()
@@ -1338,6 +1399,7 @@ def main_auth(args):
                 "username": AUTH_USERNAME,
                 "password": AUTH_PASSWORD,
                 "topic_base": "auth/protected",
+                "mqtt_version": args.mqtt_version,
             },
             daemon=True,
         )
@@ -1412,7 +1474,7 @@ def main_auth(args):
     if auth_sub_counter["binary_frames"] == 0:
         errors.append(
             "Authenticated subscriber received 0 binary frames from protected broker. "
-            "Authenticated select_topic may be broken."
+            "Authenticated subscribe_topic may be broken."
         )
 
     # 6. Authenticated subscriber should also have auth success
@@ -1449,7 +1511,7 @@ def main_auth(args):
     print(f"    Meta by broker         : {auth_sub_counter['meta_by_broker']}")
     print(f"    Auth successes         : {auth_sub_counter['auth_successes']}")
     print(f"    Binary frames          : {auth_sub_counter['binary_frames']}")
-    print(f"    select_topic sent      : {auth_sub_counter['select_topic_sent']}")
+    print(f"    subscribe_topic sent   : {auth_sub_counter['subscribe_topic_sent']}")
     print(f"    Topic summaries        : {auth_sub_counter['topic_summary_msgs']}")
     print()
     print(f"  Errors                   : {len(errors)}")
@@ -1477,9 +1539,10 @@ def _print_report(counter: dict, rss_samples: list, errors: list):
     print(f"  Meta batches / entries  : {counter['meta_batches']:,} / {counter['meta_entries']:,}")
     print(f"  Eviction batches/entries: {counter['eviction_batches']:,} / {counter['eviction_entries']:,}")
     print(f"  Binary frames received  : {counter['binary_frames']:,}")
+    print(f"  ...with user properties : {counter['frames_with_user_properties']:,}")
     print(f"  Observer stray binary   : {counter['observer_unexpected_binary']:,}")
-    print(f"  select_topic sent       : {counter['select_topic_sent']:,}")
-    print(f"  topic_messages_clear    : {counter['topic_clears']:,}")
+    print(f"  subscribe_topic sent    : {counter['subscribe_topic_sent']:,}")
+    print(f"  unsubscribe_topic sent  : {counter['unsubscribe_topic_sent']:,}")
     print(f"  topic_sync_complete     : {counter['topic_syncs']:,}")
     print(f"  Topic switches          : {counter['topic_switches']:,}")
     print(f"  Broker lists            : {counter['broker_lists']:,}")

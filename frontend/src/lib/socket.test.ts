@@ -107,6 +107,35 @@ test('requestPipelineRemoval sends correct message to WebSocket', () => {
 	expect(socket.messages[0].replace(/\s/g, '')).toBe(expectedMessage.replace(/\s/g, ''));
 });
 
+test('requestPublishMqttMessage sends user properties, skipping rows without a key', () => {
+	const socket = new MockWebSocket();
+	requestPublishMqttMessage('h:1883', 't', 'p', true, socket as unknown as WebSocket, [
+		['trace-id', 'abc'],
+		['  ', 'ignored'],
+		['tag', 'one'],
+		['tag', 'two']
+	]);
+	expect(JSON.parse(socket.messages[0]).params).toEqual({
+		host: 'h:1883',
+		topic: 't',
+		payload: 'p',
+		retain: true,
+		user_properties: [
+			['trace-id', 'abc'],
+			['tag', 'one'],
+			['tag', 'two']
+		]
+	});
+});
+
+test('requestMqttBrokerConnection sends the protocol only when chosen', () => {
+	const socket = new MockWebSocket();
+	requestMqttBrokerConnection('h:1883', socket as unknown as WebSocket, { protocol: '3.1.1' });
+	requestMqttBrokerConnection('h:1883', socket as unknown as WebSocket, {});
+	expect(JSON.parse(socket.messages[0]).params.protocol).toBe('3.1.1');
+	expect(JSON.parse(socket.messages[1]).params).not.toHaveProperty('protocol');
+});
+
 test('requestMqttBrokerConnection sends correct message to WebSocket', () => {
 	const socket = new MockWebSocket();
 	const hostname = 'mqtt.example.com';

@@ -148,6 +148,28 @@ test('processConnectionStatus updates connection status in AppState', () => {
 	expect(result.brokerRepository['broker1'].connected).toBe(true);
 });
 
+test('broker protocol comes from mqtt_brokers and connection status', () => {
+	const app = new AppState();
+	app.brokerRepository = processBrokers(
+		[{ broker: 'b:1883', connected: true, topics: {}, protocol: null }],
+		app.brokerRepository
+	);
+	expect(app.brokerRepository['b:1883'].protocol).toBeUndefined();
+
+	processConnectionStatus({ source: 'b:1883', connected: true, protocol: '3.1.1' }, app);
+	expect(app.brokerRepository['b:1883'].protocol).toBe('3.1.1');
+
+	// A disconnect carries no protocol and keeps the last known one.
+	processConnectionStatus({ source: 'b:1883', connected: false }, app);
+	expect(app.brokerRepository['b:1883'].protocol).toBe('3.1.1');
+
+	app.brokerRepository = processBrokers(
+		[{ broker: 'b:1883', connected: true, topics: {}, protocol: '5' }],
+		app.brokerRepository
+	);
+	expect(app.brokerRepository['b:1883'].protocol).toBe('5');
+});
+
 test('processConnectionStatus handles non-existing broker correctly', () => {
 	const appState = new AppState();
 	appState.brokerRepository = {
@@ -317,6 +339,71 @@ test('processMQTTMessages applies batched messages in order', () => {
 	expect(app.brokerRepository['broker1'].topics[0].messages.map((message) => message.text)).toEqual(
 		['second', 'first']
 	);
+});
+
+test('MQTT 5 properties flow from the binary frame into Message.properties', () => {
+	const properties = {
+		user_properties: [
+			['trace-id', 'abc'],
+			['tag', 'one'],
+			['tag', 'two']
+		],
+		content_type: 'application/json'
+	};
+	const header = new TextEncoder().encode(
+		JSON.stringify({
+			jsonrpc: '2.0',
+			method: 'mqtt_message',
+			params: {
+				source: 'broker1',
+				topic: 'topic1',
+				timestamp: '2022-01-01T00:00:01.000Z',
+				properties
+			}
+		})
+	);
+	const buffer = new Uint8Array(4 + header.length);
+	new DataView(buffer.buffer).setUint32(0, header.length, false);
+	buffer.set(header, 4);
+	const parsed = parseMqttWebSocketMessage(buffer.buffer);
+
+	const app = new AppState();
+	app.brokerRepository['broker1'] = {
+		topics: [
+			{
+				id: 'topic1',
+				text: 'topic1',
+				children: undefined,
+				number_of_messages: 2,
+				original_text: 'topic1',
+				messages: []
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 0,
+		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
+		rateHistory: []
+	};
+	processMQTTMessages(
+		[
+			parsed!.params as MQTTMessageParam,
+			{
+				source: 'broker1',
+				topic: 'topic1',
+				payload: new ArrayBuffer(0),
+				timestamp: '2022-01-01T00:00:00.000Z'
+			}
+		],
+		app
+	);
+
+	const [withProps, withoutProps] = app.brokerRepository['broker1'].topics[0].messages;
+	expect(withProps.properties).toEqual(properties);
+	expect(withoutProps.properties).toBeNull();
 });
 
 test('processMQTTMessages merges incoming history with existing messages in timestamp order', () => {

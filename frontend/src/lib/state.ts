@@ -31,9 +31,25 @@ export class AppState {
 
 const decoder = new TextDecoder();
 
+/** MQTT 5 publish properties, as sent by the backend (unset fields are omitted). */
+export type MessageProperties = {
+	/** Key/value pairs in wire order; keys may repeat. */
+	user_properties?: [string, string][];
+	content_type?: string;
+	response_topic?: string;
+	/** UTF-8 text, or `0x`-prefixed hex for binary data. */
+	correlation_data?: string;
+	message_expiry_interval?: number;
+	payload_format_indicator?: number;
+};
+
+/** MQTT version of a broker connection, as reported by the backend. */
+export type MqttProtocol = '5' | '3.1.1';
+
 export class Message {
 	timestamp: string;
 	retain: boolean;
+	properties: MessageProperties | null;
 	displayedPayloadSize: number;
 	originalPayloadSize: number;
 	private _payload: ArrayBuffer | null;
@@ -44,10 +60,12 @@ export class Message {
 		payload: ArrayBuffer | null,
 		text: string | null,
 		retain: boolean = false,
-		originalPayloadSize?: number
+		originalPayloadSize?: number,
+		properties: MessageProperties | null = null
 	) {
 		this.timestamp = timestamp;
 		this.retain = retain;
+		this.properties = properties;
 		this.displayedPayloadSize = payload?.byteLength ?? 0;
 		this.originalPayloadSize = originalPayloadSize ?? this.displayedPayloadSize;
 		this._payload = payload;
@@ -154,6 +172,8 @@ export type BrokerRepositoryEntry = {
 	rateHistory: RateHistoryEntry[];
 	requiresAuth: boolean;
 	authenticated: boolean;
+	/** Negotiated MQTT version; unset until the backend first connects. */
+	protocol?: MqttProtocol;
 };
 
 export type BrokerRepository = {

@@ -21,7 +21,7 @@ THE SOFTWARE.
 
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import type { BrokerRepositoryEntry } from '$lib/state';
+	import type { BrokerRepositoryEntry, MessageProperties } from '$lib/state';
 	import { formatBytes, formatDuration, findbranchwithid } from '$lib/helper';
 	import { focusedGroup } from '$lib/layout';
 	import { copyToClipboard } from '$lib/clipboard';
@@ -32,7 +32,14 @@ THE SOFTWARE.
 		ProgressIndicator,
 		ProgressStep
 	} from 'carbon-components-svelte';
-	import { ChevronLeft, ChevronRight, Copy, PageFirst } from 'carbon-icons-svelte';
+	import {
+		ChevronDown,
+		ChevronLeft,
+		ChevronRight,
+		ChevronUp,
+		Copy,
+		PageFirst
+	} from 'carbon-icons-svelte';
 
 	// Single toolbar for the focused editor pane: message meta, navigation, compare,
 	// and the progress indicator. Operates on the focused group's shared view state.
@@ -50,6 +57,42 @@ THE SOFTWARE.
 	$: messageCount = messages.length;
 	$: syncing = group.activeTopicId ? syncingTopics.has(group.activeTopicId) : false;
 	$: selectedMessage = messages[view.selectedIndex];
+	$: propertyRows = selectedMessage ? describeProperties(selectedMessage.properties) : [];
+	$: userPropertyCount = selectedMessage?.properties?.user_properties?.length ?? 0;
+
+	// Stays open while navigating between messages.
+	let showProperties = false;
+
+	type PropertyRow = { key: string; value: string; user: boolean };
+
+	/** Flattens MQTT 5 properties into table rows: user properties first, then the rest. */
+	function describeProperties(props: MessageProperties | null): PropertyRow[] {
+		if (!props) return [];
+		const rows: PropertyRow[] = (props.user_properties ?? []).map(([key, value]) => ({
+			key,
+			value,
+			user: true
+		}));
+		const add = (key: string, value: string | number | undefined) => {
+			if (value !== undefined) rows.push({ key, value: String(value), user: false });
+		};
+		add('Content type', props.content_type);
+		add('Response topic', props.response_topic);
+		add('Correlation data', props.correlation_data);
+		add(
+			'Message expiry',
+			props.message_expiry_interval !== undefined ? `${props.message_expiry_interval} s` : undefined
+		);
+		add(
+			'Payload format',
+			props.payload_format_indicator === undefined
+				? undefined
+				: props.payload_format_indicator === 1
+					? 'UTF-8'
+					: 'unspecified bytes'
+		);
+		return rows;
+	}
 
 	let containerWidth = 800;
 	$: maxVisible = Math.max(3, Math.floor(containerWidth / STEP_WIDTH_PX));
@@ -193,6 +236,16 @@ THE SOFTWARE.
 						{/if}
 					</span>
 					<div style="display: flex; align-items: center; gap: 0.5em;">
+						{#if propertyRows.length}
+							<Button
+								kind="ghost"
+								size="small"
+								icon={showProperties ? ChevronUp : ChevronDown}
+								on:click={() => (showProperties = !showProperties)}
+							>
+								{userPropertyCount ? `User properties (${userPropertyCount})` : 'Properties'}
+							</Button>
+						{/if}
 						{#if syncing}
 							<InlineLoading description="Syncing..." />
 						{/if}
@@ -216,6 +269,21 @@ THE SOFTWARE.
 				</div>
 			{/if}
 		</div>
+
+		{#if showProperties && propertyRows.length}
+			<div class="properties">
+				<table>
+					<tbody>
+						{#each propertyRows as row}
+							<tr class:builtin={!row.user}>
+								<th scope="row" title={row.key}>{row.key}</th>
+								<td>{row.value}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
 
 		{#if messageCount > 1}
 			<div bind:this={navDiv} bind:clientWidth={containerWidth} on:wheel={handleWheel}>
@@ -298,6 +366,49 @@ THE SOFTWARE.
 		gap: 0.5em;
 		flex-wrap: wrap;
 		justify-content: flex-end;
+	}
+
+	.properties {
+		max-height: 12em;
+		overflow: auto;
+		margin-bottom: 0.5em;
+		border: 1px solid var(--cds-border-subtle, #393939);
+	}
+
+	.properties table {
+		width: 100%;
+		border-collapse: collapse;
+		font-family: var(--cds-code-01-font-family, monospace);
+		font-size: 0.8125rem;
+	}
+
+	.properties th,
+	.properties td {
+		padding: 0.25em 0.75em;
+		text-align: left;
+		vertical-align: top;
+		border-bottom: 1px solid var(--cds-border-subtle, #393939);
+	}
+
+	.properties th {
+		width: 1%;
+		max-width: 20em;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-weight: 600;
+		color: var(--cds-text-secondary);
+	}
+
+	.properties td {
+		word-break: break-all;
+		user-select: text;
+	}
+
+	/* Built-in MQTT 5 properties (content type, ...) follow the user properties. */
+	.properties tr.builtin th {
+		font-family: var(--cds-body-short-01-font-family, sans-serif);
+		font-style: italic;
 	}
 
 	.footer-controls :global(.bx--form-item),

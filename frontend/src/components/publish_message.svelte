@@ -37,6 +37,8 @@ THE SOFTWARE.
 	export let topic = '';
 	export let payload = '';
 	export let retain = false;
+	/** MQTT 5 user properties as [key, value] rows. */
+	export let userProperties: [string, string][] = [];
 	export let save_command_name = '';
 	export let selectedCommandId = '';
 
@@ -44,7 +46,15 @@ THE SOFTWARE.
 
 	function send(e: Event) {
 		stopPropagation(e);
-		requestPublishMqttMessage(selectedBroker, topic, payload, retain, socket);
+		requestPublishMqttMessage(selectedBroker, topic, payload, retain, socket, userProperties);
+	}
+
+	function addUserProperty() {
+		userProperties = [...userProperties, ['', '']];
+	}
+
+	function removeUserProperty(index: number) {
+		userProperties = userProperties.filter((_, i) => i !== index);
 	}
 
 	function setTopicToSelectedTopic() {
@@ -100,7 +110,11 @@ THE SOFTWARE.
 	bind:payload
 />
 
-<Tile light on:click={stopPropagation} style="height: calc(100vh - 5em)">
+<Tile
+	light
+	on:click={stopPropagation}
+	style="height: calc(100vh - 5em); display: flex; flex-direction: column;"
+>
 	<div style="display: flex; width: 100%">
 		<div style="flex: 4">
 			<TopicSelector
@@ -154,12 +168,74 @@ THE SOFTWARE.
 			/>
 		</div>
 	</div>
-	<div style="height: calc(100% - 8em)">
+	<div style="flex: 1; min-height: 0; margin-top: 0.5em;">
 		<Monaco bind:code={payload} />
 	</div>
 
-	<div style="display: flex; width: 100%; align-items: center; gap: 0.5em;">
+	{#if userProperties.length}
+		<div class="user-properties">
+			{#if broker.protocol === '3.1.1'}
+				<p class="hint">
+					This broker is connected via MQTT 3.1.1, so user properties will not be sent.
+				</p>
+			{/if}
+			{#each userProperties as property, i}
+				<div class="user-property">
+					<TextInput
+						size="sm"
+						hideLabel
+						labelText="Key"
+						placeholder="Key"
+						bind:value={property[0]}
+					/>
+					<TextInput
+						size="sm"
+						hideLabel
+						labelText="Value"
+						placeholder="Value"
+						bind:value={property[1]}
+					/>
+					<Button
+						kind="ghost"
+						size="small"
+						icon={TrashCan}
+						iconDescription="Remove user property"
+						tooltipPosition="left"
+						on:click={() => removeUserProperty(i)}
+					/>
+				</div>
+			{/each}
+		</div>
+	{/if}
+
+	<div style="display: flex; width: 100%; align-items: center; gap: 0.5em; margin-top: 0.5em;">
 		<Toggle size="sm" bind:toggled={retain} labelText="Retain message" />
+		<Button kind="ghost" size="small" icon={Add} on:click={addUserProperty}>
+			Add user property
+		</Button>
 		<Button on:click={send} style="flex: 1">Send</Button>
 	</div>
 </Tile>
+
+<style>
+	.user-properties {
+		max-height: 12em;
+		overflow: auto;
+		margin-top: 0.5em;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25em;
+	}
+
+	.user-property {
+		display: grid;
+		grid-template-columns: 1fr 2fr auto;
+		gap: 0.5em;
+		align-items: center;
+	}
+
+	.hint {
+		font-size: 0.75rem;
+		color: var(--cds-text-helper);
+	}
+</style>

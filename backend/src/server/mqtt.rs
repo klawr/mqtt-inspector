@@ -26,9 +26,12 @@ use std::{
 };
 
 use rumqttc::tokio_rustls::rustls::{Certificate, ClientConfig, PrivateKey, RootCertStore};
-use rumqttc::{MqttOptions, QoS, TlsConfiguration, Transport};
+use rumqttc::v5::mqttbytes::v5::PublishProperties;
+use rumqttc::v5::mqttbytes::QoS;
+use rumqttc::v5::MqttOptions;
+use rumqttc::{TlsConfiguration, Transport};
 
-use super::config::BrokerConfig;
+use super::config::{BrokerConfig, MqttProtocol};
 
 #[derive(serde::Serialize)]
 pub struct MqttMessage {
@@ -36,6 +39,51 @@ pub struct MqttMessage {
     pub payload: bytes::Bytes,
     pub original_payload_size: usize,
     pub retain: bool,
+    /// MQTT 5 publish properties worth showing; `None` when the message carried none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties: Option<Arc<MessageProperties>>,
+}
+
+/// The MQTT 5 publish properties shown in the UI. Protocol-internal properties
+/// (topic alias, subscription identifiers, ...) are dropped.
+#[derive(serde::Serialize, Clone, Debug, Default, PartialEq)]
+pub struct MessageProperties {
+    /// Key/value pairs in wire order. Keys may repeat, so this is a list, not a map.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub user_properties: Vec<(String, String)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_topic: Option<String>,
+    /// UTF-8 text if the bytes are valid UTF-8, otherwise `0x`-prefixed hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_expiry_interval: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_format_indicator: Option<u8>,
+}
+
+impl MessageProperties {
+    /// Extracts the displayable properties, returning `None` if there are none.
+    pub fn from_publish(props: Option<PublishProperties>) -> Option<Arc<Self>> {
+        let props = props?;
+        let correlation_data = props.correlation_data.map(|bytes| {
+            String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| {
+                let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                format!("0x{hex}")
+            })
+        });
+        let extracted = MessageProperties {
+            user_properties: props.user_properties,
+            content_type: props.content_type,
+            response_topic: props.response_topic,
+            correlation_data,
+            message_expiry_interval: props.message_expiry_interval,
+            payload_format_indicator: props.payload_format_indicator,
+        };
+        (extracted != MessageProperties::default()).then(|| Arc::new(extracted))
+    }
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -48,7 +96,7 @@ pub struct RateHistoryEntry {
 #[derive(serde::Serialize)]
 pub struct MqttBroker {
     #[serde(skip)]
-    pub client: rumqttc::Client,
+    pub client: MqttClient,
     pub broker: String,
     pub connected: bool,
     pub topics: HashMap<String, VecDeque<MqttMessage>>,
@@ -70,6 +118,8 @@ pub struct MqttBroker {
     /// Roles that may access this broker in claims mode (empty = any user).
     #[serde(skip)]
     pub allowed_roles: Vec<String>,
+    /// MQTT version of the current connection; `None` until the first connect.
+    pub protocol: Option<MqttProtocol>,
 }
 
 fn env_usize_mb(name: &str, default_mb: usize) -> usize {
@@ -222,51 +272,167 @@ pub fn build_tls_config(config: &BrokerConfig) -> Result<TlsConfiguration, Strin
     Ok(TlsConfiguration::Rustls(Arc::new(client_config)))
 }
 
-pub fn connect_to_mqtt_host(config: &BrokerConfig) -> (rumqttc::Client, rumqttc::Connection) {
-    let id = uuid::Uuid::new_v4();
-    let host = &config.host;
-    println!(
-        "Connecting to Mqtt broker at {host} (tls={}, client_cert={}) with id {id}",
-        config.tls_enabled(),
-        config.client_cert.is_some()
-    );
-    let hostname_ip = host.trim_matches('"').split(':').collect::<Vec<&str>>();
-    let hostname = hostname_ip[0];
-    let port = hostname_ip[1].parse::<u16>().unwrap();
-    let mut mqttoptions = MqttOptions::new(id, hostname, port);
-    mqttoptions.set_keep_alive(std::time::Duration::from_secs(120));
-    // Allow very large incoming and outgoing packets so the bridge can
-    // truncate for display without forcing reconnects on oversized payloads.
-    mqttoptions.set_max_packet_size(max_incoming_packet_size(), max_incoming_packet_size());
+/// A broker client speaking either MQTT 5 or MQTT 3.1.1.
+#[derive(Clone)]
+pub enum MqttClient {
+    V5(rumqttc::v5::Client),
+    V311(rumqttc::Client),
+}
 
-    if config.tls_enabled() {
-        let tls_config = build_tls_config(config).unwrap_or_else(|err| {
-            // Keep the client alive so the reconnect loop retries (and re-reads
-            // the certificate files); the broker will reject the handshake meanwhile.
-            eprintln!("TLS setup for {host} failed: {err}. Connection will fail until fixed.");
-            TlsConfiguration::Rustls(Arc::new(
-                ClientConfig::builder()
-                    .with_safe_defaults()
-                    .with_root_certificates(RootCertStore::empty())
-                    .with_no_client_auth(),
-            ))
-        });
-        mqttoptions.set_transport(Transport::tls_with_config(tls_config));
-    }
+/// The connection (event loop) belonging to an [`MqttClient`].
+pub enum MqttConnection {
+    // Boxed: both are large and created once per connection attempt.
+    V5(Box<rumqttc::v5::Connection>),
+    V311(Box<rumqttc::Connection>),
+}
 
-    if let (Some(username), Some(password)) = (&config.username, &config.password) {
-        if !username.is_empty() {
-            mqttoptions.set_credentials(username, password);
+impl MqttClient {
+    pub fn subscribe_all(&mut self) -> Result<(), String> {
+        match self {
+            Self::V5(c) => c.subscribe("#", QoS::AtMostOnce).map_err(|e| e.to_string()),
+            Self::V311(c) => c
+                .subscribe("#", rumqttc::QoS::AtMostOnce)
+                .map_err(|e| e.to_string()),
         }
     }
 
-    let (mut client, connection) = rumqttc::Client::new(mqttoptions, 1000);
-    client.subscribe("#", QoS::AtMostOnce).unwrap();
+    /// Publishes with QoS 1. User properties need MQTT 5; on a 3.1.1
+    /// connection they are dropped with a warning.
+    pub fn publish(
+        &mut self,
+        topic: &str,
+        payload: Vec<u8>,
+        retain: bool,
+        user_properties: Vec<(String, String)>,
+    ) -> Result<(), String> {
+        match self {
+            Self::V5(c) if user_properties.is_empty() => c
+                .publish(topic, QoS::AtLeastOnce, retain, payload)
+                .map_err(|e| e.to_string()),
+            Self::V5(c) => {
+                let props = PublishProperties {
+                    user_properties,
+                    ..Default::default()
+                };
+                c.publish_with_properties(topic, QoS::AtLeastOnce, retain, payload, props)
+                    .map_err(|e| e.to_string())
+            }
+            Self::V311(c) => {
+                if !user_properties.is_empty() {
+                    println!(
+                        "Dropping {} user properties for {topic}: broker uses MQTT 3.1.1",
+                        user_properties.len()
+                    );
+                }
+                c.publish(topic, rumqttc::QoS::AtLeastOnce, retain, payload)
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
 
-    (client, connection)
+    pub fn disconnect(&mut self) -> Result<(), String> {
+        match self {
+            Self::V5(c) => c.disconnect().map_err(|e| e.to_string()),
+            Self::V311(c) => c.disconnect().map_err(|e| e.to_string()),
+        }
+    }
 }
 
-pub fn publish_message(host: &str, topic: &str, payload: &str, retain: bool, mqtt_map: &BrokerMap) {
+fn tls_transport(config: &BrokerConfig) -> Transport {
+    let tls_config = build_tls_config(config).unwrap_or_else(|err| {
+        // Keep the client alive so the reconnect loop retries (and re-reads
+        // the certificate files); the broker will reject the handshake meanwhile.
+        eprintln!(
+            "TLS setup for {} failed: {err}. Connection will fail until fixed.",
+            config.host
+        );
+        TlsConfiguration::Rustls(Arc::new(
+            ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth(),
+        ))
+    });
+    Transport::tls_with_config(tls_config)
+}
+
+/// Creates a client for `config` using `protocol` and queues a `#` subscription.
+/// Fails only for an invalid `host`; connection problems surface in the event loop.
+pub fn connect_to_mqtt_host(
+    config: &BrokerConfig,
+    protocol: MqttProtocol,
+) -> Result<(MqttClient, MqttConnection), String> {
+    let (hostname, port) = config.address()?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let host = &config.host;
+    println!(
+        "Connecting to Mqtt broker at {host} (mqtt={}, tls={}, client_cert={}) with id {id}",
+        protocol.label(),
+        config.tls_enabled(),
+        config.client_cert.is_some()
+    );
+    let keep_alive = std::time::Duration::from_secs(120);
+    let transport = config.tls_enabled().then(|| tls_transport(config));
+    let credentials = match (&config.username, &config.password) {
+        (Some(username), Some(password)) if !username.is_empty() => {
+            Some((username.clone(), password.clone()))
+        }
+        _ => None,
+    };
+    // Allow very large incoming and outgoing packets so the bridge can
+    // truncate for display without forcing reconnects on oversized payloads.
+    let max_packet = max_incoming_packet_size();
+
+    let (mut client, connection) = match protocol {
+        MqttProtocol::V5 => {
+            let mut options = MqttOptions::new(id, hostname, port);
+            options.set_keep_alive(keep_alive);
+            // MQTT 5 announces this limit to the broker in CONNECT.
+            options.set_max_packet_size(Some(u32::try_from(max_packet).unwrap_or(u32::MAX)));
+            if let Some(transport) = transport {
+                options.set_transport(transport);
+            }
+            if let Some((username, password)) = credentials {
+                options.set_credentials(username, password);
+            }
+            let (client, connection) = rumqttc::v5::Client::new(options, 1000);
+            (
+                MqttClient::V5(client),
+                MqttConnection::V5(Box::new(connection)),
+            )
+        }
+        MqttProtocol::V311 => {
+            let mut options = rumqttc::MqttOptions::new(id, hostname, port);
+            options.set_keep_alive(keep_alive);
+            options.set_max_packet_size(max_packet, max_packet);
+            if let Some(transport) = transport {
+                options.set_transport(transport);
+            }
+            if let Some((username, password)) = credentials {
+                options.set_credentials(username, password);
+            }
+            let (client, connection) = rumqttc::Client::new(options, 1000);
+            (
+                MqttClient::V311(client),
+                MqttConnection::V311(Box::new(connection)),
+            )
+        }
+    };
+    if let Err(err) = client.subscribe_all() {
+        println!("Failed to queue subscription for {host}: {err}");
+    }
+
+    Ok((client, connection))
+}
+
+pub fn publish_message(
+    host: &str,
+    topic: &str,
+    payload: &str,
+    retain: bool,
+    user_properties: Vec<(String, String)>,
+    mqtt_map: &BrokerMap,
+) {
     let client = {
         let binding = mqtt_map.lock().unwrap();
         binding.get(host).map(|broker| broker.client.clone())
@@ -275,10 +441,10 @@ pub fn publish_message(host: &str, topic: &str, payload: &str, retain: bool, mqt
     match client {
         Some(mut client) => {
             if let Err(err) =
-                client.publish(topic, rumqttc::QoS::AtLeastOnce, retain, payload.as_bytes())
+                client.publish(topic, payload.as_bytes().to_vec(), retain, user_properties)
             {
                 println!(
-                    "Error publishing {} bytes to {host} topic {topic}: {err:?}",
+                    "Error publishing {} bytes to {host} topic {topic}: {err}",
                     payload.len()
                 );
             }
@@ -301,7 +467,14 @@ mod tests {
     fn test_publish_message_broker_not_found() {
         let mqtt_map = make_broker_map();
         // Should not panic, just prints a message
-        publish_message("nonexistent:1883", "topic", "payload", false, &mqtt_map);
+        publish_message(
+            "nonexistent:1883",
+            "topic",
+            "payload",
+            false,
+            Vec::new(),
+            &mqtt_map,
+        );
     }
 
     #[test]
@@ -311,6 +484,7 @@ mod tests {
             payload: bytes::Bytes::from(vec![72, 101, 108, 108, 111]),
             original_payload_size: 5,
             retain: false,
+            properties: None,
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         assert!(serialized.contains("\"timestamp\":\"2024-01-01T00:00:00Z\""));
@@ -346,6 +520,7 @@ mod tests {
             payload: bytes::Bytes::new(),
             original_payload_size: 0,
             retain: false,
+            properties: None,
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         assert!(serialized.contains("\"payload\":[]"));
@@ -355,7 +530,7 @@ mod tests {
     fn test_broker_map_insert_and_lookup() {
         let mqtt_map = make_broker_map();
         let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18830");
-        let (client, _connection) = connect_to_mqtt_host(&cfg);
+        let (client, _connection) = connect_to_mqtt_host(&cfg, MqttProtocol::V5).unwrap();
         let broker = MqttBroker {
             client,
             broker: "127.0.0.1:18830".to_string(),
@@ -369,6 +544,7 @@ mod tests {
             rate_last_sample_ms: 0,
             requires_auth: false,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
         mqtt_map
             .lock()
@@ -382,7 +558,7 @@ mod tests {
     fn test_broker_map_remove() {
         let mqtt_map = make_broker_map();
         let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18831");
-        let (client, _connection) = connect_to_mqtt_host(&cfg);
+        let (client, _connection) = connect_to_mqtt_host(&cfg, MqttProtocol::V5).unwrap();
         let broker = MqttBroker {
             client,
             broker: "127.0.0.1:18831".to_string(),
@@ -396,6 +572,7 @@ mod tests {
             rate_last_sample_ms: 0,
             requires_auth: false,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
         mqtt_map
             .lock()
@@ -415,7 +592,14 @@ mod tests {
         let mm1 = Arc::clone(&mqtt_map);
         let h1 = thread::spawn(move || {
             for i in 0..50 {
-                publish_message(&format!("host{}:1883", i), "topic", "payload", false, &mm1);
+                publish_message(
+                    &format!("host{}:1883", i),
+                    "topic",
+                    "payload",
+                    false,
+                    Vec::new(),
+                    &mm1,
+                );
             }
         });
 
@@ -452,6 +636,7 @@ mod tests {
             payload,
             original_payload_size: 1024 * 1024,
             retain: false,
+            properties: None,
         };
         assert_eq!(msg.payload.len(), 1024 * 1024);
     }
@@ -461,7 +646,7 @@ mod tests {
     #[test]
     fn test_broker_eviction_order_fifo() {
         let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18832");
-        let (client, _conn) = connect_to_mqtt_host(&cfg);
+        let (client, _conn) = connect_to_mqtt_host(&cfg, MqttProtocol::V5).unwrap();
         let mut broker = MqttBroker {
             client,
             broker: "test".to_string(),
@@ -475,6 +660,7 @@ mod tests {
             rate_last_sample_ms: 0,
             requires_auth: false,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
 
         broker.eviction_order.push_back(("t1".to_string(), 10));
@@ -523,7 +709,7 @@ mod tests {
     #[test]
     fn test_broker_topics_multiple_messages_per_topic() {
         let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18833");
-        let (client, _conn) = connect_to_mqtt_host(&cfg);
+        let (client, _conn) = connect_to_mqtt_host(&cfg, MqttProtocol::V5).unwrap();
         let mut broker = MqttBroker {
             client,
             broker: "test".to_string(),
@@ -537,6 +723,7 @@ mod tests {
             rate_last_sample_ms: 0,
             requires_auth: false,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
 
         let mut msgs = VecDeque::new();
@@ -546,6 +733,7 @@ mod tests {
                 payload: bytes::Bytes::from(format!("payload_{i}")),
                 original_payload_size: format!("payload_{i}").len(),
                 retain: false,
+                properties: None,
             });
         }
         broker.topics.insert("stress/topic".to_string(), msgs);
@@ -564,7 +752,7 @@ mod tests {
     #[test]
     fn test_broker_topics_eviction_removes_oldest() {
         let cfg = super::super::config::BrokerConfig::from_host("127.0.0.1:18834");
-        let (client, _conn) = connect_to_mqtt_host(&cfg);
+        let (client, _conn) = connect_to_mqtt_host(&cfg, MqttProtocol::V5).unwrap();
         let mut broker = MqttBroker {
             client,
             broker: "test".to_string(),
@@ -578,6 +766,7 @@ mod tests {
             rate_last_sample_ms: 0,
             requires_auth: false,
             allowed_roles: Vec::new(),
+            protocol: None,
         };
 
         let mut msgs = VecDeque::new();
@@ -586,12 +775,14 @@ mod tests {
             payload: bytes::Bytes::from("a"),
             original_payload_size: 1,
             retain: false,
+            properties: None,
         });
         msgs.push_back(MqttMessage {
             timestamp: "newest".to_string(),
             payload: bytes::Bytes::from("b"),
             original_payload_size: 1,
             retain: false,
+            properties: None,
         });
         broker.topics.insert("t".to_string(), msgs);
         broker.eviction_order.push_back(("t".to_string(), 1));
@@ -603,6 +794,62 @@ mod tests {
 
         assert_eq!(broker.topics["t"].len(), 1);
         assert_eq!(broker.topics["t"].front().unwrap().timestamp, "newest");
+    }
+
+    // --- MQTT 5 publish properties ---
+
+    #[test]
+    fn test_message_properties_none_when_absent_or_empty() {
+        assert!(MessageProperties::from_publish(None).is_none());
+        // Only protocol-internal properties set -> nothing to show.
+        let props = PublishProperties {
+            topic_alias: Some(3),
+            subscription_identifiers: vec![1],
+            ..Default::default()
+        };
+        assert!(MessageProperties::from_publish(Some(props)).is_none());
+    }
+
+    #[test]
+    fn test_message_properties_extracts_fields() {
+        let props = PublishProperties {
+            user_properties: vec![
+                ("k".to_string(), "v1".to_string()),
+                ("k".to_string(), "v2".to_string()),
+            ],
+            content_type: Some("text/plain".to_string()),
+            response_topic: Some("reply/here".to_string()),
+            correlation_data: Some(bytes::Bytes::from_static(b"req-42")),
+            message_expiry_interval: Some(60),
+            payload_format_indicator: Some(1),
+            ..Default::default()
+        };
+        let extracted = MessageProperties::from_publish(Some(props)).unwrap();
+        assert_eq!(extracted.user_properties.len(), 2);
+        assert_eq!(extracted.correlation_data.as_deref(), Some("req-42"));
+
+        let json = serde_json::to_value(&*extracted).unwrap();
+        assert_eq!(
+            json["user_properties"],
+            serde_json::json!([["k", "v1"], ["k", "v2"]])
+        );
+        assert_eq!(json["content_type"], "text/plain");
+        assert_eq!(json["response_topic"], "reply/here");
+        assert_eq!(json["message_expiry_interval"], 60);
+        assert_eq!(json["payload_format_indicator"], 1);
+    }
+
+    #[test]
+    fn test_message_properties_binary_correlation_data_as_hex() {
+        let props = PublishProperties {
+            correlation_data: Some(bytes::Bytes::from_static(&[0x00, 0xff, 0x10])),
+            ..Default::default()
+        };
+        let extracted = MessageProperties::from_publish(Some(props)).unwrap();
+        assert_eq!(extracted.correlation_data.as_deref(), Some("0x00ff10"));
+        // Unset fields are omitted from the JSON entirely.
+        let json = serde_json::to_value(&*extracted).unwrap();
+        assert_eq!(json, serde_json::json!({ "correlation_data": "0x00ff10" }));
     }
 
     // --- TLS / client certificate configuration ---
@@ -715,7 +962,7 @@ mod tests {
             Some("/nonexistent/c.crt".to_string()),
             Some("/nonexistent/c.key".to_string()),
         );
-        let (_client, _connection) = connect_to_mqtt_host(&cfg);
+        let (_client, _connection) = connect_to_mqtt_host(&cfg, MqttProtocol::V5).unwrap();
     }
 
     #[test]

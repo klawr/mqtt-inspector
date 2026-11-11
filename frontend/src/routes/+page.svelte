@@ -424,6 +424,7 @@ THE SOFTWARE.
 	let publishTopic = '';
 	let publishPayload = '';
 	let publishRetain = false;
+	let publishUserProperties: [string, string][] = [];
 	let publishCommandName = '';
 	let publishSelectedCommandId = '';
 	const defaultPageTitle = 'mqtt-inspector';
@@ -685,6 +686,7 @@ THE SOFTWARE.
 						? CircleSolid
 						: CircleDash}
 				text={broker}
+				title={entry.protocol ? `${broker} (MQTT ${entry.protocol})` : broker}
 				isSelected={app.selectedBroker === broker}
 				on:click={() => {
 					if (app.selectedBroker === broker && entry.requiresAuth && !entry.authenticated) {
@@ -792,6 +794,7 @@ THE SOFTWARE.
 				bind:topic={publishTopic}
 				bind:payload={publishPayload}
 				bind:retain={publishRetain}
+				bind:userProperties={publishUserProperties}
 				bind:save_command_name={publishCommandName}
 				bind:selectedCommandId={publishSelectedCommandId}
 			/>
