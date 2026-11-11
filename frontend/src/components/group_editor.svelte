@@ -22,14 +22,15 @@ THE SOFTWARE.
 <script lang="ts">
 	import type { BrokerRepositoryEntry, EditorGroup } from '$lib/state';
 	import { findbranchwithid } from '$lib/helper';
-	import { getTopicSwitchResetState } from './messages';
+	import { shownMessage } from '$lib/message_view';
 	import { InlineLoading } from 'carbon-components-svelte';
 	import Monaco from './monaco.svelte';
 	import MonacoDiff from './monaco_diff.svelte';
 
 	// One editor pane. The tab strip and the shared message toolbar live elsewhere;
-	// this component only renders the active topic's selected message and keeps the
-	// group's view state (selected index) in sync as messages arrive.
+	// this component only renders the active topic's selected message. Selection
+	// state is changed by $lib/layout (topic switches), $lib/ws_msg_handling
+	// (following locked messages) and the toolbar (navigation).
 	export let broker: BrokerRepositoryEntry;
 	export let group: EditorGroup;
 	export let syncing = false;
@@ -38,52 +39,9 @@ THE SOFTWARE.
 		? findbranchwithid(group.activeTopicId, broker.topics) ?? null
 		: null;
 	$: messages = branch?.messages ?? [];
-	$: messageCount = messages.length;
 
-	let prevTopicId: string | null = branch?.id ?? null;
-	let prevCount = messageCount;
-
-	// Reset to the latest message on topic switch; keep a locked index pointing at
-	// the same message as newer ones are prepended.
-	function maintain() {
-		const view = group.view;
-		let changed = false;
-		const topicId = branch?.id ?? null;
-		if (topicId !== prevTopicId) {
-			const reset = getTopicSwitchResetState(messageCount);
-			view.selectedIndex = reset.selectedIndex;
-			view.lockedIndex = reset.lockedIndex;
-			view.compareMessage = reset.compareMessage;
-			view.selectedIndexCompare = reset.selectedIndexCompare;
-			view.lockedIndexCompare = reset.lockedIndexCompare;
-			prevTopicId = topicId;
-			prevCount = reset.prevMessageCount;
-			changed = true;
-		} else {
-			const diff = messageCount - prevCount;
-			if (diff > 0) {
-				if (view.lockedIndex && view.selectedIndex >= 0) {
-					view.selectedIndex += diff;
-					changed = true;
-				}
-				if (view.lockedIndexCompare && view.selectedIndexCompare >= 0) {
-					view.selectedIndexCompare += diff;
-					changed = true;
-				}
-				prevCount = messageCount;
-			}
-		}
-		if (changed) broker = broker;
-	}
-	$: {
-		// Re-run whenever the topic or message count changes.
-		void messageCount;
-		void (branch?.id ?? null);
-		maintain();
-	}
-
-	$: selectedMessage = messages[group.view.selectedIndex];
-	$: selectedMessageCompare = messages[group.view.selectedIndexCompare];
+	$: selectedMessage = shownMessage(group.view.main, messages);
+	$: selectedMessageCompare = shownMessage(group.view.compare, messages);
 </script>
 
 <div class="pane">
@@ -96,7 +54,7 @@ THE SOFTWARE.
 			<InlineLoading description="Loading messages..." />
 		</div>
 	{:else if messages.length && selectedMessage}
-		<div class="editor-wrap">
+		<div class="editor-wrap" data-testid="message-editor">
 			{#if group.view.compareMessage && selectedMessageCompare}
 				<MonacoDiff
 					bind:code={selectedMessage.text}

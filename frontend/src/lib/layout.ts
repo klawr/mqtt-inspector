@@ -21,7 +21,8 @@
  */
 
 import { findbranchwithid } from './helper';
-import type { BrokerRepositoryEntry, EditorGroup, GroupView, LayoutNode } from './state';
+import type { BrokerRepositoryEntry, EditorGroup, LayoutNode } from './state';
+import { newGroupView, resetForTopicSwitch } from './message_view';
 
 export type SplitEdge = 'left' | 'right' | 'up' | 'down';
 
@@ -31,18 +32,8 @@ function nextGroupId(): string {
 	return `g${groupCounter}`;
 }
 
-function defaultGroupView(): GroupView {
-	return {
-		selectedIndex: 0,
-		lockedIndex: false,
-		compareMessage: false,
-		selectedIndexCompare: 1,
-		lockedIndexCompare: false
-	};
-}
-
 function createGroup(): EditorGroup {
-	return { id: nextGroupId(), tabs: [], activeTopicId: null, view: defaultGroupView() };
+	return { id: nextGroupId(), tabs: [], activeTopicId: null, view: newGroupView() };
 }
 
 /** A fresh layout with a single empty editor group. */
@@ -95,12 +86,19 @@ function freeCacheIfUnused(entry: BrokerRepositoryEntry, topicId: string) {
 
 // ─── Group-level tab operations ──────────────────────────────────────
 
+/** Switch the topic a group shows. A different topic starts at its latest message. */
+function setActiveTopic(group: EditorGroup, topicId: string | null) {
+	if (group.activeTopicId === topicId) return;
+	group.activeTopicId = topicId;
+	resetForTopicSwitch(group.view);
+}
+
 /** VS Code preview/pin tab semantics within a single group. */
 function openTab(group: EditorGroup, topicId: string, { pin }: { pin: boolean }) {
 	const existing = group.tabs.find((tab) => tab.id === topicId);
 	if (existing) {
 		if (pin) existing.preview = false;
-		group.activeTopicId = topicId;
+		setActiveTopic(group, topicId);
 		return;
 	}
 	if (pin) {
@@ -115,7 +113,7 @@ function openTab(group: EditorGroup, topicId: string, { pin }: { pin: boolean })
 			group.tabs = [...group.tabs, { id: topicId, preview: true }];
 		}
 	}
-	group.activeTopicId = topicId;
+	setActiveTopic(group, topicId);
 }
 
 function pinTabInGroup(group: EditorGroup, topicId: string) {
@@ -130,7 +128,7 @@ function removeTab(group: EditorGroup, topicId: string) {
 	group.tabs = group.tabs.filter((tab) => tab.id !== topicId);
 	if (wasActive) {
 		const neighbour = group.tabs[index] ?? group.tabs[index - 1] ?? null;
-		group.activeTopicId = neighbour ? neighbour.id : null;
+		setActiveTopic(group, neighbour ? neighbour.id : null);
 	}
 }
 
@@ -155,7 +153,7 @@ export function openInFocusedGroup(
 export function activateTab(entry: BrokerRepositoryEntry, groupId: string, topicId: string) {
 	const group = findGroup(entry, groupId);
 	if (group && group.tabs.some((t) => t.id === topicId)) {
-		group.activeTopicId = topicId;
+		setActiveTopic(group, topicId);
 		entry.activeGroupId = groupId;
 		syncSelectedTopic(entry);
 	}
@@ -454,7 +452,7 @@ export function closeGroup(entry: BrokerRepositoryEntry, groupId: string) {
 	if (groups.length <= 1) {
 		// Never leave zero groups — keep an empty one instead.
 		closing.tabs = [];
-		closing.activeTopicId = null;
+		setActiveTopic(closing, null);
 	} else {
 		entry.layout = removeGroupNode(entry.layout, groupId) ?? newLayout().layout;
 		if (entry.activeGroupId === groupId) {

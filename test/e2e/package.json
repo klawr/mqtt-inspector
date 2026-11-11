@@ -1,0 +1,17 @@
+{
+	"name": "mqtt-inspector-e2e",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=20.11"
+	},
+	"scripts": {
+		"test": "node --test --test-reporter=spec .",
+		"lint": "prettier --check .",
+		"format": "prettier --write ."
+	},
+	"devDependencies": {
+		"playwright": "1.62.0",
+		"prettier": "^3.1.1"
+	}
+}

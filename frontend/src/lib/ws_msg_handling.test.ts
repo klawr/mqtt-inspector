@@ -9,6 +9,7 @@ import {
 	type BrokerParam,
 	processBrokers,
 	processMQTTMessages,
+	compareTimestamps,
 	parseMqttWebSocketMessage,
 	type MQTTMessageParam,
 	processSettings,
@@ -27,6 +28,14 @@ import {
 	type PipelineParam
 } from './ws_msg_handling';
 import { AppState, Message, type BrokerRepository } from './state';
+import { allGroups, newLayout } from './layout';
+import { selectMessageAt, shownMessage } from './message_view';
+
+/** The parts of a broker entry most tests don't care about. */
+function entryDefaults() {
+	const { layout, activeGroupId } = newLayout();
+	return { layout, activeGroupId, requiresAuth: false, authenticated: true };
+}
 
 test('processConfigs processes commands correctly', () => {
 	const commands: CommandParam[] = [
@@ -74,7 +83,8 @@ test('processBrokerRemoval deletes broker from AppState', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 
@@ -96,7 +106,8 @@ test('processBrokerRemoval clears selectedBroker when deleting the selected one'
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 
@@ -118,7 +129,8 @@ test('processBrokerRemoval handles non-existing broker correctly', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 
@@ -139,7 +151,8 @@ test('processConnectionStatus updates connection status in AppState', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 
@@ -183,7 +196,8 @@ test('processConnectionStatus handles non-existing broker correctly', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 
@@ -316,7 +330,8 @@ test('processMQTTMessages applies batched messages in order', () => {
 		bytesPerSecond: 0,
 		backendTotalMessages: 0,
 		messagesPerSecond: 0,
-		rateHistory: []
+		rateHistory: [],
+		...entryDefaults()
 	};
 	const messages: MQTTMessageParam[] = [
 		{
@@ -387,7 +402,8 @@ test('MQTT 5 properties flow from the binary frame into Message.properties', () 
 		bytesPerSecond: 0,
 		backendTotalMessages: 0,
 		messagesPerSecond: 0,
-		rateHistory: []
+		rateHistory: [],
+		...entryDefaults()
 	};
 	processMQTTMessages(
 		[
@@ -405,6 +421,59 @@ test('MQTT 5 properties flow from the binary frame into Message.properties', () 
 	const [withProps, withoutProps] = app.brokerRepository['broker1'].topics[0].messages;
 	expect(withProps.properties).toEqual(properties);
 	expect(withoutProps.properties).toBeNull();
+});
+
+test('compareTimestamps orders within the same millisecond', () => {
+	const ms = '2026-11-11T23:12:41.123';
+	expect(compareTimestamps(`${ms}000002+00:00`, `${ms}000001+00:00`)).toBeGreaterThan(0);
+	expect(compareTimestamps(`${ms}5+00:00`, `${ms}499999999+00:00`)).toBeGreaterThan(0);
+	expect(compareTimestamps(`${ms}+00:00`, `${ms}000000+00:00`)).toBe(0);
+	expect(compareTimestamps('2026-11-11T23:12:41.124Z', `${ms}999Z`)).toBeGreaterThan(0);
+});
+
+test('processMQTTMessages keeps a burst within one millisecond newest first', () => {
+	const app = new AppState();
+	app.brokerRepository['b'] = {
+		topics: [
+			{
+				id: 't',
+				text: 't',
+				children: undefined,
+				number_of_messages: 0,
+				original_text: 't',
+				messages: []
+			}
+		],
+		selectedTopic: null,
+		pipeline: [],
+		connected: true,
+		backendTotalBytes: 0,
+		bytesPerSecond: 0,
+		backendTotalMessages: 0,
+		messagesPerSecond: 0,
+		rateHistory: [],
+		...entryDefaults()
+	};
+	// Arrival order (oldest first), all within the same millisecond.
+	const burst = (from: number, to: number) =>
+		Array.from({ length: to - from }, (_, i) => ({
+			source: 'b',
+			topic: 't',
+			payload: new TextEncoder().encode(`m${from + i}`).buffer,
+			timestamp: `2026-11-11T23:12:41.123${String(from + i).padStart(3, '0')}100+00:00`,
+			total_bytes: 0
+		}));
+
+	processMQTTMessages(burst(0, 3), app);
+	processMQTTMessages(burst(3, 5), app);
+
+	expect(app.brokerRepository['b'].topics[0].messages.map((m) => m.text)).toEqual([
+		'm4',
+		'm3',
+		'm2',
+		'm1',
+		'm0'
+	]);
 });
 
 test('processMQTTMessages merges incoming history with existing messages in timestamp order', () => {
@@ -430,7 +499,8 @@ test('processMQTTMessages merges incoming history with existing messages in time
 		bytesPerSecond: 0,
 		backendTotalMessages: 0,
 		messagesPerSecond: 0,
-		rateHistory: []
+		rateHistory: [],
+		...entryDefaults()
 	};
 
 	processMQTTMessages(
@@ -477,7 +547,8 @@ test('processRateHistorySample appends entry and updates bytesPerSecond', () => 
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 
@@ -508,7 +579,8 @@ test('processRateHistorySample appends sample in place', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 
@@ -761,7 +833,8 @@ test('processMQTTMessageMeta increments existing topic count', () => {
 		bytesPerSecond: 0,
 		backendTotalMessages: 0,
 		messagesPerSecond: 0,
-		rateHistory: []
+		rateHistory: [],
+		...entryDefaults()
 	};
 
 	const meta: MQTTMessageMetaParam = {
@@ -791,7 +864,8 @@ test('processMQTTMessageMeta does not overwrite selectedBroker', () => {
 		bytesPerSecond: 0,
 		backendTotalMessages: 0,
 		messagesPerSecond: 0,
-		rateHistory: []
+		rateHistory: [],
+		...entryDefaults()
 	};
 
 	const meta: MQTTMessageMetaParam = {
@@ -875,7 +949,8 @@ function makeBrokerWithTopicTree(): AppState {
 		bytesPerSecond: 0,
 		backendTotalMessages: 10,
 		messagesPerSecond: 0,
-		rateHistory: []
+		rateHistory: [],
+		...entryDefaults()
 	};
 	return app;
 }
@@ -930,6 +1005,44 @@ test('processMessagesEvicted removes oldest messages from selected topic', () =>
 	expect(childBranch.messages).toHaveLength(3);
 	expect(childBranch.messages[0].text).toBe('msg1');
 	expect(childBranch.messages[2].text).toBe('msg3');
+});
+
+test('a locked selection follows its message through new messages and evictions', () => {
+	const app = makeBrokerWithTopicTree();
+	const entry = app.brokerRepository['b:1883'];
+	const group = allGroups(entry.layout)[0];
+	group.activeTopicId = 'a/b';
+	const leaf = entry.topics[0].children![0];
+	leaf.messages = [5, 4, 3, 2, 1].map(
+		(n) => new Message(`2022-01-01T00:00:0${n}.000Z`, null, `msg${n}`)
+	);
+	selectMessageAt(group.view.main, leaf.messages, 2); // msg3
+	selectMessageAt(group.view.compare, leaf.messages, 4); // msg1, about to be evicted
+
+	// Buffer full: one message arrives, one is evicted. The count stays at 5.
+	processMQTTMessages(
+		[
+			{
+				source: 'b:1883',
+				topic: 'a/b',
+				payload: new TextEncoder().encode('msg6').buffer,
+				timestamp: '2022-01-01T00:00:06.000Z',
+				total_bytes: 0
+			}
+		],
+		app
+	);
+	expect(group.view.main.index).toBe(3);
+	processMessagesEvictedBatch(
+		[{ source: 'b:1883', topic: 'a/b', count: 1, topic_message_count: 5 }],
+		app
+	);
+
+	expect(leaf.messages).toHaveLength(5);
+	expect(group.view.main.index).toBe(3);
+	expect(shownMessage(group.view.main, leaf.messages)?.text).toBe('msg3');
+	expect(group.view.compare.evicted).toBe(true);
+	expect(shownMessage(group.view.compare, leaf.messages)?.text).toBe('msg1');
 });
 
 test('processMessagesEvicted handles non-existing broker', () => {
@@ -1082,7 +1195,8 @@ test('processBrokers updates existing broker status', () => {
 			bytesPerSecond: 0,
 			backendTotalMessages: 0,
 			messagesPerSecond: 0,
-			rateHistory: []
+			rateHistory: [],
+			...entryDefaults()
 		}
 	};
 	const params: BrokerParam = [{ broker: 'b:1883', connected: true, topics: {}, total_bytes: 999 }];

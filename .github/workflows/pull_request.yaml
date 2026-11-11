@@ -7,4 +7,31 @@ on:
       
 jobs:
   build:
-    uses: ./.github/workflows/reusable-build.yaml    
+    uses: ./.github/workflows/reusable-build.yaml
+
+  # Browser end-to-end tests (test/e2e). Runs on the plain runner, not in a
+  # container: the tests start a Mosquitto broker with Docker.
+  e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          yarn install
+
+      - name: Check test formatting
+        run: |
+          cd test/e2e
+          npm ci --no-audit --no-fund
+          npm run lint
+
+      - name: Run e2e tests
+        run: test/e2e/run.sh

@@ -27,23 +27,3 @@ export function prettyPrint(obj: string) {
 		return obj;
 	}
 }
-
-export type TopicSwitchResetState = {
-	selectedIndex: number;
-	selectedIndexCompare: number;
-	lockedIndex: boolean;
-	lockedIndexCompare: boolean;
-	compareMessage: boolean;
-	prevMessageCount: number;
-};
-
-export function getTopicSwitchResetState(messageCount: number): TopicSwitchResetState {
-	return {
-		selectedIndex: 0,
-		selectedIndexCompare: 1,
-		lockedIndex: false,
-		lockedIndexCompare: false,
-		compareMessage: false,
-		prevMessageCount: messageCount
-	};
-}

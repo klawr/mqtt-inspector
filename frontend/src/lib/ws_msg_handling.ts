@@ -22,7 +22,8 @@
 
 import { findbranchwithid, formatMsgRate, formatRate } from './helper';
 import { clearTopicRates, recordTopicMessage, topicRate, type TopicRate } from './topic_rates';
-import { newLayout } from './layout';
+import { allGroups, newLayout } from './layout';
+import { followMessages } from './message_view';
 import { Message } from './state';
 import type {
 	AppState,
@@ -92,14 +93,23 @@ function findLeafBranch(topics: Treebranch[], topicPath: string): Treebranch | n
 	return found;
 }
 
-function getTimestampMs(timestamp: string): number {
-	return new Date(timestamp).getTime();
+/**
+ * Compare two RFC 3339 timestamps at full precision (> 0 if `a` is newer).
+ * `Date` keeps only milliseconds, but the backend sends up to nanoseconds, and
+ * messages arriving in a burst often share a millisecond.
+ */
+export function compareTimestamps(a: string, b: string): number {
+	return Date.parse(a) - Date.parse(b) || subMillisecond(a) - subMillisecond(b);
+}
+
+/** The fraction-of-second digits beyond milliseconds, in nanoseconds. */
+function subMillisecond(timestamp: string): number {
+	const digits = /\.\d{3}(\d*)/.exec(timestamp)?.[1] ?? '';
+	return Number(digits.slice(0, 6).padEnd(6, '0'));
 }
 
 function sortMessagesNewestFirst<T extends { timestamp: string }>(messages: T[]): T[] {
-	return messages.sort(
-		(left, right) => getTimestampMs(right.timestamp) - getTimestampMs(left.timestamp)
-	);
+	return messages.sort((left, right) => compareTimestamps(right.timestamp, left.timestamp));
 }
 
 function mergeMessagesNewestFirst(existing: Message[], incoming: Message[]): Message[] {
@@ -109,8 +119,7 @@ function mergeMessagesNewestFirst(existing: Message[], incoming: Message[]): Mes
 
 	while (incomingIndex < incoming.length && existingIndex < existing.length) {
 		if (
-			getTimestampMs(incoming[incomingIndex].timestamp) >=
-			getTimestampMs(existing[existingIndex].timestamp)
+			compareTimestamps(incoming[incomingIndex].timestamp, existing[existingIndex].timestamp) >= 0
 		) {
 			merged.push(incoming[incomingIndex]);
 			incomingIndex += 1;
@@ -530,10 +539,21 @@ export function processMQTTMessageMeta(message: MQTTMessageMetaParam, app: AppSt
 	return app;
 }
 
-/** Process eviction notifications from the backend. */
-export function processMessagesEvicted(params: MessagesEvictedParam, app: AppState) {
+/** Keep every pane's locked selection on its pinned message after the broker's
+ *  message lists changed. Runs in the same step that mutates the lists, so no
+ *  component ever renders a stale index. */
+function followLockedMessages(entry: BrokerRepositoryEntry) {
+	for (const group of allGroups(entry.layout)) {
+		if (!group.activeTopicId) continue;
+		const branch = findbranchwithid(group.activeTopicId, entry.topics);
+		if (branch) followMessages(group.view, branch.messages);
+	}
+}
+
+/** Apply one eviction notification; returns the affected broker entry. */
+function evictMessages(params: MessagesEvictedParam, app: AppState) {
 	const entry = app.brokerRepository[params.source];
-	if (!entry) return app;
+	if (!entry) return undefined;
 	entry.backendTotalMessages = Math.max(0, entry.backendTotalMessages - params.count);
 
 	// Decrement topic tree counts
@@ -556,6 +576,13 @@ export function processMessagesEvicted(params: MessagesEvictedParam, app: AppSta
 			findbranchwithid(entry.selectedTopic.id.toString(), entry.topics) || entry.selectedTopic;
 	}
 
+	return entry;
+}
+
+/** Process eviction notifications from the backend. */
+export function processMessagesEvicted(params: MessagesEvictedParam, app: AppState) {
+	const entry = evictMessages(params, app);
+	if (entry) followLockedMessages(entry);
 	return app;
 }
 
@@ -590,9 +617,12 @@ export function processMQTTMessageMetaBatch(messages: MQTTMessageMetaParam[], ap
 
 /** Process a batch of eviction notifications (sent by the backend every ~100 ms). */
 export function processMessagesEvictedBatch(items: MessagesEvictedParam[], app: AppState) {
+	const touched = new Set<BrokerRepositoryEntry>();
 	for (const item of items) {
-		processMessagesEvicted(item, app);
+		const entry = evictMessages(item, app);
+		if (entry) touched.add(entry);
 	}
+	touched.forEach(followLockedMessages);
 	return app;
 }
 
@@ -629,6 +659,12 @@ export function processMQTTMessages(messages: MQTTMessageParam[], app: AppState)
 	// Bulk-insert each group with a single splice (avoids O(n²) per-message unshift)
 	for (const { leaf, entries } of groups.values()) {
 		leaf.messages = mergeMessagesNewestFirst(leaf.messages, sortMessagesNewestFirst(entries));
+	}
+
+	// Locked selections follow their pinned message in the same step.
+	for (const source of new Set(messages.map((m) => m.source))) {
+		const entry = app.brokerRepository[source];
+		if (entry) followLockedMessages(entry);
 	}
 
 	// Update selectedTopic reference once per broker (not per message)

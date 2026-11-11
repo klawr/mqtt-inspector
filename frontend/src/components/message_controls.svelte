@@ -26,6 +26,14 @@ THE SOFTWARE.
 	import { focusedGroup } from '$lib/layout';
 	import { copyToClipboard } from '$lib/clipboard';
 	import {
+		isLocked,
+		resetToLatest,
+		selectMessageAt,
+		setLocked,
+		shownMessage,
+		stepMessage
+	} from '$lib/message_view';
+	import {
 		Button,
 		Checkbox,
 		InlineLoading,
@@ -56,7 +64,7 @@ THE SOFTWARE.
 	$: messages = branch?.messages ?? [];
 	$: messageCount = messages.length;
 	$: syncing = group.activeTopicId ? syncingTopics.has(group.activeTopicId) : false;
-	$: selectedMessage = messages[view.selectedIndex];
+	$: selectedMessage = shownMessage(view.main, messages);
 	$: propertyRows = selectedMessage ? describeProperties(selectedMessage.properties) : [];
 	$: userPropertyCount = selectedMessage?.properties?.user_properties?.length ?? 0;
 
@@ -98,33 +106,37 @@ THE SOFTWARE.
 	$: maxVisible = Math.max(3, Math.floor(containerWidth / STEP_WIDTH_PX));
 	$: windowStart = Math.max(
 		0,
-		Math.min(view.selectedIndex - Math.floor(maxVisible / 2), messageCount - maxVisible)
+		Math.min(view.main.index - Math.floor(maxVisible / 2), messageCount - maxVisible)
 	);
 	$: windowEnd = Math.min(messageCount, Math.max(0, windowStart) + maxVisible);
 	$: visibleSlice = messages.slice(Math.max(0, windowStart), windowEnd);
 	$: windowStartCompare = Math.max(
 		0,
-		Math.min(view.selectedIndexCompare - Math.floor(maxVisible / 2), messageCount - maxVisible)
+		Math.min(view.compare.index - Math.floor(maxVisible / 2), messageCount - maxVisible)
 	);
 	$: windowEndCompare = Math.min(messageCount, Math.max(0, windowStartCompare) + maxVisible);
 	$: visibleSliceCompare = messages.slice(Math.max(0, windowStartCompare), windowEndCompare);
 
+	// All navigation goes through the shared helpers so the index and the pinned
+	// (locked) message always change together.
 	function selectMessage(index: number) {
-		if (index < 0) index = 0;
-		else if (index >= messageCount) index = messageCount - 1;
-		view.lockedIndex = true;
-		view.selectedIndex = index;
+		selectMessageAt(view.main, messages, index);
 		broker = broker;
 	}
-
 	function selectMessageCompare(index: number) {
-		view.lockedIndexCompare = true;
-		view.selectedIndexCompare = index;
+		selectMessageAt(view.compare, messages, index);
 		broker = broker;
 	}
-
+	function step(delta: number) {
+		stepMessage(view.main, messages, delta);
+		broker = broker;
+	}
+	function goToLatest() {
+		resetToLatest(view);
+		broker = broker;
+	}
 	function toggleLock(checked: boolean) {
-		view.lockedIndex = checked;
+		setLocked(view.main, messages, checked);
 		broker = broker;
 	}
 	function toggleCompare(checked: boolean) {
@@ -132,14 +144,14 @@ THE SOFTWARE.
 		broker = broker;
 	}
 	function toggleLockCompare(checked: boolean) {
-		view.lockedIndexCompare = checked;
+		setLocked(view.compare, messages, checked);
 		broker = broker;
 	}
 
 	let navDiv: HTMLDivElement | null = null;
 	function handleWheel(event: WheelEvent) {
 		if (navDiv && event.deltaY !== 0) {
-			selectMessage(view.selectedIndex + (event.deltaY > 0 ? 1 : -1));
+			step(event.deltaY > 0 ? 1 : -1);
 			event.preventDefault();
 		}
 	}
@@ -179,7 +191,7 @@ THE SOFTWARE.
 			<div class="footer-controls">
 				<Checkbox
 					labelText="Lock message"
-					checked={view.lockedIndex}
+					checked={isLocked(view.main)}
 					on:check={(e) => toggleLock(e.detail)}
 				/>
 				<div class="nav-buttons">
@@ -188,25 +200,21 @@ THE SOFTWARE.
 						iconDescription="First Message"
 						tooltipPosition="top"
 						icon={PageFirst}
-						on:click={() => {
-							selectMessage(0);
-							toggleLock(false);
-							toggleLockCompare(false);
-						}}
+						on:click={goToLatest}
 					/>
 					<Button
 						kind="secondary"
 						iconDescription="Next Message"
 						tooltipPosition="top"
 						icon={ChevronLeft}
-						on:click={() => selectMessage(view.selectedIndex - 1)}
+						on:click={() => step(-1)}
 					/>
 					<Button
 						kind="secondary"
 						iconDescription="Previous Message"
 						tooltipPosition="top"
 						icon={ChevronRight}
-						on:click={() => selectMessage(view.selectedIndex + 1)}
+						on:click={() => step(1)}
 					/>
 				</div>
 				<Checkbox
@@ -217,7 +225,7 @@ THE SOFTWARE.
 				{#if view.compareMessage}
 					<Checkbox
 						labelText="Lock"
-						checked={view.lockedIndexCompare}
+						checked={isLocked(view.compare)}
 						on:check={(e) => toggleLockCompare(e.detail)}
 					/>
 				{/if}
@@ -226,6 +234,12 @@ THE SOFTWARE.
 				<div class="message-meta">
 					<span style="font-size: 0.875rem; color: var(--cds-text-secondary);">
 						Selected message: {curateDate(selectedMessage.timestamp)}
+						{#if view.main.evicted}
+							<span class="evicted">(locked message evicted from buffer, still shown)</span>
+						{/if}
+						{#if view.compareMessage && view.compare.evicted}
+							<span class="evicted">(compare message evicted from buffer, still shown)</span>
+						{/if}
 						{#if selectedMessage.retain}
 							{' '}(retained)
 						{/if}
@@ -262,8 +276,8 @@ THE SOFTWARE.
 								>{copyStatusMessage}</span
 							>
 						{/if}
-						<span style="font-size: 0.875rem; white-space: nowrap;">
-							{view.selectedIndex + 1} / {messageCount} messages
+						<span style="font-size: 0.875rem; white-space: nowrap;" data-testid="message-counter">
+							{view.main.evicted ? '–' : view.main.index + 1} / {messageCount} messages
 						</span>
 					</div>
 				</div>
@@ -286,10 +300,15 @@ THE SOFTWARE.
 		{/if}
 
 		{#if messageCount > 1}
-			<div bind:this={navDiv} bind:clientWidth={containerWidth} on:wheel={handleWheel}>
+			<div
+				bind:this={navDiv}
+				bind:clientWidth={containerWidth}
+				on:wheel={handleWheel}
+				data-testid="message-timeline"
+			>
 				<ProgressIndicator
 					class={view.compareMessage ? 'green-indicator' : ''}
-					currentIndex={view.selectedIndex - Math.max(0, windowStart)}
+					currentIndex={view.main.index - Math.max(0, windowStart)}
 				>
 					{#each visibleSlice as message, i}
 						{@const realIndex = Math.max(0, windowStart) + i}
@@ -304,7 +323,7 @@ THE SOFTWARE.
 					<div style="height: 1em" />
 					<ProgressIndicator
 						class="red-indicator"
-						currentIndex={view.selectedIndexCompare - Math.max(0, windowStartCompare)}
+						currentIndex={view.compare.index - Math.max(0, windowStartCompare)}
 					>
 						{#each visibleSliceCompare as message, i}
 							{@const realIndex = Math.max(0, windowStartCompare) + i}
@@ -409,6 +428,10 @@ THE SOFTWARE.
 	.properties tr.builtin th {
 		font-family: var(--cds-body-short-01-font-family, sans-serif);
 		font-style: italic;
+	}
+
+	.evicted {
+		color: var(--cds-support-warning, #f1c21b);
 	}
 
 	.footer-controls :global(.bx--form-item),

@@ -107,14 +107,24 @@ export type TopicTab = {
 	preview: boolean;
 };
 
-/** Per-group message navigation state (which message is shown, lock, compare).
- *  Shared between the group's editor pane and the focused-pane toolbar. */
+/** One side of a group's message navigation (the main message or the compare one).
+ *  Messages are newest first, so index 0 is the latest message. */
+export type MessageSelection = {
+	index: number;
+	/** Set while locked: the message the selection is pinned to. The selection
+	 *  follows this message (not its index) while messages arrive and get evicted. */
+	pinned?: Message;
+	/** The pinned message was evicted from the buffer. It stays shown until the
+	 *  user navigates; `index` then sits on the oldest kept message. */
+	evicted: boolean;
+};
+
+/** Per-group message navigation state, shared between the group's editor pane
+ *  and the focused-pane toolbar. Change it only through `$lib/message_view`. */
 export type GroupView = {
-	selectedIndex: number;
-	lockedIndex: boolean;
+	main: MessageSelection;
+	compare: MessageSelection;
 	compareMessage: boolean;
-	selectedIndexCompare: number;
-	lockedIndexCompare: boolean;
 };
 
 /** A single editor group: an independent tab strip + editor pane (one per split). */

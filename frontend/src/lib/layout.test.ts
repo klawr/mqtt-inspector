@@ -16,7 +16,8 @@ import {
 	deserializeLayout,
 	newLayout
 } from './layout';
-import type { BrokerRepositoryEntry, LayoutNode, Treebranch } from './state';
+import { Message, type BrokerRepositoryEntry, type LayoutNode, type Treebranch } from './state';
+import { newGroupView, selectMessageAt } from './message_view';
 
 function leaf(id: string): Treebranch {
 	const text = id.split('/').pop() ?? id;
@@ -270,4 +271,33 @@ test('focusGroup switches the focused group and updates selectedTopic', () => {
 	expect(entry.selectedTopic?.id).toBe('b');
 	focusGroup(entry, g1);
 	expect(entry.selectedTopic?.id).toBe('a');
+});
+
+test('switching a group to another topic resets its selection to the latest message', () => {
+	const entry = makeEntry('a', 'b');
+	openInFocusedGroup(entry, 'a', { pin: true });
+	const group = focusedGroup(entry);
+	const messages = ['m2', 'm1', 'm0'].map(
+		(text) => new Message('2026-01-01T00:00:00Z', null, text)
+	);
+	group.view.compareMessage = true;
+	selectMessageAt(group.view.main, messages, 2);
+
+	// Re-activating the topic that is already shown keeps the selection.
+	activateTab(entry, group.id, 'a');
+	expect(group.view.main.pinned).toBe(messages[2]);
+
+	openInFocusedGroup(entry, 'b', { pin: true });
+	expect(group.view).toEqual(newGroupView());
+});
+
+test('closing the active tab resets the selection for the neighbour', () => {
+	const entry = makeEntry('a', 'b');
+	openInFocusedGroup(entry, 'a', { pin: true });
+	openInFocusedGroup(entry, 'b', { pin: true });
+	const group = focusedGroup(entry);
+	selectMessageAt(group.view.main, [new Message('2026-01-01T00:00:00Z', null, 'm')], 0);
+	closeTab(entry, group.id, 'b');
+	expect(group.activeTopicId).toBe('a');
+	expect(group.view).toEqual(newGroupView());
 });
